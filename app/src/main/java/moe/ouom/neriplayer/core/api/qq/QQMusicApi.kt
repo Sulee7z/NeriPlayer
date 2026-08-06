@@ -378,7 +378,7 @@ class QQMusicApi(
             if (!response.isSuccessful) {
                 throw IOException("QQ 请求失败: ${response.code} for url: ${request.url}")
             }
-            response.body?.string() ?: throw IOException("QQ 响应为空")
+            response.body.string() ?: throw IOException("QQ 响应为空")
         }
     }
 }

@@ -234,11 +234,11 @@ class LxScriptEngine(
      */
     private fun extractMusicUrlFromScriptResponse(obj: JSONObject): String? {
         if (obj.optBoolean("ok", true)) {
-            obj.optString("url", null)?.takeIf { it.isNotBlank() }?.let { return it }
+            obj.optString("url").takeIf { it.isNotBlank() }?.let { return it }
         }
-        obj.optString("url", null)?.takeIf { it.isNotBlank() }?.let { return it }
-        obj.optJSONObject("data")?.optString("url", null)?.takeIf { it.isNotBlank() }?.let { return it }
-        obj.optJSONObject("body")?.optString("url", null)?.takeIf { it.isNotBlank() }?.let { return it }
+        obj.optString("url").takeIf { it.isNotBlank() }?.let { return it }
+        obj.optJSONObject("data")?.optString("url").takeIf { it.isNotBlank() }?.let { return it }
+        obj.optJSONObject("body")?.optString("url").takeIf { it.isNotBlank() }?.let { return it }
         return null
     }
 
@@ -361,7 +361,7 @@ class LxScriptEngine(
                     override fun onResponse(call: Call, response: Response) {
                         httpCalls.remove(requestId)
                         response.use { r ->
-                            val bodyStr = r.body?.string() ?: ""
+                            val bodyStr = r.body.string() ?: ""
                             logHttp("$method $shortUrl -> ${r.code} (${bodyStr.length}B)")
                             val headersObj = JSONObject()
                             r.headers.forEach { pair ->

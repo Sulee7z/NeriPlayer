@@ -126,7 +126,7 @@ object PlatformSongMatcher {
             if (score > bestScore) { bestScore = score; best = item }
         }
         if (best == null || bestScore < MATCH_THRESHOLD) return null
-        val rid = best!!.optString("MUSICRID").removePrefix("MUSIC_")
+        val rid = best.optString("MUSICRID").removePrefix("MUSIC_")
         return rid.takeIf { it.isNotBlank() }?.let { PlatformMatch(it) }
     }
 
@@ -149,11 +149,11 @@ object PlatformSongMatcher {
         }
         if (best == null || bestScore < MATCH_THRESHOLD) return null
         // 酷狗脚本一般用音频 hash 当原生 ID,优先取高品质 hash,回退标准 hash
-        val hash = best!!.optString("HQFileHash").ifBlank {
-            best!!.optString("SQFileHash").ifBlank { best!!.optString("FileHash") }
+        val hash = best.optString("HQFileHash").ifBlank {
+            best.optString("SQFileHash").ifBlank { best.optString("FileHash") }
         }
         if (hash.isBlank()) return null
-        return PlatformMatch(hash, mapOf("hash" to hash, "album_id" to best!!.optString("AlbumID")))
+        return PlatformMatch(hash, mapOf("hash" to hash, "album_id" to best.optString("AlbumID")))
     }
 
     // ---------------- QQ音乐 ----------------
@@ -182,7 +182,7 @@ object PlatformSongMatcher {
             if (score > bestScore) { bestScore = score; best = item }
         }
         if (best == null || bestScore < MATCH_THRESHOLD) return null
-        val songmid = best!!.optString("songmid")
+        val songmid = best.optString("songmid")
         return songmid.takeIf { it.isNotBlank() }?.let { PlatformMatch(it) }
     }
 
@@ -207,7 +207,7 @@ object PlatformSongMatcher {
             if (score > bestScore) { bestScore = score; best = item }
         }
         if (best == null || bestScore < MATCH_THRESHOLD) return null
-        val copyrightId = best!!.optString("copyrightId").ifBlank { best!!.optString("id") }
+        val copyrightId = best.optString("copyrightId").ifBlank { best.optString("id") }
         return copyrightId.takeIf { it.isNotBlank() }?.let { PlatformMatch(it) }
     }
 
@@ -280,7 +280,7 @@ object PlatformSongMatcher {
             .build()
         http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) return null
-            return resp.body?.string()
+            return resp.body.string()
         }
     }
 }

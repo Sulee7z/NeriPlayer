@@ -301,7 +301,7 @@ class CustomSourceManager(
                 .build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return@withContext null
-                val body = response.body?.string() ?: return@withContext null
+                val body = response.body.string() ?: return@withContext null
                 if (body.length > 2 * 1024 * 1024) return@withContext null
                 body
             }
