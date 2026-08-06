@@ -29,6 +29,7 @@ package moe.ouom.neriplayer.activity.auth
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Message
 import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
@@ -60,6 +61,10 @@ class QqWebLoginActivity : ComponentActivity() {
         const val RESULT_COOKIE = "qq_cookie_result"
         private const val LOG_TAG = "NERI-QqWebLogin"
         private const val LOGIN_URL = "https://y.qq.com/portal/profile.html"
+        private const val QQ_WEB_LOGIN_DESKTOP_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/126.0.0.0 Safari/537.36"
     }
 
     private lateinit var webView: WebView
@@ -149,9 +154,25 @@ class QqWebLoginActivity : ComponentActivity() {
             settings.allowContentAccess = false
             settings.javaScriptCanOpenWindowsAutomatically = true
             settings.cacheMode = WebSettings.LOAD_NO_CACHE
+            // 伪装桌面浏览器 UA: 避免腾讯把 WebView 识别为移动端壳并引导跳转系统浏览器
+            settings.userAgentString = QQ_WEB_LOGIN_DESKTOP_UA
             CookieManager.getInstance().setAcceptCookie(true)
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-            webChromeClient = WebChromeClient()
+            webChromeClient = object : WebChromeClient() {
+                // 登录弹窗/跳转通过 window.open 打开时, 拦截到当前 WebView 内, 避免跳系统浏览器
+                override fun onCreateWindow(
+                    view: WebView?,
+                    isDialog: Boolean,
+                    isUserGesture: Boolean,
+                    resultMsg: Message?
+                ): Boolean {
+                    NPLogger.d(LOG_TAG, "onCreateWindow intercepted, loading in current WebView")
+                    val transport = resultMsg?.obj as? WebView.WebViewTransport ?: return false
+                    transport.webView = view ?: return false
+                    resultMsg.sendToTarget()
+                    return true
+                }
+            }
             webViewClient = InnerClient()
         }
         webView.resumeTimers()
