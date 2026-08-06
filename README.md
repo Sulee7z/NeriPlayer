@@ -4,7 +4,7 @@
 
 <div align="center">
 
-<h3>✨ 一个把多源在线播放、本地管理、歌词体验和自建同步做进原生 Android 的音频播放器 🎵</h3>
+<h3>✨ 一个把多源在线播放、本地管理、歌词体验和自建同步做进原生 Android 的音频播放器,加上我的一点自用修改 🎵</h3>
 
 <p>
   <a href="https://github.com/cwuom/NeriPlayer/releases">
