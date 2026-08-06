@@ -43,11 +43,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridScope
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,9 +57,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.CalendarToday
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -76,10 +80,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.TopAppBarState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -176,6 +182,9 @@ private const val HomeScrollKeyNeteaseTrendingContent = "$HomeScrollKeyNeteaseTr
 private const val HomeScrollKeyNeteaseRadar = "home:netease:radar"
 private const val HomeScrollKeyNeteaseRadarHeader = "$HomeScrollKeyNeteaseRadar:header"
 private const val HomeScrollKeyNeteaseRadarContent = "$HomeScrollKeyNeteaseRadar:content"
+private const val HomeScrollKeyNeteaseDaily = "home:netease:daily"
+private const val HomeScrollKeyNeteaseDailyHeader = "$HomeScrollKeyNeteaseDaily:header"
+private const val HomeScrollKeyNeteaseDailyContent = "$HomeScrollKeyNeteaseDaily:content"
 private const val HomeScrollKeyNeteaseRecommended = "home:netease:recommended"
 private const val HomeScrollKeyNeteaseRecommendedHeader = "$HomeScrollKeyNeteaseRecommended:header"
 private const val HomeScrollKeyNeteaseRecommendedLoading = "$HomeScrollKeyNeteaseRecommended:loading"
@@ -215,6 +224,7 @@ fun HomeScreen(
     showTrendingCard: Boolean = true,
     showRadarCard: Boolean = true,
     showRecommendedCard: Boolean = true,
+    showDailyCard: Boolean = true,
     usageEntries: List<UsageEntry> = emptyList(),
     usageLoaded: Boolean = true,
     offlineMode: Boolean = false,
@@ -240,6 +250,7 @@ fun HomeScreen(
     val localPlaylistRepo = remember(appContext) { LocalPlaylistRepository.getInstance(appContext) }
     var localPlaylists by remember { mutableStateOf<List<LocalPlaylist>>(emptyList()) }
     var localPlaylistsReady by remember { mutableStateOf(false) }
+    var showDailySheet by remember { mutableStateOf(false) }
     LaunchedEffect(appContext, localPlaylistRepo) {
         localPlaylistsReady = false
         val initializedRepo = withContext(Dispatchers.IO) {
@@ -313,6 +324,7 @@ fun HomeScreen(
     val isInternational = ui.internationalizationEnabled
     val showNeteaseTrending = showTrendingCard && (isInternational || ui.hasLogin)
     val showNeteaseRadar = showRadarCard && (isInternational || ui.hasLogin)
+    val showNeteaseDaily = showDailyCard && !isInternational && ui.hasLogin
     val showOnlineFeeds = !offlineMode
     var wasOffline by remember { mutableStateOf(offlineMode) }
     val windowWidthDp = currentWindowWidthDp()
@@ -678,6 +690,42 @@ fun HomeScreen(
                                 }
                             }
                         } else {
+                            if (showNeteaseDaily) {
+                                item(
+                                    key = registerGridItemKey(HomeScrollKeyNeteaseDailyHeader),
+                                    span = { GridItemSpan(maxLineSpan) }
+                                ) {
+                                    SectionHeader(
+                                        icon = Icons.Outlined.CalendarToday,
+                                        title = stringResource(R.string.recommend_daily),
+                                        onClick = if (ui.dailySongs.items.isNotEmpty()) {
+                                            { showDailySheet = true }
+                                        } else null
+                                    )
+                                }
+                                sectionContent(
+                                    section = ui.dailySongs,
+                                    loadingText = homeLoadingText,
+                                    errorDetail = ui.dailySongs.error,
+                                    keyPrefix = HomeScrollKeyNeteaseDaily,
+                                    registerKey = ::registerGridItemKey
+                                ) {
+                                    item(
+                                        key = registerGridItemKey(HomeScrollKeyNeteaseDailyContent),
+                                        span = { GridItemSpan(maxLineSpan) }
+                                    ) {
+                                        ResponsiveSongPagerList(
+                                            songs = ui.dailySongs.items,
+                                            onSongClick = onSongClick,
+                                            favoriteSongs = favoriteSongs,
+                                            onFavoriteToggle = ::toggleHomeSongFavorite,
+                                            onShowSnackbar = showHomeSnackbar,
+                                            offlineMode = offlineMode
+                                        )
+                                    }
+                                }
+                            }
+
                             if (showNeteaseTrending) {
                                 item(
                                     key = registerGridItemKey(HomeScrollKeyNeteaseTrendingHeader),
@@ -810,6 +858,63 @@ fun HomeScreen(
             bottomPadding = LocalMiniPlayerHeight.current
         )
     }
+
+    if (showDailySheet) {
+        DailySongsSheet(
+            songs = ui.dailySongs.items,
+            onSongClick = { list, index ->
+                showDailySheet = false
+                onSongClick(list, index)
+            },
+            onDismiss = { showDailySheet = false },
+            favoriteSongs = favoriteSongs,
+            onFavoriteToggle = ::toggleHomeSongFavorite,
+            onShowSnackbar = showHomeSnackbar,
+            offlineMode = offlineMode
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DailySongsSheet(
+    songs: List<SongItem>,
+    onSongClick: (List<SongItem>, Int) -> Unit,
+    onDismiss: () -> Unit,
+    favoriteSongs: List<SongItem>,
+    onFavoriteToggle: (SongItem, Boolean) -> Unit,
+    onShowSnackbar: (String) -> Unit,
+    offlineMode: Boolean
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        Text(
+            text = stringResource(R.string.recommend_daily),
+            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp)
+        )
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            contentPadding = PaddingValues(bottom = 24.dp + LocalMiniPlayerHeight.current)
+        ) {
+            itemsIndexed(songs) { index, song ->
+                SongRowMini(
+                    index = index + 1,
+                    song = song,
+                    onClick = { onSongClick(songs, index) },
+                    isFavorite = favoriteSongs.any { it.sameIdentityAs(song) },
+                    onFavoriteToggle = onFavoriteToggle,
+                    onShowSnackbar = onShowSnackbar,
+                    offlineMode = offlineMode
+                )
+            }
+        }
+    }
 }
 
 private fun <T> LazyGridScope.sectionContent(
@@ -843,10 +948,17 @@ private fun <T> LazyGridScope.sectionContent(
 }
 
 @Composable
-private fun SectionHeader(icon: ImageVector, title: String) {
+private fun SectionHeader(
+    icon: ImageVector,
+    title: String,
+    onClick: (() -> Unit)? = null
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
         Icon(
             imageVector = icon,
@@ -856,8 +968,17 @@ private fun SectionHeader(icon: ImageVector, title: String) {
         Text(
             text = title,
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
-            modifier = Modifier.padding(start = 8.dp)
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .weight(1f)
         )
+        if (onClick != null) {
+            Icon(
+                imageVector = Icons.Filled.KeyboardArrowRight,
+                contentDescription = stringResource(R.string.custom_source_view_all),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

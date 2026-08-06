@@ -700,6 +700,8 @@
 
     <!-- QQ Music Login -->
     <string name="qq_qr_login">QQ音乐扫码登录</string>
+    <string name="qq_web_login">QQ音乐网页登录</string>
+    <string name="qq_qr_login_web_fallback">网页登录</string>
     <string name="qq_qr_login_title">扫码连接你的 QQ 音乐账号</string>
     <string name="qq_qr_login_subtitle">用 QQ / QQ音乐 客户端扫码并确认后，请立刻返回 NeriPlayer。</string>
     <string name="qq_qr_login_loading">正在生成二维码…</string>
@@ -779,6 +781,7 @@
     <string name="recommend_hot">热歌</string>
     <string name="recommend_trending">热力飙升</string>
     <string name="recommend_radar">私人雷达</string>
+    <string name="recommend_daily">每日推荐</string>
     <string name="settings_internationalization">国际化</string>
     <string name="settings_internationalization_desc">首页和探索页使用 YouTube Music</string>
     <string name="settings_youtube_enabled">启用 YouTube</string>
@@ -1015,6 +1018,8 @@
     <string name="settings_network">网络设置</string>
     <string name="settings_bypass_proxy">绕过系统代理</string>
     <string name="settings_bypass_proxy_desc">应用内网络请求不走系统代理</string>
+    <string name="settings_custom_source_bypass_proxy">自定义音源绕过代理</string>
+    <string name="settings_custom_source_bypass_proxy_desc">开启后自定义音源(洛雪脚本)的请求始终直连；关闭则跟随上方绕过设置</string>
     <string name="settings_restart_hint">修改后可能需要重启应用以获得最佳效果</string>
     <string name="settings_expand_network">网络连接与代理选项</string>
     <string name="settings_about_desc">版本信息、项目主页和开发者模式</string>

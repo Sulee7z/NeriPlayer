@@ -71,6 +71,7 @@ import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.TextFields
 import androidx.compose.material.icons.outlined.Wallpaper
@@ -481,6 +482,8 @@ fun SettingsScreen(
     onUiDensityScaleChange: (Float) -> Unit,
     bypassProxy: Boolean,
     onBypassProxyChange: (Boolean) -> Unit,
+    customSourceBypassProxy: Boolean,
+    onCustomSourceBypassProxyChange: (Boolean) -> Unit,
     backgroundImageUri: String?,
     onBackgroundImageChange: (Uri?) -> Unit,
     downloadDirectoryUri: String?,
@@ -1684,6 +1687,27 @@ fun SettingsScreen(
                             highlightPulse = settingsHighlightPulse,
                             onHighlightFinished = onSettingsHighlightFinished,
                             onClick = { onBypassProxyChange(!bypassProxy) }
+                        )
+                        AutoSettingsListItem(
+                            setting = AutoSettingsMetadata.requireSetting(AutoSettingsKeys.CUSTOM_SOURCE_BYPASS_PROXY),
+                            leadingContent = {
+                                Icon(
+                                    imageVector = Icons.Outlined.CloudOff,
+                                    contentDescription = stringResource(R.string.settings_custom_source_bypass_proxy),
+                                    modifier = Modifier.size(24.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            trailingContent = {
+                                MiuixSettingsSwitch(
+                                    checked = customSourceBypassProxy,
+                                    onCheckedChange = onCustomSourceBypassProxyChange
+                                )
+                            },
+                            highlightTargetId = settingsHighlightTargetId,
+                            highlightPulse = settingsHighlightPulse,
+                            onHighlightFinished = onSettingsHighlightFinished,
+                            onClick = { onCustomSourceBypassProxyChange(!customSourceBypassProxy) }
                         )
                     }
                 }

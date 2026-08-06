@@ -36,6 +36,7 @@ package moe.ouom.neriplayer.core.customsource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.util.network.CustomSourceProxySelector
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -55,6 +56,7 @@ data class PlatformMatch(
 object PlatformSongMatcher {
 
     private val http = OkHttpClient.Builder()
+        .proxySelector(CustomSourceProxySelector)
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(8, TimeUnit.SECONDS)
         .callTimeout(10, TimeUnit.SECONDS)

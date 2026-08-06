@@ -120,6 +120,11 @@
             android:theme="@style/Theme.Material3.DayNight.NoActionBar"
             />
         <activity
+            android:name=".activity.auth.QqWebLoginActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Material3.DayNight.NoActionBar"
+            />
+        <activity
             android:name=".activity.auth.YouTubeWebLoginActivity"
             android:exported="false"
             android:process=":youtube_web_login"

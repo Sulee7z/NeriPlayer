@@ -61,6 +61,7 @@ private const val QQ_QR_UA =
 
 private const val QQ_QR_NETWORK_RETRY_COUNT = 3
 private const val QQ_QR_NETWORK_RETRY_DELAY_MS = 200L
+private const val QQ_QR_SESSION_ATTEMPT_COUNT = 3
 
 data class QqQrLoginSession(
     val qrsig: String,
@@ -103,41 +104,62 @@ class QqQrLoginClient {
     @Throws(IOException::class)
     fun createSession(): QqQrLoginSession {
         NPLogger.d(QQ_QR_LOG_TAG, "Create QR session start")
-        // 1. 先访问 xlogin 页面拿到 pt_login_sig cookie
-        executeGetText(
-            QQ_XLOGIN_URL.toHttpUrl().newBuilder()
-                .addQueryParameter("appid", QQ_APP_ID.toString())
-                .addQueryParameter("s_url", QQ_REDIRECT_URL)
-                .addQueryParameter("pt_no_auth", "1")
-                .build()
-                .toString()
-        )
+        // 1. 先访问 xlogin 页面拿到 pt_login_sig cookie (失败不致命, 继续走 ptqrshow)
+        runCatching {
+            executeGetText(
+                QQ_XLOGIN_URL.toHttpUrl().newBuilder()
+                    .addQueryParameter("appid", QQ_APP_ID.toString())
+                    .addQueryParameter("s_url", QQ_REDIRECT_URL)
+                    .addQueryParameter("pt_no_auth", "1")
+                    .build()
+                    .toString()
+            )
+        }.onFailure { error ->
+            NPLogger.w(QQ_QR_LOG_TAG, "xlogin preflight failed (non-fatal): ${error.message}")
+        }
 
         // 2. 请求二维码 GIF + qrsig
-        val timestamp = System.currentTimeMillis()
-        val showUrl = QQ_PTQR_SHOW_URL.toHttpUrl().newBuilder()
-            .addQueryParameter("appid", QQ_APP_ID.toString())
-            .addQueryParameter("e", "2")
-            .addQueryParameter("l", "M")
-            .addQueryParameter("s", "3")
-            .addQueryParameter("d", "72")
-            .addQueryParameter("v", "4")
-            .addQueryParameter("t", timestamp.toString())
-            .addQueryParameter("daid", QQ_DAID.toString())
-            .addQueryParameter("pt_3rd_aid", QQ_PT_3RD_AID.toString())
-            .build()
-        val qrImageBytes = executeGetBytes(showUrl.toString())
+        var qrImageBytes: ByteArray? = null
+        var lastError: IOException? = null
+        var attemptIndex = 0
+        while (qrImageBytes == null && attemptIndex < QQ_QR_SESSION_ATTEMPT_COUNT) {
+            runCatching {
+                val timestamp = System.currentTimeMillis()
+                val showUrl = QQ_PTQR_SHOW_URL.toHttpUrl().newBuilder()
+                    .addQueryParameter("appid", QQ_APP_ID.toString())
+                    .addQueryParameter("e", "2")
+                    .addQueryParameter("l", "M")
+                    .addQueryParameter("s", "3")
+                    .addQueryParameter("d", "72")
+                    .addQueryParameter("v", "4")
+                    .addQueryParameter("t", timestamp.toString())
+                    .addQueryParameter("daid", QQ_DAID.toString())
+                    .addQueryParameter("pt_3rd_aid", QQ_PT_3RD_AID.toString())
+                    .build()
+                qrImageBytes = executeGetBytes(showUrl.toString())
+            }.onFailure { error ->
+                lastError = error as? IOException ?: IOException(error)
+                NPLogger.w(
+                    QQ_QR_LOG_TAG,
+                    "ptqrshow attempt=${attemptIndex + 1} failed: ${error.message}"
+                )
+                Thread.sleep(QQ_QR_NETWORK_RETRY_DELAY_MS)
+            }
+            attemptIndex += 1
+        }
 
+        val bytes = qrImageBytes
+            ?: throw lastError ?: IOException("QQ QR 会话创建失败: 二维码生成失败")
         val qrsig = cookieStore["qrsig"]
             ?: throw IOException("QQ QR 会话创建失败: 未获取到 qrsig")
         val qrContent = buildQrContent(qrsig)
         NPLogger.d(
             QQ_QR_LOG_TAG,
-            "Create QR session success qrsig=${qrsig.redactedKey()} bytes=${qrImageBytes.size}"
+            "Create QR session success qrsig=${qrsig.redactedKey()} bytes=${bytes.size}"
         )
         return QqQrLoginSession(
             qrsig = qrsig,
-            qrImageBytes = qrImageBytes,
+            qrImageBytes = bytes,
             qrContent = qrContent
         )
     }
@@ -170,7 +192,22 @@ class QqQrLoginClient {
             "Poll QR status qrsig=${session.qrsig.redactedKey()} ptqrtoken=$ptqrtoken"
         )
         val text = executeGetText(url.toString())
-        val (code, message, uin) = parsePtuiCallback(text)
+        val (code, jumpUrl, message, uin) = parsePtuiCallback(text)
+        if (code == 0) {
+            // 跟随登录跳转链接, 拿齐 skey / p_skey / pt4_token 等登录票据
+            if (!jumpUrl.isNullOrBlank() && jumpUrl.startsWith("http")) {
+                runCatching {
+                    executeGetText(jumpUrl)
+                }.onFailure { error ->
+                    NPLogger.w(QQ_QR_LOG_TAG, "follow login redirect failed: ${error.message}")
+                }
+            }
+            // 尝试补全 QQ 音乐的 qm_keyst / qm_kt cookie
+            runCatching { fetchMusicKeyIfPossible(uin) }
+                .onFailure { error ->
+                    NPLogger.w(QQ_QR_LOG_TAG, "fetch qm_keyst failed: ${error.message}")
+                }
+        }
         val cookies = if (code == 0) currentCookies() else emptyMap()
         NPLogger.d(
             QQ_QR_LOG_TAG,
@@ -189,17 +226,18 @@ class QqQrLoginClient {
     }
 
     /**
-     * 尝试通过 musictoken 接口补全 QQ 音乐的 qm_keyst cookie。
+     * 通过 musictoken 接口补全 QQ 音乐的 qm_keyst cookie。
      * 失败时静默返回(登录态仍可依赖 uin + p_skey)。
      */
     @Throws(IOException::class)
-    fun fetchMusicKeyIfPossible(): Map<String, String> {
-        val uin = cookieStore["uin"]?.trim()?.trimStart('o') ?: return emptyMap()
-        val skey = cookieStore["skey"].orEmpty()
-        if (skey.isBlank()) return emptyMap()
-        return try {
+    fun fetchMusicKeyIfPossible(uin: String = ""): Map<String, String> {
+        val resolvedUin = uin.ifBlank { cookieStore["uin"].orEmpty() }
+            .trim()
+            .trimStart('o')
+        if (resolvedUin.isBlank()) return currentCookies()
+        try {
             val data = org.json.JSONObject().put(
-                "comm", org.json.JSONObject().put("uin", uin.toLongOrNull() ?: 0L)
+                "comm", org.json.JSONObject().put("uin", resolvedUin.toLongOrNull() ?: 0L)
             ).put(
                 "req_0", org.json.JSONObject()
                     .put("module", "music.pf_song_detail_svr")
@@ -211,11 +249,10 @@ class QqQrLoginClient {
                 .build()
             executeGetText(url.toString())
             NPLogger.d(QQ_QR_LOG_TAG, "musictoken response processed, keys=${cookieStore.keys}")
-            currentCookies()
         } catch (e: Exception) {
             NPLogger.w(QQ_QR_LOG_TAG, "fetch qm_keyst failed: ${e.message}")
-            currentCookies()
         }
+        return currentCookies()
     }
 
     private fun buildQrContent(qrsig: String): String {
@@ -225,18 +262,26 @@ class QqQrLoginClient {
     }
 
     /** 解析 ptuiCB('code','type','url','encry','msg','uin') 形式的 JS 回调 */
-    private fun parsePtuiCallback(text: String): Triple<Int, String, String> {
+    private fun parsePtuiCallback(text: String): PtuiCallback {
         val match = Regex("ptuiCB\\('([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\)")
             .find(text)
         if (match == null) {
             NPLogger.w(QQ_QR_LOG_TAG, "unexpected ptqrlogin response: ${text.take(160)}")
-            return Triple(-1, text.take(120), "")
+            return PtuiCallback(code = -1, jumpUrl = null, message = text.take(120), uin = "")
         }
         val code = match.groupValues[1].toIntOrNull() ?: -1
+        val jumpUrl = match.groupValues[3].takeIf { it.startsWith("http") }
         val message = match.groupValues[5]
         val uin = match.groupValues[6]
-        return Triple(code, message, uin)
+        return PtuiCallback(code = code, jumpUrl = jumpUrl, message = message, uin = uin)
     }
+
+    private data class PtuiCallback(
+        val code: Int,
+        val jumpUrl: String?,
+        val message: String,
+        val uin: String
+    )
 
     private fun hash33(value: String): Int {
         var hash = 0

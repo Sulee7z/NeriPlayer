@@ -39,6 +39,7 @@ import android.webkit.WebView
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.util.network.CustomSourceProxySelector
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -69,6 +70,7 @@ class LxScriptEngine(
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val http = OkHttpClient.Builder()
+        .proxySelector(CustomSourceProxySelector)
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
@@ -77,6 +79,7 @@ class LxScriptEngine(
         .build()
 
     private val requestTimeoutHttp = OkHttpClient.Builder()
+        .proxySelector(CustomSourceProxySelector)
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
         .callTimeout(20, TimeUnit.SECONDS)

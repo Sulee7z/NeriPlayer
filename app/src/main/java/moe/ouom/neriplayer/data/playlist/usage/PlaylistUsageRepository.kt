@@ -252,12 +252,24 @@ class PlaylistUsageRepository(private val app: Context) {
 
     fun applyMergedStats(stats: List<SyncPlaylistUsageStat>) {
         val out = synchronized(mutationLock) {
+            val existing = _flow.value
             val merged = SyncPlaylistUsageStatsMergePolicy.mergePlaylistUsageStats(
-                local = _flow.value.map(UsageEntry::toSyncPlaylistUsageStat),
+                local = existing.map(UsageEntry::toSyncPlaylistUsageStat),
                 remote = stats
             )
-            normalizeUsageEntries(merged.map(SyncPlaylistUsageStat::toUsageEntry))
-                .also { _flow.value = it }
+            // 同步合并会重建条目, 把本地置顶状态按 usageKey 补回去, 避免同步把置顶冲掉
+            val pinnedLookup = existing.associate { it.usageKey() to it.pinnedAt }
+            normalizeUsageEntries(
+                merged.map { stat ->
+                    val entry = stat.toUsageEntry()
+                    val pinnedAt = pinnedLookup[entry.usageKey()]
+                    if (pinnedAt != null && entry.pinnedAt == null) {
+                        entry.copy(pinnedAt = pinnedAt)
+                    } else {
+                        entry
+                    }
+                }
+            ).also { _flow.value = it }
         }
         saveAsync(out)
     }

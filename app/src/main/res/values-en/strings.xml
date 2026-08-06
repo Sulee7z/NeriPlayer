@@ -700,6 +700,8 @@
 
     <!-- QQ Music Login -->
     <string name="qq_qr_login">QQ Music QR Login</string>
+    <string name="qq_web_login">QQ Music Web Login</string>
+    <string name="qq_qr_login_web_fallback">Web Login</string>
     <string name="qq_qr_login_title">Connect your QQ Music account</string>
     <string name="qq_qr_login_subtitle">Scan and confirm with the QQ / QQ Music app on your phone, then return to NeriPlayer immediately.</string>
     <string name="qq_qr_login_loading">Creating QR code…</string>
@@ -779,6 +781,7 @@
     <string name="recommend_hot">Hot</string>
     <string name="recommend_trending">Trending</string>
     <string name="recommend_radar">Personal Radar</string>
+    <string name="recommend_daily">Daily Recommend</string>
     <string name="settings_internationalization">Internationalization</string>
     <string name="settings_internationalization_desc">Use YouTube Music for Home and Explore</string>
     <string name="settings_youtube_enabled">Enable YouTube</string>
@@ -1015,6 +1018,8 @@
     <string name="settings_network">Network</string>
     <string name="settings_bypass_proxy">Bypass Proxy</string>
     <string name="settings_bypass_proxy_desc">Ignore system proxy</string>
+    <string name="settings_custom_source_bypass_proxy">Custom Source Bypass Proxy</string>
+    <string name="settings_custom_source_bypass_proxy_desc">When on, custom source (LX script) requests always connect directly; when off, they follow the bypass setting above</string>
     <string name="settings_restart_hint">May need to restart app for best effect</string>
     <string name="settings_expand_network">Network and proxy options</string>
     <string name="settings_about_desc">Version, project home, and developer mode</string>

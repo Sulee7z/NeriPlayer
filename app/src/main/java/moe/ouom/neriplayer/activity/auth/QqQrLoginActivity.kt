@@ -42,6 +42,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
@@ -88,7 +89,23 @@ class QqQrLoginActivity : ComponentActivity() {
     private lateinit var hintText: TextView
     private lateinit var progressBar: ProgressBar
     private lateinit var retryButton: MaterialButton
+    private lateinit var webFallbackButton: MaterialButton
     private var pollRound: Int = 0
+
+    private val webLoginLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        NPLogger.d(LOG_TAG, "Web fallback resultCode=${result.resultCode}")
+        if (result.resultCode == RESULT_OK) {
+            hasReturned = true
+            setResult(RESULT_OK, result.data)
+            finish()
+            return@registerForActivityResult
+        }
+        if (!hasReturned) {
+            startQrLogin()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -235,6 +252,17 @@ class QqQrLoginActivity : ComponentActivity() {
             setTextColor(onPrimary)
             setOnClickListener { startQrLogin() }
         }
+        webFallbackButton = MaterialButton(this).apply {
+            text = getString(R.string.qq_qr_login_web_fallback)
+            cornerRadius = 20.dp()
+            minHeight = 50.dp()
+            insetTop = 0
+            insetBottom = 0
+            strokeWidth = 0
+            backgroundTintList = ColorStateList.valueOf(ColorUtils.blendARGB(surface, QQ_BLUE, 0.10f))
+            setTextColor(QQ_BLUE)
+            setOnClickListener { openWebFallback() }
+        }
 
         content.addView(titleText, matchWidthWrapHeight())
         content.addVerticalSpace(8)
@@ -247,6 +275,8 @@ class QqQrLoginActivity : ComponentActivity() {
         content.addView(hintText, fixedWidthWrapHeight(actionWidthPx))
         content.addVerticalSpace(16)
         content.addView(retryButton, fixedWidthWrapHeight(actionWidthPx))
+        content.addVerticalSpace(10)
+        content.addView(webFallbackButton, fixedWidthWrapHeight(actionWidthPx))
 
         val scrollView = ScrollView(this).apply {
             isFillViewport = true
@@ -369,9 +399,16 @@ class QqQrLoginActivity : ComponentActivity() {
         finish()
     }
 
+    private fun openWebFallback() {
+        pollJob?.cancel()
+        NPLogger.d(LOG_TAG, "Open web fallback login")
+        webLoginLauncher.launch(Intent(this, QqWebLoginActivity::class.java))
+    }
+
     private fun setLoadingState(loading: Boolean) {
         progressBar.visibility = if (loading) View.VISIBLE else View.GONE
         retryButton.isEnabled = !loading
+        webFallbackButton.isEnabled = true
     }
 
     private fun setStatus(text: String) {

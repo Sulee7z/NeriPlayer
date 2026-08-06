@@ -90,6 +90,7 @@ import moe.ouom.neriplayer.data.platform.youtube.isYouTubeInnertubeHost
 import moe.ouom.neriplayer.data.platform.youtube.YouTubeFeatureDisabledException
 import moe.ouom.neriplayer.data.platform.youtube.YouTubeFeatureGate
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.util.network.CustomSourceProxySelector
 import moe.ouom.neriplayer.util.network.DynamicProxySelector
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
@@ -551,6 +552,13 @@ object AppContainer {
                 sharedOkHttpClient.connectionPool.evictAll()
                 neteaseClient.evictConnections()
                 AudioDownloadManager.notifyRecoveryOpportunity("proxy_changed")
+            }
+            .launchIn(scope)
+
+        // 自定义音源(洛雪脚本)是否绕过代理
+        settingsRepo.customSourceBypassProxyFlow
+            .onEach { enabled ->
+                CustomSourceProxySelector.forceBypass = enabled
             }
             .launchIn(scope)
 

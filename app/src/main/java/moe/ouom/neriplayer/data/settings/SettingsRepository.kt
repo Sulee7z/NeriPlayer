@@ -349,6 +349,9 @@ class SettingsRepository(private val context: Context) {
     val bypassProxyFlow: Flow<Boolean> =
         dataStoreSettingFlow { it[SettingsKeys.BYPASS_PROXY] ?: true }
 
+    val customSourceBypassProxyFlow: Flow<Boolean> =
+        dataStoreSettingFlow { it[SettingsKeys.CUSTOM_SOURCE_BYPASS_PROXY] ?: true }
+
     val backgroundImageUriFlow: Flow<String?> =
         dataStoreSettingFlow { it[SettingsKeys.BACKGROUND_IMAGE_URI] }
 
@@ -925,6 +928,10 @@ class SettingsRepository(private val context: Context) {
     suspend fun setBypassProxy(enabled: Boolean) {
         context.dataStore.edit { it[SettingsKeys.BYPASS_PROXY] = enabled }
         updateBootstrapSettingsSnapshot(context) { it.copy(bypassProxy = enabled) }
+    }
+
+    suspend fun setCustomSourceBypassProxy(enabled: Boolean) {
+        context.dataStore.edit { it[SettingsKeys.CUSTOM_SOURCE_BYPASS_PROXY] = enabled }
     }
 
     suspend fun setHapticFeedbackEnabled(enabled: Boolean) {
