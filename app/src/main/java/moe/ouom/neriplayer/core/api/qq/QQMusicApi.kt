@@ -421,7 +421,12 @@ class QQMusicApi(
     }
 
     /**
-     * 歌单详情(含歌曲列表)。[begin]/[num] 控制分页, 单次上限 100。
+     * 歌单详情(含歌曲列表)。
+     *
+     * 对齐 listen1/lx-music 的实现: i.y.qq.com/qzone-music 的
+     * fcg_ucc_getcdinfo_byids_cp.fcg, 带 nosign=1, 不带 new_format/song_begin
+     * (带 new_format=1 时响应歌曲字段结构不同, 旧式解析会得到空列表)。
+     * [begin]/[num] 保留用于兼容调用方, 实际一次性拉全量。
      */
     suspend fun getPlaylistDetail(
         dissId: Long,
@@ -437,11 +442,17 @@ class QQMusicApi(
                 .addQueryParameter("json", "1")
                 .addQueryParameter("utf8", "1")
                 .addQueryParameter("onlysong", "0")
-                .addQueryParameter("new_format", "1")
+                .addQueryParameter("nosign", "1")
                 .addQueryParameter("disstid", dissId.toString())
-                .addQueryParameter("song_begin", begin.toString())
-                .addQueryParameter("song_num", num.toString())
+                .addQueryParameter("g_tk", "5381")
+                .addQueryParameter("loginUin", "0")
+                .addQueryParameter("hostUin", "0")
                 .addQueryParameter("format", "json")
+                .addQueryParameter("inCharset", "GB2312")
+                .addQueryParameter("outCharset", "utf-8")
+                .addQueryParameter("notice", "0")
+                .addQueryParameter("platform", "yqq")
+                .addQueryParameter("needNewCode", "0")
                 .build()
 
             val request = Request.Builder().url(url)
@@ -449,6 +460,7 @@ class QQMusicApi(
                 .header("User-Agent", QQ_USER_AGENT)
                 .build()
             val responseJson = execute(request)
+            NPLogger.d(TAG, "歌单详情($dissId): ${responseJson.take(300)}")
             val root = JSONObject(responseJson)
             if (root.optInt("code") != 0) {
                 throw IOException("QQ 歌单接口返回 code=${root.optInt("code")}")
@@ -611,13 +623,27 @@ class QQMusicApi(
                 )
             }
         }
+        // 兼容新旧两种字段: 旧式 songmid/songname/albumname/albummid/interval,
+        // 新式 mid/name/album{name,mid}/duration(毫秒)
+        val album = obj.optJSONObject("album")
+        val albumName = obj.optString("albumname")
+            .ifBlank { album?.optString("name").orEmpty() }
+        val albumMid = obj.optString("albummid")
+            .ifBlank { album?.optString("mid").orEmpty() }
+        val durationMs = when {
+            obj.optLong("duration") > 0L -> obj.optLong("duration")
+            obj.optLong("interval") > 0L -> obj.optLong("interval") * 1000L
+            else -> 0L
+        }
         return QQPlaylistSong(
-            songMid = obj.optString("songmid"),
-            songName = obj.optString("songname"),
+            songMid = obj.optString("songmid")
+                .ifBlank { obj.optString("mid") },
+            songName = obj.optString("songname")
+                .ifBlank { obj.optString("name") },
             singer = singers,
-            albumName = obj.optString("albumname").takeIf { it.isNotBlank() },
-            albumMid = obj.optString("albummid").takeIf { it.isNotBlank() },
-            interval = obj.optLong("interval")
+            albumName = albumName.takeIf { it.isNotBlank() },
+            albumMid = albumMid.takeIf { it.isNotBlank() },
+            interval = durationMs / 1000L
         )
     }
 
