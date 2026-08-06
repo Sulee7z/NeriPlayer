@@ -298,9 +298,9 @@ class QqQrLoginActivity : ComponentActivity() {
         if (hasReturned || !this::webView.isInitialized) {
             return
         }
-        // 加载 QQ 音乐完整网页, 用户点页面右上角"登录"后任选方式(扫码/QQ/验证码),
-        // 登录完成会自动跳回 y.qq.com 并写入 cookie, 由轮询/页面检测自动抓取。
-        val loginUrl = "https://y.qq.com/"
+        // 加载 QQ 音乐个人中心页(与 listen1 get_login_url 一致), 用户点"登录"后任选方式
+        // (扫码/QQ/验证码), 登录完成会自动跳回并写入 cookie, 由轮询/页面检测自动抓取。
+        val loginUrl = "https://y.qq.com/portal/profile.html"
         NPLogger.d(LOG_TAG, "Loading QQ login reason=$reason url=$loginUrl")
         if (!webView.url.isNullOrBlank()) {
             webView.stopLoading()

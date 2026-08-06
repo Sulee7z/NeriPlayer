@@ -59,7 +59,7 @@ class QqWebLoginActivity : ComponentActivity() {
     companion object {
         const val RESULT_COOKIE = "qq_cookie_result"
         private const val LOG_TAG = "NERI-QqWebLogin"
-        private const val LOGIN_URL = "https://y.qq.com/"
+        private const val LOGIN_URL = "https://y.qq.com/portal/profile.html"
     }
 
     private lateinit var webView: WebView

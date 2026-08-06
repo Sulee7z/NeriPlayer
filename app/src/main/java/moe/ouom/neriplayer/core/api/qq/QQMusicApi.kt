@@ -41,8 +41,10 @@ import moe.ouom.neriplayer.core.logging.NPLogger
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.util.network.awaitResponse
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
@@ -356,8 +358,8 @@ class QQMusicApi(
     /**
      * 解析歌曲播放地址 (CgiGetVkey)。
      *
-     * 匿名/无 VIP 时接口对绝大多数歌曲返回空 purl(此时返回 null)。
-     * 歌曲本身免费或接口放开时返回可播放 URL。
+     * 对齐 listen1_desktop 的实现: 使用 POST musicu.fcg, 请求体含 req_1/comm/loginUin
+     * 与 filename 字段; 匿名/无 VIP 时接口对绝大多数歌曲返回空 purl(此时返回 null)。
      */
     suspend fun resolveSongPlayUrl(songMid: String): String? {
         if (songMid.isBlank()) return null
@@ -371,32 +373,47 @@ class QQMusicApi(
                 val cookies = cookieProvider()
                 val uin = cookies["uin"]?.trim()?.trimStart('o').orEmpty()
                 val guid = Random.nextLong(100_000_000, 9_999_999_999).toString()
-                val req = JSONObject().put(
-                    "req", JSONObject()
-                        .put("module", "vkey.GetVkeyServer")
-                        .put("method", "CgiGetVkey")
-                        .put("param", JSONObject().apply {
-                            put("guid", guid)
-                            put("songmid", JSONArrayOf(songMid))
-                            put("songtype", JSONArrayOf(0))
-                            put("uin", uin)
-                            put("loginflag", if (uin.isNotBlank()) 1 else 0)
-                            put("platform", "20")
-                        })
-                ).toString()
+                // listen1: 单曲时 filename = "C400<songmid><songmid>.m4a"
+                val filename = "C400$songMid$songMid.m4a"
+                val reqData = JSONObject().apply {
+                    put(
+                        "req_1", JSONObject()
+                            .put("module", "vkey.GetVkeyServer")
+                            .put("method", "CgiGetVkey")
+                            .put("param", JSONObject().apply {
+                                put("filename", JSONArrayOf(filename))
+                                put("guid", guid)
+                                put("songmid", JSONArrayOf(songMid))
+                                put("songtype", JSONArrayOf(0))
+                                put("uin", uin)
+                                put("loginflag", if (uin.isNotBlank()) 1 else 0)
+                                put("platform", "20")
+                            })
+                    )
+                    put("loginUin", uin)
+                    put(
+                        "comm", JSONObject().apply {
+                            put("uin", uin.toLongOrNull() ?: 0L)
+                            put("format", "json")
+                            put("ct", 24)
+                            put("cv", 0)
+                        }
+                    )
+                }
                 val requestUrl = "https://u.y.qq.com/cgi-bin/musicu.fcg".toHttpUrl().newBuilder()
                     .addQueryParameter("format", "json")
-                    .addQueryParameter("data", req)
+                    .addQueryParameter("loginUin", uin)
                     .build()
                 val requestBuilder = Request.Builder().url(requestUrl)
                     .header("Referer", QQ_REFERER_PORTAL)
                     .header("User-Agent", QQ_USER_AGENT)
+                    .post(reqData.toString().toRequestBody("application/json".toMediaTypeOrNull()))
                 buildCookieHeader().takeIf { it.isNotBlank() }?.let { cookieHeader ->
                     requestBuilder.header("Cookie", cookieHeader)
                 }
                 val responseJson = execute(requestBuilder.build())
                 val root = JSONObject(responseJson)
-                val data = root.optJSONObject("req")
+                val data = root.optJSONObject("req_1")
                     ?.optJSONObject("data")
                     ?: return@withContext null
                 val info = data.optJSONArray("midurlinfo")
