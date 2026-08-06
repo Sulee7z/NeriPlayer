@@ -139,10 +139,11 @@ class QQMusicApi(
     }
 
     /**
-     * 登录用户的"我的歌单"(我创建的歌单)。
+     * 登录用户的"我的歌单"(我创建的歌单 + 我收藏的歌单)。
      *
      * 需要 QQ 登录态 cookie (musicu.fcg 的 music.mysrfDissInfo.queryDissInfo,
-     * 未登录返回 500003)。分页拉取全部; 响应字段兼容 dissinfo / disslist / diss。
+     * 未登录返回 500003)。通过 type 参数分别拉取创建(1)与收藏(2)的歌单并合并,
+     * 分页拉取全部; 响应字段兼容 dissinfo / disslist / diss。
      */
     suspend fun getUserPlaylists(
         uin: String,
@@ -154,7 +155,10 @@ class QQMusicApi(
         if (resolvedUin.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
             val out = ArrayList<QQPlaylistSummary>()
-            try {
+            val seen = HashSet<Long>()
+            var rejectedCode = 0
+            // type: 1=我创建的歌单, 2=我收藏的歌单
+            for (type in listOf(1, 2)) {
                 var offset = begin
                 var page = 0
                 while (page < maxPages) {
@@ -169,6 +173,7 @@ class QQMusicApi(
                                 put("begin", offset)
                                 put("num", num)
                                 put("onlyNormal", 0)
+                                put("type", type)
                             })
                     ).toString()
 
@@ -181,10 +186,15 @@ class QQMusicApi(
                         .header("User-Agent", QQ_USER_AGENT)
                         .build()
                     val responseJson = execute(request)
+                    NPLogger.d(
+                        TAG,
+                        "我的歌单响应(type=$type, offset=$offset): ${responseJson.take(400)}"
+                    )
                     val root = JSONObject(responseJson)
                     val envelope = root.optJSONObject("req_1") ?: break
                     if (envelope.optInt("code") != 0) {
-                        NPLogger.w(TAG, "我的歌单被拒: code=${envelope.optInt("code")} subcode=${envelope.optInt("subcode")} uin=$resolvedUin")
+                        rejectedCode = envelope.optInt("code")
+                        NPLogger.w(TAG, "我的歌单(type=$type)被拒: code=${envelope.optInt("code")} subcode=${envelope.optInt("subcode")}")
                         break
                     }
                     val data = envelope.optJSONObject("data") ?: break
@@ -195,16 +205,21 @@ class QQMusicApi(
                     var addedInPage = 0
                     for (i in 0 until list.length()) {
                         val item = list.optJSONObject(i) ?: continue
-                        val id = item.optString("disstid").toLongOrNull() ?: continue
+                        val id = item.optString("disstid")
+                            .ifBlank { item.optString("dissid") }
+                            .toLongOrNull() ?: continue
                         val title = item.optString("dissname").takeIf { it.isNotBlank() }
                             ?: item.optString("name").takeIf { it.isNotBlank() }
+                            ?: item.optString("title").takeIf { it.isNotBlank() }
                             ?: continue
+                        if (!seen.add(id)) continue
                         out.add(
                             QQPlaylistSummary(
                                 dissId = id,
                                 title = title,
                                 picUrl = item.optString("imgurl")
                                     .ifBlank { item.optString("pic_url") }
+                                    .ifBlank { item.optString("coverUrl") }
                                     .takeIf { it.isNotBlank() }
                                     ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it },
                                 listenCount = item.optLong("listennum"),
@@ -214,15 +229,14 @@ class QQMusicApi(
                         )
                         addedInPage += 1
                     }
-                    NPLogger.d(TAG, "我的歌单页 $offset: +$addedInPage (total=${out.size})")
+                    NPLogger.d(TAG, "我的歌单(type=$type, offset=$offset): +$addedInPage (total=${out.size})")
                     if (addedInPage < num) break
                     offset += num
                     page += 1
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                NPLogger.w(TAG, "我的歌单加载失败: ${e.message}")
+            }
+            if (out.isEmpty() && rejectedCode != 0) {
+                throw IOException("QQ 我的歌单请求被拒(code=$rejectedCode)")
             }
             out
         }

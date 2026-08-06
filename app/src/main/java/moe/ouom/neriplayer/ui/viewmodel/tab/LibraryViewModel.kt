@@ -339,8 +339,19 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                     SavedCookieAuthState.Valid && qqUin.isNotBlank()
                 val playlists = withContext(Dispatchers.IO) {
                     if (loggedIn) {
-                        // 已登录: 显示"我的歌单"(分页拉取全部)
-                        AppContainer.qqMusicApi.getUserPlaylists(qqUin, num = 30)
+                        // 已登录: 优先"我的歌单"; 失败或为空时回退热门歌单, 避免空白
+                        val mine = runCatching {
+                            AppContainer.qqMusicApi.getUserPlaylists(qqUin, num = 30)
+                        }.getOrElse { error ->
+                            NPLogger.w("LibraryViewModel", "QQ 我的歌单加载失败: ${error.message}")
+                            emptyList()
+                        }
+                        if (mine.isNotEmpty()) {
+                            mine
+                        } else {
+                            NPLogger.w("LibraryViewModel", "QQ 我的歌单为空, 回退热门歌单")
+                            AppContainer.qqMusicApi.getHotPlaylists(count = 50)
+                        }
                     } else {
                         AppContainer.qqMusicApi.getHotPlaylists(count = 50)
                     }
