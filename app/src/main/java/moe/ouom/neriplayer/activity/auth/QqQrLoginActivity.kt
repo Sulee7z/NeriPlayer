@@ -55,7 +55,6 @@ import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.data.auth.web.ForegroundWebLoginGuard
 import moe.ouom.neriplayer.core.logging.NPLogger
 import moe.ouom.neriplayer.util.platform.lockPortraitIfPhone
-import java.net.URLEncoder
 import android.webkit.WebStorage
 
 class QqQrLoginActivity : ComponentActivity() {
@@ -299,12 +298,10 @@ class QqQrLoginActivity : ComponentActivity() {
         if (hasReturned || !this::webView.isInitialized) {
             return
         }
-        val redirectUrl = "https://y.qq.com/portal/player.html"
-        val loginUrl = "https://xui.ptlogin2.qq.com/cgi-bin/xlogin" +
-            "?appid=716027609" +
-            "&s_url=" + URLEncoder.encode(redirectUrl, "UTF-8") +
-            "&pt_no_auth=1"
-        NPLogger.d(LOG_TAG, "Loading QQ QR login reason=$reason url=$loginUrl")
+        // 加载 QQ 音乐完整网页, 用户点页面右上角"登录"后任选方式(扫码/QQ/验证码),
+        // 登录完成会自动跳回 y.qq.com 并写入 cookie, 由轮询/页面检测自动抓取。
+        val loginUrl = "https://y.qq.com/"
+        NPLogger.d(LOG_TAG, "Loading QQ login reason=$reason url=$loginUrl")
         if (!webView.url.isNullOrBlank()) {
             webView.stopLoading()
         }
@@ -332,6 +329,24 @@ class QqQrLoginActivity : ComponentActivity() {
     }
 
     private inner class InnerClient : WebViewClient() {
+        override fun shouldOverrideUrlLoading(
+            view: WebView?,
+            request: android.webkit.WebResourceRequest?
+        ): Boolean {
+            val url = request?.url?.toString() ?: return false
+            // 拉起 QQ 客户端(QQ 一键登录): mqq / mqqapi / wtloginmqq 协议交给系统
+            if (url.startsWith("mqq") || url.startsWith("wtloginmqq")) {
+                NPLogger.d(LOG_TAG, "Launch QQ app via scheme: ${url.take(80)}")
+                runCatching {
+                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                }.onFailure { error ->
+                    NPLogger.w(LOG_TAG, "Launch QQ app failed: ${error.message}")
+                }
+                return true
+            }
+            return super.shouldOverrideUrlLoading(view, request)
+        }
+
         override fun onPageFinished(view: WebView?, url: String?) {
             super.onPageFinished(view, url)
             // 登录完成后立即尝试读取(比轮询更快); 也兜底手动"读取 Cookie"
