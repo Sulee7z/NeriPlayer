@@ -99,6 +99,7 @@ enum class SearchSource {
     YOUTUBE_MUSIC,
     NETEASE,
     BILIBILI,
+    QQ_MUSIC,
     LINK_RECOGNITION
 }
 
@@ -188,7 +189,10 @@ data class ExploreUiState(
     val isNeteaseLoggedIn: Boolean = false,
     val ytMusicPlaylists: List<YouTubeMusicPlaylist> = emptyList(),
     val ytMusicPlaylistsLoading: Boolean = false,
-    val ytMusicPlaylistsError: String? = null
+    val ytMusicPlaylistsError: String? = null,
+    val qqMusicPlaylists: List<PlaylistSummary> = emptyList(),
+    val qqMusicPlaylistsLoading: Boolean = false,
+    val qqMusicPlaylistsError: String? = null
 )
 
 internal fun ExploreUiState.withYouTubeDisabled(): ExploreUiState {
@@ -444,6 +448,7 @@ class ExploreViewModel(application: Application) : AndroidViewModel(application)
             SearchSource.NETEASE -> searchNetease(apiKeyword, matchQuery, requestVersion)
             SearchSource.BILIBILI -> searchBilibili(apiKeyword, matchQuery, requestVersion)
             SearchSource.YOUTUBE_MUSIC -> searchYouTubeMusic(apiKeyword, matchQuery, requestVersion)
+            SearchSource.QQ_MUSIC -> searchQqMusic(apiKeyword, matchQuery, requestVersion)
             SearchSource.LINK_RECOGNITION -> searchRecognizedLink(apiKeyword, requestVersion)
         }
     }
@@ -486,6 +491,7 @@ class ExploreViewModel(application: Application) : AndroidViewModel(application)
                         page = nextPage
                     )
                     SearchSource.YOUTUBE_MUSIC,
+                    SearchSource.QQ_MUSIC,
                     SearchSource.LINK_RECOGNITION -> return@launch
                 }
                 updateSearchStateIfCurrent(requestVersion, source) {
@@ -709,6 +715,103 @@ class ExploreViewModel(application: Application) : AndroidViewModel(application)
             ))
         }
         return result
+    }
+
+    /** 加载 QQ 音乐热门歌单 */
+    fun loadQqMusicPlaylists() {
+        if (_uiState.value.qqMusicPlaylistsLoading) return
+        _uiState.value = _uiState.value.copy(
+            qqMusicPlaylistsLoading = true,
+            qqMusicPlaylistsError = null
+        )
+        viewModelScope.launch {
+            try {
+                val playlists = withContext(Dispatchers.IO) {
+                    AppContainer.qqMusicApi.getHotPlaylists(count = 50)
+                }.map { summary ->
+                    PlaylistSummary(
+                        id = summary.dissId,
+                        name = summary.title,
+                        picUrl = summary.picUrl.orEmpty(),
+                        playCount = summary.listenCount,
+                        trackCount = summary.songCount,
+                        source = "qq"
+                    )
+                }
+                _uiState.value = _uiState.value.copy(
+                    qqMusicPlaylistsLoading = false,
+                    qqMusicPlaylistsError = null,
+                    qqMusicPlaylists = playlists
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                NPLogger.e(TAG, "load QQ playlists failed", e)
+                _uiState.value = _uiState.value.copy(
+                    qqMusicPlaylistsLoading = false,
+                    qqMusicPlaylistsError = app.getString(
+                        R.string.error_load_playlist,
+                        e.message ?: app.getString(R.string.github_sync_failed_message)
+                    )
+                )
+            }
+        }
+    }
+
+    /** 搜索 QQ 音乐歌单 */
+    private fun searchQqMusic(keyword: String, matchQuery: String, requestVersion: Long) {
+        searchJob = viewModelScope.launch {
+            try {
+                val playlists = withContext(Dispatchers.IO) {
+                    AppContainer.qqMusicApi.searchPlaylists(keyword, page = 1)
+                }
+                val items = playlists.map { summary ->
+                    ExploreSearchResult.Playlist(
+                        PlaylistSummary(
+                            id = summary.dissId,
+                            name = summary.title,
+                            picUrl = summary.picUrl.orEmpty(),
+                            playCount = summary.listenCount,
+                            trackCount = summary.songCount,
+                            source = "qq"
+                        )
+                    )
+                }
+                NPLogger.d(
+                    TAG,
+                    "search QQ playlists success: request=$requestVersion, keyword=$keyword, count=${items.size}"
+                )
+                updateSearchStateIfCurrent(requestVersion, SearchSource.QQ_MUSIC) {
+                    it.copy(
+                        searching = false,
+                        searchError = null,
+                        searchLoadMoreError = null,
+                        searchResults = searchSongItems(items),
+                        searchItems = items,
+                        searchPage = 1,
+                        searchHasMore = false
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                NPLogger.e(
+                    TAG,
+                    "search QQ playlists failed: request=$requestVersion, keyword=$keyword",
+                    e
+                )
+                updateSearchStateIfCurrent(requestVersion, SearchSource.QQ_MUSIC) {
+                    it.copy(
+                        searching = false,
+                        searchError = app.getString(R.string.error_search_failed, e.message.orEmpty()),
+                        searchResults = emptyList(),
+                        searchItems = emptyList(),
+                        searchHasMore = false,
+                        searchPage = 0
+                    )
+                }
+            }
+        }
     }
 
     /** 搜索网易云歌曲 */
@@ -1400,6 +1503,7 @@ class ExploreViewModel(application: Application) : AndroidViewModel(application)
             SearchSource.NETEASE -> app.getString(R.string.error_netease_search, fallback)
             SearchSource.BILIBILI -> app.getString(R.string.error_bilibili_search, fallback)
             SearchSource.YOUTUBE_MUSIC -> app.getString(R.string.error_youtube_search, fallback)
+            SearchSource.QQ_MUSIC -> app.getString(R.string.error_search_failed, fallback)
             SearchSource.LINK_RECOGNITION -> app.getString(R.string.error_link_recognition, fallback)
         }
     }

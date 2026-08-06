@@ -42,6 +42,7 @@ import moe.ouom.neriplayer.core.api.lyrics.KugouLyricsClient
 import moe.ouom.neriplayer.core.api.lyrics.LrcLibClient
 import moe.ouom.neriplayer.core.api.netease.NeteaseClient
 import moe.ouom.neriplayer.core.api.qq.QQMusicApi
+import moe.ouom.neriplayer.core.api.search.BiliSearchApi
 import moe.ouom.neriplayer.core.api.search.CloudMusicSearchApi
 import moe.ouom.neriplayer.core.api.search.QQMusicSearchApi
 import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicClient
@@ -55,6 +56,7 @@ import moe.ouom.neriplayer.data.listentogether.ListenTogetherPreferences
 import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
 import moe.ouom.neriplayer.data.auth.bili.BiliCookieRepository
 import moe.ouom.neriplayer.data.auth.netease.NeteaseCookieRepository
+import moe.ouom.neriplayer.data.auth.qq.QqCookieRepository
 import moe.ouom.neriplayer.data.auth.web.ForegroundWebLoginGuard
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthAutoRefreshManager
 import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthRepository
@@ -234,6 +236,7 @@ object AppContainer {
     val listenTogetherPreferences by lazy { ListenTogetherPreferences(application) }
     val neteaseCookieRepo by lazy { NeteaseCookieRepository(application) }
     val biliCookieRepo by lazy { BiliCookieRepository(application) }
+    val qqCookieRepo by lazy { QqCookieRepository(application) }
     val youtubeAuthRepo by lazy { YouTubeAuthRepository(application) }
     internal val youtubeAuthAutoRefreshManager by lazy {
         YouTubeAuthAutoRefreshManager(
@@ -403,6 +406,7 @@ object AppContainer {
 
     val cloudMusicSearchApi by lazy { CloudMusicSearchApi(neteaseClient) }
     val qqMusicSearchApi by lazy { QQMusicSearchApi() }
+    val biliSearchApi by lazy { BiliSearchApi(biliClient) }
     val qqMusicApi by lazy { QQMusicApi(sharedOkHttpClient) }
     val lrcLibClient by lazy { LrcLibClient(sharedOkHttpClient) }
     val amllTtmlClient by lazy { AmllTtmlClient(sharedOkHttpClient) }

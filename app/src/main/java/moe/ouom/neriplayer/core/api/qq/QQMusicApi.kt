@@ -111,12 +111,92 @@ data class QQAlbumDetail(
  * QQ 音乐 API 客户端。
  */
 class QQMusicApi(
-    private val client: OkHttpClient = AppContainer.sharedOkHttpClient
+    private val client: OkHttpClient = AppContainer.sharedOkHttpClient,
+    private val cookieProvider: () -> Map<String, String> = {
+        runCatching { AppContainer.qqCookieRepo.getCookiesOnce() }.getOrDefault(emptyMap())
+    }
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
     private data class CachedPlayUrl(val url: String, val ts: Long)
     private val playUrlCache = ConcurrentHashMap<String, CachedPlayUrl>()
+
+    /** 当前是否持有可用的 QQ 登录态 (uin + 票据) */
+    fun hasLogin(): Boolean {
+        val cookies = cookieProvider()
+        return !cookies["uin"].isNullOrBlank() && (
+            !cookies["qm_keyst"].isNullOrBlank() ||
+                !cookies["p_skey"].isNullOrBlank()
+            )
+    }
+
+    private fun buildCookieHeader(): String {
+        val cookies = cookieProvider()
+        if (cookies.isEmpty()) return ""
+        return cookies.entries.joinToString("; ") { (key, value) -> "$key=$value" }
+    }
+
+    /**
+     * 热门歌单(匿名可用)。
+     *
+     * @param categoryId 分类 ID, 10000000=全部, 具体分类可用 [getPlaylistCategories]
+     * @param sortId 排序: 5=推荐, 2=最新, 3=播放最多
+     */
+    suspend fun getHotPlaylists(
+        categoryId: Long = 10000000L,
+        sortId: Int = 5,
+        begin: Int = 0,
+        count: Int = 30
+    ): List<QQPlaylistSummary> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg"
+                    .toHttpUrl()
+                    .newBuilder()
+                    .addQueryParameter("categoryId", categoryId.toString())
+                    .addQueryParameter("sortId", sortId.toString())
+                    .addQueryParameter("sin", begin.toString())
+                    .addQueryParameter("ein", (begin + count - 1).toString())
+                    .addQueryParameter("format", "json")
+                    .build()
+                val request = Request.Builder().url(url)
+                    .header("Referer", QQ_REFERER_PORTAL)
+                    .header("User-Agent", QQ_USER_AGENT)
+                    .build()
+                val responseJson = execute(request)
+                val root = JSONObject(responseJson)
+                if (root.optInt("code") != 0) return@withContext emptyList()
+                val list = root.optJSONObject("data")
+                    ?.optJSONArray("list")
+                    ?: return@withContext emptyList()
+                buildList {
+                    for (i in 0 until list.length()) {
+                        val item = list.optJSONObject(i) ?: continue
+                        val id = item.optString("dissid").toLongOrNull() ?: continue
+                        add(
+                            QQPlaylistSummary(
+                                dissId = id,
+                                title = item.optString("dissname"),
+                                picUrl = item.optString("imgurl")
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it },
+                                listenCount = item.optLong("listennum"),
+                                songCount = 0,
+                                creator = item.optJSONObject("creator")
+                                    ?.optString("name")
+                                    ?.takeIf { it.isNotBlank() }
+                            )
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                NPLogger.d(TAG, "热门歌单加载失败: ${e.message}")
+                emptyList()
+            }
+        }
+    }
 
     /**
      * 歌单搜索。接口近期对匿名请求返回登录要求, 可能得到空列表, 属正常现象。
@@ -288,6 +368,8 @@ class QQMusicApi(
         }
         val url = withContext(Dispatchers.IO) {
             try {
+                val cookies = cookieProvider()
+                val uin = cookies["uin"]?.trim()?.trimStart('o').orEmpty()
                 val guid = Random.nextLong(100_000_000, 9_999_999_999).toString()
                 val req = JSONObject().put(
                     "req", JSONObject()
@@ -297,8 +379,8 @@ class QQMusicApi(
                             put("guid", guid)
                             put("songmid", JSONArrayOf(songMid))
                             put("songtype", JSONArrayOf(0))
-                            put("uin", "0")
-                            put("loginflag", 1)
+                            put("uin", uin)
+                            put("loginflag", if (uin.isNotBlank()) 1 else 0)
                             put("platform", "20")
                         })
                 ).toString()
@@ -306,11 +388,13 @@ class QQMusicApi(
                     .addQueryParameter("format", "json")
                     .addQueryParameter("data", req)
                     .build()
-                val request = Request.Builder().url(requestUrl)
+                val requestBuilder = Request.Builder().url(requestUrl)
                     .header("Referer", QQ_REFERER_PORTAL)
                     .header("User-Agent", QQ_USER_AGENT)
-                    .build()
-                val responseJson = execute(request)
+                buildCookieHeader().takeIf { it.isNotBlank() }?.let { cookieHeader ->
+                    requestBuilder.header("Cookie", cookieHeader)
+                }
+                val responseJson = execute(requestBuilder.build())
                 val root = JSONObject(responseJson)
                 val data = root.optJSONObject("req")
                     ?.optJSONObject("data")
@@ -374,7 +458,11 @@ class QQMusicApi(
 
     @Throws(IOException::class)
     private suspend fun execute(request: Request): String {
-        return client.newCall(request).awaitResponse { response ->
+        val requestBuilder = request.newBuilder()
+        buildCookieHeader().takeIf { it.isNotBlank() }?.let { cookieHeader ->
+            requestBuilder.header("Cookie", cookieHeader)
+        }
+        return client.newCall(requestBuilder.build()).awaitResponse { response ->
             if (!response.isSuccessful) {
                 throw IOException("QQ 请求失败: ${response.code} for url: ${request.url}")
             }

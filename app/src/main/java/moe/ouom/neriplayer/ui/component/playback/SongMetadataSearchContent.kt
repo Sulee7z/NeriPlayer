@@ -365,5 +365,6 @@ private fun musicPlatformLabel(platform: MusicPlatform): String {
     return when (platform) {
         MusicPlatform.CLOUD_MUSIC -> stringResource(R.string.platform_netease_short)
         MusicPlatform.QQ_MUSIC -> stringResource(R.string.settings_qq_music)
+        MusicPlatform.BILIBILI -> stringResource(R.string.platform_bilibili)
     }
 }

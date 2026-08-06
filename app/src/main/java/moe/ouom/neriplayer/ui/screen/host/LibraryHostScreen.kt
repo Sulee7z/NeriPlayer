@@ -64,6 +64,7 @@ import moe.ouom.neriplayer.ui.screen.playlist.LocalPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteaseAlbumDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteasePlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.BiliPlaylistDetailScreen
+import moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.tab.LibraryTab
 import moe.ouom.neriplayer.ui.screen.tab.LibraryScreen
@@ -118,6 +119,8 @@ sealed class LibrarySelectedItem : Parcelable {
     data class Bili(val playlist: BiliPlaylist) : LibrarySelectedItem()
     @Parcelize
     data class YouTubeMusic(val playlist: YouTubeMusicPlaylist) : LibrarySelectedItem()
+    @Parcelize
+    data class QQMusic(val playlist: PlaylistSummary) : LibrarySelectedItem()
 }
 
 private val LibrarySelectedItem?.navigationDepth: Int
@@ -137,7 +140,8 @@ private enum class LibraryScrollSource {
     NeteasePlaylist,
     NeteaseAlbum,
     YouTubeMusic,
-    Bili
+    Bili,
+    QqMusic
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -310,6 +314,7 @@ fun LibraryHostScreen(
         LibraryScrollSource.NeteaseAlbum -> neteaseAlbumState
         LibraryScrollSource.YouTubeMusic -> youtubeMusicListState
         LibraryScrollSource.Bili -> biliListState
+        LibraryScrollSource.QqMusic -> qqMusicListState
     }
 
     fun captureLibraryScrollPosition(source: LibraryScrollSource) {
@@ -552,6 +557,20 @@ fun LibraryHostScreen(
                                     )
                                 }
                             },
+                            onQqMusicPlaylistClick = { playlist ->
+                                skipDetailCloseAnimation = false
+                                captureLibraryScrollPosition(LibraryScrollSource.QqMusic)
+                                openLibrarySelectedItem(LibrarySelectedItem.QQMusic(playlist))
+                                AppContainer.launchBackgroundIo {
+                                    AppContainer.playlistUsageRepo.recordOpen(
+                                        id = playlist.id,
+                                        name = playlist.name,
+                                        picUrl = playlist.picUrl,
+                                        trackCount = playlist.trackCount,
+                                        source = "qq"
+                                    )
+                                }
+                            },
                             onOpenRecent = onOpenRecent,
                             onOpenStats = onOpenStats
                         )
@@ -692,6 +711,17 @@ fun LibraryHostScreen(
                                     offlineMode = offlineMode
                                 )
                         }
+
+                        is LibrarySelectedItem.QQMusic -> {
+                            QQMusicPlaylistDetailScreen(
+                                playlist = current.playlist,
+                                onBack = { selected = null },
+                                onSongClick = { songs, index ->
+                                    onSongClick(songs, index)
+                                },
+                                offlineMode = offlineMode
+                            )
+                        }
                         }
                     }
                 }
@@ -743,6 +773,10 @@ private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
                 "type" to "ytmusic",
                 "playlist" to item.playlist.toSaveMap()
             )
+            is LibrarySelectedItem.QQMusic -> hashMapOf(
+                "type" to "qqmusic",
+                "playlist" to item.playlist.toSaveMap()
+            )
         }
     },
     restore = { saved ->
@@ -773,6 +807,7 @@ private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
             }
             "bili" -> restoreBiliPlaylist(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Bili(it) }
             "ytmusic" -> restoreYouTubeMusicPlaylist(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.YouTubeMusic(it) }
+            "qqmusic" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.QQMusic(it) }
             else -> null
         }
     }

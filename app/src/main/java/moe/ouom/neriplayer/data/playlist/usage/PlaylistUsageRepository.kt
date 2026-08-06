@@ -68,6 +68,8 @@ data class UsageEntry(
     val playlistId: String? = null,
     val subtype: String? = null,
     val subtitle: String? = null,
+    /** 置顶时间戳: 非空表示置顶到继续播放列表顶部(按置顶时间倒序) */
+    val pinnedAt: Long? = null,
 )
 
 internal fun playlistUsageKey(source: String, id: Long, subtype: String?): String = buildString {
@@ -85,7 +87,10 @@ internal fun UsageEntry.usageKey(): String = playlistUsageKey(source, id, subtyp
 internal fun UsageEntry.hasPlayableTracks(): Boolean = trackCount > 0
 
 private val usageEntryComparator = Comparator<UsageEntry> { left, right ->
+    val leftPinned = left.pinnedAt ?: 0L
+    val rightPinned = right.pinnedAt ?: 0L
     when {
+        leftPinned != rightPinned -> rightPinned.compareTo(leftPinned)
         left.lastOpened != right.lastOpened -> right.lastOpened.compareTo(left.lastOpened)
         left.openCount != right.openCount -> right.openCount.compareTo(left.openCount)
         else -> left.id.compareTo(right.id)
@@ -121,7 +126,8 @@ private fun mergeDuplicateUsageEntries(entries: List<UsageEntry>): UsageEntry {
         openCount = mergedOpenCount,
         firstOpened = entries.fold(0L) { earliest, entry ->
             minPositiveTimestamp(earliest, entry.firstOpened)
-        }
+        },
+        pinnedAt = entries.mapNotNull(UsageEntry::pinnedAt).maxOrNull()
     )
 }
 
@@ -419,6 +425,29 @@ class PlaylistUsageRepository(private val app: Context) {
     /** 从继续播放列表中移除指定项 */
     fun removeEntry(id: Long, source: String, subtype: String? = null) {
         removeEntryIfPresent(id, source, subtype)
+    }
+
+    /** 置顶/取消置顶继续播放中的歌单 */
+    fun setPinned(id: Long, source: String, subtype: String? = null, pinned: Boolean) {
+        val out = synchronized(mutationLock) {
+            val data = _flow.value.toMutableList()
+            val targetKey = playlistUsageKey(source, id, subtype)
+            val idx = data.indexOfFirst { it.usageKey() == targetKey }
+            if (idx < 0) return
+            val current = data[idx].pinnedAt != null
+            if (current == pinned) return
+            data[idx] = data[idx].copy(
+                pinnedAt = if (pinned) System.currentTimeMillis() else null
+            )
+            normalizeUsageEntries(data).also { _flow.value = it }
+        }
+        saveAsync(out)
+    }
+
+    /** 指定条目是否已置顶 */
+    fun isPinned(id: Long, source: String, subtype: String? = null): Boolean {
+        val targetKey = playlistUsageKey(source, id, subtype)
+        return _flow.value.firstOrNull { it.usageKey() == targetKey }?.pinnedAt != null
     }
 
     private fun removeEntryIfPresent(id: Long, source: String, subtype: String? = null) {

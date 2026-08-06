@@ -118,6 +118,7 @@
 
     <!-- Platform Names -->
     <string name="platform_bilibili">Bilibili</string>
+    <string name="platform_qqmusic">QQ Music</string>
     <string name="platform_netease">NetEase Cloud Music</string>
     <string name="platform_netease_short">NetEase</string>
 
@@ -318,6 +319,7 @@
     <string name="music_restore_failed">Failed to retrieve original info</string>
     <string name="music_lyrics_filled_success">Lyrics filled successfully</string>
     <string name="music_lyrics_empty">No lyrics available for this song</string>
+    <string name="music_lyrics_bili_unavailable">Lyrics are not supported for Bilibili sources</string>
     <string name="music_lyrics_fill_failed">Failed to fill lyrics</string>
     <string name="lyrics_editor_hint_original">[00:00.00]Enter lyrics here\n[00:05.00]Supports LRC format\n[00:10.00]Format: [mm:ss.xx]Lyrics content</string>
     <string name="lyrics_editor_hint_translation">[00:00.00]Enter translated lyrics here\n[00:05.00]Supports LRC format\n[00:10.00]Format: [mm:ss.xx]Translation content</string>
@@ -482,6 +484,10 @@
     <string name="library_name_exists">A playlist with this name already exists, please choose another name</string>
     <string name="library_create_new">+ Create Playlist</string>
     <string name="library_qqmusic_coming">Coming Soon</string>
+    <string name="library_qqmusic_hot_hint">Popular QQ Music playlists</string>
+    <string name="library_qqmusic_empty">No QQ Music playlists available</string>
+    <string name="library_qqmusic_hint">Pull to refresh, tap a playlist to open it</string>
+    <string name="library_qqmusic_plays">%1$s plays</string>
     <string name="library_netease_tab_playlists">Playlists</string>
     <string name="library_netease_tab_albums">Albums</string>
     <string name="library_netease_search_hint">Search playlists / albums</string>
@@ -691,6 +697,19 @@
     <string name="bili_qr_login_web_fallback">Use web login fallback</string>
     <string name="bili_qr_login_cookie_incomplete">Sign-in was confirmed, but the Cookie was incomplete. Try again</string>
     <string name="bili_qr_login_hint">The QR code is created by the Bilibili API. The app watches its status and saves cookies after confirmation.</string>
+
+    <!-- QQ Music Login -->
+    <string name="qq_qr_login">QQ Music QR Login</string>
+    <string name="qq_qr_login_title">Connect your QQ Music account</string>
+    <string name="qq_qr_login_subtitle">Scan and confirm with the QQ / QQ Music app on your phone, then return to NeriPlayer immediately.</string>
+    <string name="qq_qr_login_loading">Creating QR code…</string>
+    <string name="qq_qr_login_waiting">Scan with the QQ app</string>
+    <string name="qq_qr_login_scanned">Scanned. Confirm sign-in on your phone</string>
+    <string name="qq_qr_login_expired">QR code expired. Refresh it</string>
+    <string name="qq_qr_login_failed">QQ Music QR login failed: %1$s</string>
+    <string name="qq_qr_login_retry">Refresh QR code</string>
+    <string name="qq_qr_login_cookie_incomplete">Sign-in was confirmed, but the Cookie was incomplete. Try again</string>
+    <string name="qq_qr_login_hint">The QR code is created by Tencent's login API. The app watches its status and saves cookies after confirmation.</string>
     <string name="bili_loading_favorites">Loading favorites…</string>
     <string name="bili_load_failed">Load failed: %s</string>
     <string name="bili_get_parts_failed">Failed to get parts</string>
@@ -782,6 +801,8 @@
     <string name="home_favorite_playlist">Favorite Playlist</string>
     <string name="home_unfavorited">Unfavorited</string>
     <string name="continue_playing_remove">Remove</string>
+    <string name="continue_playing_pin">Pin to top</string>
+    <string name="continue_playing_unpin">Unpin</string>
     <string name="home_title_brand_loud">NeriPlayer!</string>
     <string name="home_title_brand_wave">NeriPlayer~</string>
     <string name="home_title_brand_call">Hey, NeriPlayer</string>
@@ -862,6 +883,7 @@
     <string name="login_start_browser">Login via Browser</string>
     <string name="login_start_netease_qr">Sign in with NetEase QR</string>
     <string name="login_start_bili_qr">Sign in with Bilibili QR</string>
+    <string name="login_start_qq_qr">Sign in with QQ Music QR</string>
     <string name="login_success">Login Successful</string>
     <string name="login_netease">NetEase Login</string>
     <string name="login_verification_code">SMS Login</string>
@@ -882,11 +904,15 @@
     <string name="login_logging_in">Logging in…</string>
     <string name="settings_cookie_cancelled">Cookie read cancelled</string>
     <string name="settings_bili_login_success">Bilibili login successful</string>
+    <string name="settings_qq_login_success">QQ Music login successful</string>
     <string name="settings_netease_login_success">NetEase login successful</string>
     <string name="settings_youtube_login_success">YouTube login successful</string>
     <string name="settings_bili_status_valid">Saved and last refreshed %1$s</string>
     <string name="settings_bili_status_saved_invalid">A saved Cookie was found, but it may be invalid. Tap to refresh it or sign out</string>
     <string name="settings_bili_status_missing">No usable Cookie detected. Tap to sign in again or import one</string>
+    <string name="settings_qq_status_valid">Saved and last refreshed %1$s</string>
+    <string name="settings_qq_status_saved_invalid">A saved Cookie was found, but it may be invalid. Tap to refresh or sign out</string>
+    <string name="settings_qq_status_missing">No usable Cookie detected. Tap to sign in again or import one</string>
     <string name="settings_netease_status_valid">Saved and last refreshed %1$s</string>
     <string name="settings_netease_status_saved_invalid">A saved Cookie was found, but it may be invalid. Tap to refresh it or sign out</string>
     <string name="settings_netease_status_missing">No usable Cookie detected. Tap to sign in again or import one</string>
@@ -960,8 +986,11 @@
     <string name="youtube_web_login">YouTube Login</string>
     <string name="settings_netease_login_browser_hint">Opens NetEase QR login. After you scan and confirm, cookies are saved automatically. If it fails, use the web login fallback on the QR page.</string>
     <string name="settings_bili_login_browser_hint">Opens Bilibili QR login and saves cookies after confirmation. If it fails, use the web login fallback on the QR page.</string>
+    <string name="settings_qq_login_browser_hint">Opens QQ Music QR login and saves cookies after you confirm with the QQ / QQ Music app.</string>
     <string name="settings_bili_saved_cookie_title">Saved Bilibili Cookie detected</string>
     <string name="settings_bili_saved_cookie_message">A local Bilibili Cookie is already saved. You can sign out to clear it, or continue signing in to refresh the Cookie.</string>
+    <string name="settings_qq_saved_cookie_title">Saved QQ Music Cookie detected</string>
+    <string name="settings_qq_saved_cookie_message">A local QQ Music Cookie is already saved. You can sign out to clear it, or continue signing in to refresh the Cookie.</string>
     <string name="settings_netease_saved_cookie_title">Saved NetEase Cookie detected</string>
     <string name="settings_netease_saved_cookie_message">A local NetEase Cookie is already saved. You can sign out to clear it, or continue signing in to refresh the Cookie.</string>
     <string name="settings_youtube_login_browser_hint">Tries to open music.youtube.com in the built-in web view and automatically reads cookies after sign-in.</string>
@@ -969,6 +998,7 @@
     <string name="settings_youtube_saved_cookie_message">Local YouTube auth information is already saved. You can sign out to clear it, or continue signing in to refresh auth.</string>
     <string name="settings_youtube_login_browser_warning">Google may show \"This browser may not be secure\" or block sign-in entirely. If that happens, switch to the \"Cookie Import\" tab above.</string>
     <string name="login_paste_bili_cookie_hint">Paste Cookie (e.g.: SESSDATA=…; bili_jct=…)</string>
+    <string name="login_paste_qq_cookie_hint">Paste Cookie (e.g.: uin=…; qm_keyst=…; p_skey=…)</string>
     <string name="login_paste_youtube_cookie_hint">Paste Cookie or browser request headers (must include Cookie)</string>
     <string name="settings_cookie_input_hint">Please enter Cookie</string>
 

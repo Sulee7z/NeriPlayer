@@ -171,6 +171,7 @@ import moe.ouom.neriplayer.ui.effect.glass.isolatedAdvancedGlassHorizontalTransi
 import moe.ouom.neriplayer.ui.screen.tab.settings.about.SettingsAboutContent
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.LoginSuccessDialog
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsBiliAuthDialogs
+import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsQqAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsNeteaseAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsYouTubeAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.component.LazyAnimatedVisibility
@@ -223,6 +224,8 @@ import moe.ouom.neriplayer.ui.viewmodel.BackupRestoreViewModel
 import moe.ouom.neriplayer.ui.viewmodel.ConfigTransferViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.BiliAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.BiliAuthViewModel
+import moe.ouom.neriplayer.ui.viewmodel.auth.QqAuthEvent
+import moe.ouom.neriplayer.ui.viewmodel.auth.QqAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.YouTubeAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.YouTubeAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.debug.NeteaseAuthEvent
@@ -621,6 +624,8 @@ fun SettingsScreen(
     var showNeteaseSavedCookieDialog by remember { mutableStateOf(false) }
     var showBiliSheet by remember { mutableStateOf(false) }
     var showBiliSavedCookieDialog by remember { mutableStateOf(false) }
+    var showQqSheet by remember { mutableStateOf(false) }
+    var showQqSavedCookieDialog by remember { mutableStateOf(false) }
     var showYouTubeSheet by remember { mutableStateOf(false) }
     var showYouTubeSavedCookieDialog by remember { mutableStateOf(false) }
 
@@ -652,6 +657,8 @@ fun SettingsScreen(
     var versionTapCount by remember { mutableIntStateOf(0) }
     val biliVm: BiliAuthViewModel = viewModel()
     var biliSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
+    val qqVm: QqAuthViewModel = viewModel()
+    var qqSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
     var neteaseSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
     val youtubeVm: YouTubeAuthViewModel = viewModel()
     var youtubeSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
@@ -1066,6 +1073,23 @@ fun SettingsScreen(
         }
     }
 
+    LaunchedEffect(qqVm) {
+        qqVm.events.collect { e ->
+            when (e) {
+                is QqAuthEvent.ShowSnack -> inlineMsg = e.message
+                QqAuthEvent.LoginSuccess -> {
+                    showQqSavedCookieDialog = false
+                    inlineMsg = null
+                    showQqSheet = false
+                    loginSuccessTitle = composeResources.getString(
+                        R.string.settings_qq_login_success
+                    )
+                    qqVm.refreshAuthHealth()
+                }
+            }
+        }
+    }
+
     LaunchedEffect(youtubeVm) {
         youtubeVm.events.collect { e ->
             when (e) {
@@ -1458,6 +1482,7 @@ fun SettingsScreen(
                     miuixSettingsSectionCardItem("${selectedPage.name}:content") {
                         SettingsLoginExpandedContent(
                             biliVm = biliVm,
+                            qqVm = qqVm,
                             youtubeVm = youtubeVm,
                             neteaseVm = neteaseVm,
                             onOpenBiliSheet = { tab ->
@@ -1465,9 +1490,18 @@ fun SettingsScreen(
                                 biliSheetInitialTab = tab
                                 showBiliSheet = true
                             },
+                            onOpenQqSheet = { tab ->
+                                inlineMsg = null
+                                qqSheetInitialTab = tab
+                                showQqSheet = true
+                            },
                             onOpenBiliSavedCookieDialog = {
                                 inlineMsg = null
                                 showBiliSavedCookieDialog = true
+                            },
+                            onOpenQqSavedCookieDialog = {
+                                inlineMsg = null
+                                showQqSavedCookieDialog = true
                             },
                             onOpenYouTubeSavedCookieDialog = {
                                 inlineMsg = null
@@ -2173,6 +2207,27 @@ fun SettingsScreen(
         onLogout = {
             showBiliSavedCookieDialog = false
             biliVm.clearCookies()
+        },
+        onBrowserLogin = null
+    )
+
+    SettingsQqAuthDialogs(
+        showSheet = showQqSheet,
+        initialTab = qqSheetInitialTab,
+        onDismissSheet = { showQqSheet = false },
+        inlineMsg = inlineMsg,
+        onInlineMsgChange = { inlineMsg = it },
+        vm = qqVm,
+        showSavedCookieDialog = showQqSavedCookieDialog,
+        onDismissSavedCookieDialog = { showQqSavedCookieDialog = false },
+        onOpenSheetAtTab = { tab ->
+            inlineMsg = null
+            qqSheetInitialTab = tab
+            showQqSheet = true
+        },
+        onLogout = {
+            showQqSavedCookieDialog = false
+            qqVm.clearCookies()
         },
         onBrowserLogin = null
     )
@@ -3916,21 +3971,26 @@ private fun ListenTogetherSettingsSection(
 @Composable
 private fun SettingsLoginExpandedContent(
     biliVm: BiliAuthViewModel,
+    qqVm: QqAuthViewModel,
     youtubeVm: YouTubeAuthViewModel,
     neteaseVm: NeteaseAuthViewModel,
     onOpenBiliSheet: (Int) -> Unit,
+    onOpenQqSheet: (Int) -> Unit,
     onOpenBiliSavedCookieDialog: () -> Unit,
+    onOpenQqSavedCookieDialog: () -> Unit,
     onOpenYouTubeSavedCookieDialog: () -> Unit,
     onOpenNeteaseSavedCookieDialog: () -> Unit,
     onOpenYouTubeSheet: () -> Unit,
     onOpenNeteaseSheet: () -> Unit,
 ) {
     val biliAuthUiState by biliVm.uiState.collectAsStateWithLifecycleCompat()
+    val qqAuthUiState by qqVm.uiState.collectAsStateWithLifecycleCompat()
     val youtubeAuthUiState by youtubeVm.uiState.collectAsStateWithLifecycleCompat()
     val neteaseAuthUiState by neteaseVm.uiState.collectAsStateWithLifecycleCompat()
 
-    LaunchedEffect(biliVm, youtubeVm, neteaseVm) {
+    LaunchedEffect(biliVm, qqVm, youtubeVm, neteaseVm) {
         biliVm.refreshAuthHealth()
+        qqVm.refreshAuthHealth()
         neteaseVm.refreshAuthHealth()
         youtubeVm.refreshAuthHealth()
     }
@@ -3994,6 +4054,23 @@ private fun SettingsLoginExpandedContent(
                 stringResource(R.string.settings_youtube_status_saved_invalid)
             } else {
                 stringResource(R.string.settings_youtube_status_missing)
+            }
+        }
+    }
+    val qqStatusText = when (qqAuthUiState.health.state) {
+        SavedCookieAuthState.Valid -> {
+            val relativeTime = qqAuthUiState.health.savedAt
+                .takeIf { it > 0L }
+                ?.let { formatSyncTime(it) }
+                ?: stringResource(R.string.time_just_now)
+            stringResource(R.string.settings_qq_status_valid, relativeTime)
+        }
+        SavedCookieAuthState.Checking,
+        SavedCookieAuthState.Missing -> {
+            if (qqAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_qq_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_qq_status_missing)
             }
         }
     }
@@ -4083,8 +4160,16 @@ private fun SettingsLoginExpandedContent(
                 )
             },
             headlineContent = { Text(stringResource(R.string.settings_qq_music)) },
-            supportingContent = { Text(stringResource(R.string.common_coming_soon)) },
-            modifier = Modifier.settingsItemClickable { },
+            supportingContent = { Text(qqStatusText) },
+            modifier = Modifier.settingsItemClickable(
+                onClick = {
+                    if (qqAuthUiState.hasSavedCookies) {
+                        onOpenQqSavedCookieDialog()
+                    } else {
+                        onOpenQqSheet(0)
+                    }
+                }
+            ),
             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
         )
     }

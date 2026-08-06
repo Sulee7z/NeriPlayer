@@ -453,12 +453,17 @@ class NowPlayingViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 val platform = selectedSong.source
+                if (platform == MusicPlatform.BILIBILI) {
+                    onComplete(false, context.getString(R.string.music_lyrics_bili_unavailable))
+                    return@launch
+                }
                 val api = when (platform) {
                     MusicPlatform.CLOUD_MUSIC -> {
                         val client = AppContainer.neteaseClient
                         moe.ouom.neriplayer.core.api.search.CloudMusicSearchApi(client)
                     }
                     MusicPlatform.QQ_MUSIC -> moe.ouom.neriplayer.core.api.search.QQMusicSearchApi()
+                    MusicPlatform.BILIBILI -> return@launch
                 }
 
                 val songDetails = api.getSongInfo(selectedSong.id)

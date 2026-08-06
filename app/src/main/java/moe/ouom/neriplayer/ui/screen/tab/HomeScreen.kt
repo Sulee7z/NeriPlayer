@@ -62,6 +62,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteForever
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Explore
@@ -1623,6 +1624,16 @@ private fun ContinueSection(
                             ContinueCard(
                                 entry = entry,
                                 onClick = { onClick(entry) },
+                                onTogglePin = {
+                                    AppContainer.launchBackgroundIo {
+                                        AppContainer.playlistUsageRepo.setPinned(
+                                            entry.id,
+                                            entry.source,
+                                            entry.subtype,
+                                            pinned = entry.pinnedAt == null
+                                        )
+                                    }
+                                },
                                 onRemove = {
                                     AppContainer.launchBackgroundIo {
                                         AppContainer.playlistUsageRepo.removeEntry(
@@ -1648,6 +1659,7 @@ private fun ContinueSection(
 private fun ContinueCard(
     entry: UsageEntry,
     onClick: () -> Unit,
+    onTogglePin: () -> Unit,
     onRemove: () -> Unit,
     offlineMode: Boolean,
     modifier: Modifier = Modifier
@@ -1708,6 +1720,29 @@ private fun ContinueCard(
             expanded = showMenu,
             onDismissRequest = { showMenu = false }
         ) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            if (entry.pinnedAt != null) {
+                                R.string.continue_playing_unpin
+                            } else {
+                                R.string.continue_playing_pin
+                            }
+                        )
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.PushPin,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    showMenu = false
+                    onTogglePin()
+                }
+            )
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.continue_playing_remove)) },
                 leadingIcon = {

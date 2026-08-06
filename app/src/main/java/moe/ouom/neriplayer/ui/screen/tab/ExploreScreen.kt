@@ -193,12 +193,18 @@ internal fun exploreSearchSourceDisplayOrder(
     youtubeEnabled: Boolean
 ): List<SearchSource> {
     return if (!youtubeEnabled) {
-        listOf(SearchSource.NETEASE, SearchSource.BILIBILI, SearchSource.LINK_RECOGNITION)
+        listOf(
+            SearchSource.NETEASE,
+            SearchSource.BILIBILI,
+            SearchSource.QQ_MUSIC,
+            SearchSource.LINK_RECOGNITION
+        )
     } else if (isInternational) {
         listOf(
             SearchSource.YOUTUBE_MUSIC,
             SearchSource.NETEASE,
             SearchSource.BILIBILI,
+            SearchSource.QQ_MUSIC,
             SearchSource.LINK_RECOGNITION
         )
     } else {
@@ -206,6 +212,7 @@ internal fun exploreSearchSourceDisplayOrder(
             SearchSource.NETEASE,
             SearchSource.BILIBILI,
             SearchSource.YOUTUBE_MUSIC,
+            SearchSource.QQ_MUSIC,
             SearchSource.LINK_RECOGNITION
         )
     }
@@ -255,6 +262,7 @@ private fun searchSourceLabel(source: SearchSource): String {
         SearchSource.YOUTUBE_MUSIC -> stringResource(R.string.explore_tab_youtube)
         SearchSource.NETEASE -> stringResource(R.string.platform_netease_short)
         SearchSource.BILIBILI -> stringResource(R.string.platform_bilibili)
+        SearchSource.QQ_MUSIC -> stringResource(R.string.platform_qqmusic)
         SearchSource.LINK_RECOGNITION -> stringResource(R.string.explore_tab_links)
     }
 }
@@ -408,6 +416,7 @@ fun ExploreScreen(
     val searchPanelHorizontalPadding = if (isTabletLayout) 28.dp else 16.dp
     val searchResultHorizontalPadding = if (isTabletLayout) 88.dp else 0.dp
     val youtubeGridState = rememberLazyGridState()
+    val qqMusicGridState = rememberLazyGridState()
     val tagChipSelectedAlpha = if (backgroundImageUri == null) 1f else 0.86f
     val tagChipUnselectedAlpha = if (backgroundImageUri == null) 1f else 0.74f
     val tagChipBorderAlpha = if (backgroundImageUri == null) 1f else 0.58f
@@ -1018,6 +1027,16 @@ fun ExploreScreen(
                                 offlineMode = offlineMode,
                                 isTabletLayout = isTabletLayout,
                                 gridState = youtubeGridState
+                            )
+                        }
+                        SearchSource.QQ_MUSIC -> {
+                            QqMusicExploreContent(
+                                ui = ui,
+                                vm = vm,
+                                onClick = onPlay,
+                                offlineMode = offlineMode,
+                                isTabletLayout = isTabletLayout,
+                                gridState = qqMusicGridState
                             )
                         }
                         SearchSource.LINK_RECOGNITION -> {
@@ -1982,6 +2001,95 @@ private fun SongRow(
                         showMoreMenu = false
                     }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun QqMusicExploreContent(
+    ui: ExploreUiState,
+    vm: ExploreViewModel,
+    onClick: (PlaylistSummary) -> Unit,
+    offlineMode: Boolean,
+    gridState: LazyGridState,
+    isTabletLayout: Boolean = false
+) {
+    val miniPlayerHeight = LocalMiniPlayerHeight.current
+    val gridHorizontalPadding = if (isTabletLayout) 56.dp else 16.dp
+    val gridMinCellSize = if (isTabletLayout) 156.dp else 120.dp
+    val gridSpacing = if (isTabletLayout) 14.dp else 10.dp
+    LaunchedEffect(Unit) {
+        if (ui.qqMusicPlaylists.isEmpty() && ui.qqMusicPlaylistsError == null) {
+            vm.loadQqMusicPlaylists()
+        }
+    }
+    when {
+        ui.qqMusicPlaylistsLoading -> {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(bottom = miniPlayerHeight),
+                Alignment.Center
+            ) { CircularProgressIndicator() }
+        }
+        ui.qqMusicPlaylistsError != null -> {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(bottom = miniPlayerHeight),
+                Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        ui.qqMusicPlaylistsError,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    HapticTextButton(onClick = { vm.loadQqMusicPlaylists() }) {
+                        Text(stringResource(R.string.action_retry))
+                    }
+                }
+            }
+        }
+        ui.qqMusicPlaylists.isEmpty() -> {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(bottom = miniPlayerHeight),
+                Alignment.Center
+            ) {
+                Text(
+                    stringResource(R.string.platform_qqmusic),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
+        else -> {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Adaptive(gridMinCellSize),
+                contentPadding = PaddingValues(
+                    start = gridHorizontalPadding, end = gridHorizontalPadding,
+                    top = 8.dp,
+                    bottom = 16.dp + miniPlayerHeight
+                ),
+                verticalArrangement = Arrangement.spacedBy(gridSpacing),
+                horizontalArrangement = Arrangement.spacedBy(gridSpacing),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                items(
+                    items = ui.qqMusicPlaylists,
+                    key = { "qq:${it.id}" }
+                ) { playlist ->
+                    PlaylistCard(
+                        playlist = playlist,
+                        isFavorite = false,
+                        onClick = { onClick(playlist) },
+                        offlineMode = offlineMode
+                    )
+                }
             }
         }
     }

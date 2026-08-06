@@ -237,8 +237,8 @@ class LxScriptEngine(
             obj.optString("url").takeIf { it.isNotBlank() }?.let { return it }
         }
         obj.optString("url").takeIf { it.isNotBlank() }?.let { return it }
-        obj.optJSONObject("data")?.optString("url").takeIf { it.isNotBlank() }?.let { return it }
-        obj.optJSONObject("body")?.optString("url").takeIf { it.isNotBlank() }?.let { return it }
+        obj.optJSONObject("data")?.optString("url")?.takeIf { it.isNotBlank() }?.let { return it }
+        obj.optJSONObject("body")?.optString("url")?.takeIf { it.isNotBlank() }?.let { return it }
         return null
     }
 

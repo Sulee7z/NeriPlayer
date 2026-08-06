@@ -64,7 +64,9 @@ data class LibraryUiState(
     val youtubeMusicPlaylists: List<YouTubeMusicPlaylist> = emptyList(),
     val youtubeMusicError: String? = null,
     val biliPlaylists: List<BiliPlaylist> = emptyList(),
-    val biliError: String? = null
+    val biliError: String? = null,
+    val qqMusicPlaylists: List<PlaylistSummary> = emptyList(),
+    val qqMusicError: String? = null
 )
 
 @Suppress("unused")
@@ -315,6 +317,35 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.value = _uiState.value.copy(neteaseError = e.message)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(neteaseError = e.message)
+            }
+        }
+    }
+
+    fun refreshQqMusicPlaylists() {
+        viewModelScope.launch {
+            try {
+                val playlists = withContext(Dispatchers.IO) {
+                    AppContainer.qqMusicApi.getHotPlaylists(count = 50)
+                }
+                _uiState.value = _uiState.value.copy(
+                    qqMusicPlaylists = playlists.map { summary ->
+                        PlaylistSummary(
+                            id = summary.dissId,
+                            name = summary.title,
+                            picUrl = summary.picUrl.orEmpty(),
+                            playCount = summary.listenCount,
+                            trackCount = summary.songCount,
+                            source = "qq"
+                        )
+                    },
+                    qqMusicError = null
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    qqMusicError = e.message
+                )
             }
         }
     }

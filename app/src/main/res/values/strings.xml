@@ -118,6 +118,7 @@
 
     <!-- Platform Names -->
     <string name="platform_bilibili">哔哩哔哩</string>
+    <string name="platform_qqmusic">QQ音乐</string>
     <string name="platform_netease">网易云音乐</string>
     <string name="platform_netease_short">网易云</string>
 
@@ -318,6 +319,7 @@
     <string name="music_restore_failed">获取原始信息失败</string>
     <string name="music_lyrics_filled_success">歌词填充成功</string>
     <string name="music_lyrics_empty">该歌曲暂无歌词</string>
+    <string name="music_lyrics_bili_unavailable">哔哩哔哩音源暂不支持歌词填充</string>
     <string name="music_lyrics_fill_failed">歌词填充失败</string>
     <string name="lyrics_editor_hint_original">[00:00.00]在这里输入歌词\n[00:05.00]支持LRC格式\n[00:10.00]格式: [分:秒.毫秒]歌词内容</string>
     <string name="lyrics_editor_hint_translation">[00:00.00]在这里输入翻译歌词\n[00:05.00]支持LRC格式\n[00:10.00]格式: [分:秒.毫秒]翻译内容</string>
@@ -482,6 +484,10 @@
     <string name="library_name_exists">已存在同名歌单，请换一个名称</string>
     <string name="library_create_new">＋ 新建歌单</string>
     <string name="library_qqmusic_coming">QQ音乐功能开发中…</string>
+    <string name="library_qqmusic_hot_hint">热门 QQ 音乐歌单</string>
+    <string name="library_qqmusic_empty">暂时没有可展示的 QQ 音乐歌单</string>
+    <string name="library_qqmusic_hint">下拉可刷新，点击歌单进入详情</string>
+    <string name="library_qqmusic_plays">%1$s 次播放</string>
     <string name="library_netease_tab_playlists">歌单</string>
     <string name="library_netease_tab_albums">专辑</string>
     <string name="library_netease_search_hint">搜索歌单 / 专辑</string>
@@ -691,6 +697,19 @@
     <string name="bili_qr_login_web_fallback">网页登录兜底</string>
     <string name="bili_qr_login_cookie_incomplete">登录已确认，但没有拿到完整 Cookie，请重试</string>
     <string name="bili_qr_login_hint">二维码由哔哩哔哩接口生成，确认后会在本页监听状态并保存 Cookie。</string>
+
+    <!-- QQ Music Login -->
+    <string name="qq_qr_login">QQ音乐扫码登录</string>
+    <string name="qq_qr_login_title">扫码连接你的 QQ 音乐账号</string>
+    <string name="qq_qr_login_subtitle">用 QQ / QQ音乐 客户端扫码并确认后，请立刻返回 NeriPlayer。</string>
+    <string name="qq_qr_login_loading">正在生成二维码…</string>
+    <string name="qq_qr_login_waiting">请使用 QQ 客户端扫码登录</string>
+    <string name="qq_qr_login_scanned">已扫码，请在手机上确认登录</string>
+    <string name="qq_qr_login_expired">二维码已过期，请刷新</string>
+    <string name="qq_qr_login_failed">QQ音乐扫码登录失败：%1$s</string>
+    <string name="qq_qr_login_retry">刷新二维码</string>
+    <string name="qq_qr_login_cookie_incomplete">登录已确认，但没有拿到完整 Cookie，请重试</string>
+    <string name="qq_qr_login_hint">二维码由腾讯登录接口生成，确认后会在本页监听状态并保存 Cookie。</string>
     <string name="bili_loading_favorites">正在加载收藏夹内容…</string>
     <string name="bili_load_failed">加载失败: %s</string>
     <string name="bili_get_parts_failed">获取分 P 失败</string>
@@ -782,6 +801,8 @@
     <string name="home_favorite_playlist">收藏歌单</string>
     <string name="home_unfavorited">已取消收藏</string>
     <string name="continue_playing_remove">移除</string>
+    <string name="continue_playing_pin">置顶</string>
+    <string name="continue_playing_unpin">取消置顶</string>
     <string name="home_title_brand_loud">音理音理!!</string>
     <string name="home_title_brand_wave">音理音理~</string>
     <string name="home_title_brand_call">NeriPlayer</string>
@@ -862,6 +883,7 @@
     <string name="login_start_browser">开始浏览器登录</string>
     <string name="login_start_netease_qr">扫码登录网易云</string>
     <string name="login_start_bili_qr">扫码登录哔哩哔哩</string>
+    <string name="login_start_qq_qr">扫码登录 QQ音乐</string>
     <string name="login_success">登录成功</string>
     <string name="login_netease">网易云音乐登录</string>
     <string name="login_verification_code">验证码登录</string>
@@ -884,6 +906,7 @@
     <string name="settings_bili_login_success">哔哩哔哩登录成功</string>
     <string name="settings_netease_login_success">网易云登录成功</string>
     <string name="settings_youtube_login_success">YouTube 登录成功</string>
+    <string name="settings_qq_login_success">QQ音乐登录成功</string>
     <string name="settings_bili_status_valid">已保存，最近更新于 %1$s</string>
     <string name="settings_bili_status_saved_invalid">检测到已保存的 Cookie，但当前可能无效，点击可刷新或退出登录</string>
     <string name="settings_bili_status_missing">未检测到可用 Cookie，点击重新登录或导入</string>
@@ -896,6 +919,9 @@
     <string name="settings_youtube_status_valid">已保存，最近更新于 %1$s</string>
     <string name="settings_youtube_status_saved_invalid">检测到已保存的 YouTube 鉴权信息，但当前可能无效，点击可刷新或退出登录</string>
     <string name="settings_youtube_status_missing">未检测到可用 YouTube 登录态，点击重新登录或导入</string>
+    <string name="settings_qq_status_valid">已保存，最近更新于 %1$s</string>
+    <string name="settings_qq_status_saved_invalid">检测到已保存的 Cookie，但当前可能无效，点击可刷新或退出登录</string>
+    <string name="settings_qq_status_missing">未检测到可用 Cookie，点击重新登录或导入</string>
     <string name="settings_login_platforms">第三方平台登录</string>
     <string name="settings_login_platforms_expand">管理网易云、哔哩哔哩与 YouTube 登录状态</string>
     <string name="settings_login_platforms_collapse">收起</string>
@@ -960,8 +986,11 @@
     <string name="youtube_web_login">YouTube 登录</string>
     <string name="settings_netease_login_browser_hint">将打开网易云扫码登录，扫码确认后会自动保存 Cookie；如果失败，可在二维码页使用网页登录兜底。</string>
     <string name="settings_bili_login_browser_hint">将打开哔哩哔哩扫码登录，扫码确认后会自动保存 Cookie；如果失败，可在二维码页使用网页登录兜底。</string>
+    <string name="settings_qq_login_browser_hint">将打开 QQ 音乐扫码登录，用 QQ / QQ音乐 客户端扫码确认后会自动保存 Cookie。</string>
     <string name="settings_bili_saved_cookie_title">检测到已保存的哔哩哔哩 Cookie</string>
     <string name="settings_bili_saved_cookie_message">检测到本地已保存哔哩哔哩 Cookie。你可以退出登录清空旧 Cookie，或继续登录以刷新 Cookie。</string>
+    <string name="settings_qq_saved_cookie_title">检测到已保存的 QQ音乐 Cookie</string>
+    <string name="settings_qq_saved_cookie_message">检测到本地已保存 QQ音乐 Cookie。你可以退出登录清空旧 Cookie，或继续登录以刷新 Cookie。</string>
     <string name="settings_netease_saved_cookie_title">检测到已保存的网易云 Cookie</string>
     <string name="settings_netease_saved_cookie_message">检测到本地已保存网易云 Cookie。你可以退出登录清空旧 Cookie，或继续登录以刷新 Cookie。</string>
     <string name="settings_youtube_login_browser_hint">将尝试通过内置网页打开 music.youtube.com，并在登录后自动读取 Cookie。</string>
@@ -969,6 +998,7 @@
     <string name="settings_youtube_saved_cookie_message">检测到本地已保存 YouTube 鉴权信息。你可以退出登录清空旧信息，或继续登录以刷新鉴权。</string>
     <string name="settings_youtube_login_browser_warning">Google 可能提示“此浏览器可能不安全”或直接拦截登录；若失败，请切换到上方的“Cookie 导入”标签。</string>
     <string name="login_paste_bili_cookie_hint">粘贴 Cookie（例如：SESSDATA=…; bili_jct=…）</string>
+    <string name="login_paste_qq_cookie_hint">粘贴 Cookie（例如：uin=…; qm_keyst=…; p_skey=…）</string>
     <string name="login_paste_youtube_cookie_hint">粘贴 Cookie 或浏览器请求头（需包含 Cookie）</string>
     <string name="settings_cookie_input_hint">请输入 Cookie</string>
 
