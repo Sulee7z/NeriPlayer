@@ -1,0 +1,2248 @@
+import { DurableObject } from 'cloudflare:workers';
+import {
+  MAX_STREAM_URL_CANDIDATES,
+  cacheStreamUrls,
+  cachedStreamUrlsForTrack,
+  normalizeStreamUrlCache,
+  publicRoomStateWithCurrentStreamUrl,
+} from './stream-url-cache.js';
+
+function json(data, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status,
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'access-control-allow-origin': '*',
+      'access-control-allow-methods': 'GET,POST,OPTIONS',
+      'access-control-allow-headers': 'content-type,authorization',
+      ...extraHeaders,
+    },
+  });
+}
+
+function randomId(len = 6) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const randomBytes = crypto.getRandomValues(new Uint8Array(len));
+  return Array.from(randomBytes, (value) => chars[value & (chars.length - 1)]).join('');
+}
+
+function randomMemberSecret() {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(MEMBER_SECRET_BYTES)));
+}
+
+function randomRoomJoinSecret() {
+  return toBase64Url(crypto.getRandomValues(new Uint8Array(ROOM_JOIN_SECRET_BYTES)));
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+const CONTROLLER_OFFLINE_GRACE_PERIOD_MS = 10 * 60 * 1000;
+const CONTROLLER_HEARTBEAT_TIMEOUT_MS = 45 * 1000;
+const TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const MEMBER_SECRET_BYTES = 32;
+const ROOM_JOIN_SECRET_BYTES = 32;
+const MAX_PROCESSED_EVENT_IDS = 256;
+const MAX_QUEUE_SIZE = 2000;
+const LINK_REQUEST_COOLDOWN_MS = 1500;
+const HEARTBEAT_SUPPRESSION_AFTER_MEMBER_CONTROL_MS = 4000;
+const ROOM_ID_LENGTH = 6;
+const NICKNAME_MIN_LENGTH = 1;
+const NICKNAME_MAX_LENGTH = 24;
+const ROOM_ID_REGEX = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/;
+const USER_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const NICKNAME_REGEX = /^[\p{Script=Han}A-Za-z0-9]{1,24}$/u;
+const textEncoder = new TextEncoder();
+const ALLOWED_EVENT_TYPES = new Set([
+  'PLAY',
+  'PAUSE',
+  'SEEK',
+  'PLAYBACK_MODE',
+  'SET_TRACK',
+  'SET_QUEUE',
+  'REQUEST_PLAY',
+  'REQUEST_PAUSE',
+  'REQUEST_SEEK',
+  'REQUEST_PLAYBACK_MODE',
+  'REQUEST_SET_TRACK',
+  'HEARTBEAT',
+  'TRACK_FINISHED',
+  'REQUEST_LINK',
+  'LINK_READY',
+  'UPDATE_SETTINGS',
+]);
+const CONTROLLABLE_EVENT_TYPES = new Set([
+  'PLAY',
+  'PAUSE',
+  'SEEK',
+  'PLAYBACK_MODE',
+  'SET_TRACK',
+  'SET_QUEUE',
+  'HEARTBEAT',
+  'LINK_READY',
+]);
+const REQUEST_CONTROL_EVENT_TYPES = new Set([
+  'REQUEST_PLAY',
+  'REQUEST_PAUSE',
+  'REQUEST_SEEK',
+  'REQUEST_PLAYBACK_MODE',
+  'REQUEST_SET_TRACK',
+]);
+const ARBITRATED_CONTROL_TYPES = new Set([
+  'PLAY',
+  'PAUSE',
+  'SEEK',
+  'PLAYBACK_MODE',
+  'SET_TRACK',
+  'SET_QUEUE',
+  'HEARTBEAT',
+]);
+const TRACK_BOUND_REQUEST_TYPES = new Set([
+  'REQUEST_PLAY',
+  'REQUEST_PAUSE',
+  'REQUEST_SEEK',
+  'REQUEST_PLAYBACK_MODE',
+]);
+const TRACK_QUEUE_BOUND_REQUEST_TYPES = new Set([
+  'REQUEST_SET_TRACK',
+]);
+
+function toBase64Url(bytes) {
+  const binary = String.fromCharCode(...bytes);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function fromBase64Url(input) {
+  const base64 = String(input || '').replace(/-/g, '+').replace(/_/g, '/');
+  const normalized = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=');
+  const binary = atob(normalized);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function normalizeRoomId(roomId) {
+  return String(roomId || '').trim().toUpperCase();
+}
+
+function normalizeUserUuid(userUuid) {
+  return String(userUuid || '').trim().toLowerCase();
+}
+
+function normalizeNickname(nickname) {
+  return String(nickname || '').trim();
+}
+
+function validateRoomId(roomId) {
+  const normalized = normalizeRoomId(roomId);
+  if (normalized.length !== ROOM_ID_LENGTH) {
+    return `roomId must be ${ROOM_ID_LENGTH} characters`;
+  }
+  if (!ROOM_ID_REGEX.test(normalized)) {
+    return 'roomId contains invalid characters';
+  }
+  return null;
+}
+
+function validateUserUuid(userUuid) {
+  const normalized = normalizeUserUuid(userUuid);
+  if (!normalized) {
+    return 'userUuid is required';
+  }
+  if (!USER_UUID_REGEX.test(normalized)) {
+    return 'userUuid format is invalid';
+  }
+  return null;
+}
+
+function validateNickname(nickname) {
+  const normalized = normalizeNickname(nickname);
+  if (normalized.length < NICKNAME_MIN_LENGTH || normalized.length > NICKNAME_MAX_LENGTH) {
+    return `nickname length must be ${NICKNAME_MIN_LENGTH}-${NICKNAME_MAX_LENGTH}`;
+  }
+  if (!NICKNAME_REGEX.test(normalized)) {
+    return 'nickname contains invalid characters';
+  }
+  return null;
+}
+
+function sanitizeNicknameOrNull(nickname) {
+  const normalized = normalizeNickname(nickname);
+  if (!normalized) return null;
+  return validateNickname(normalized) == null ? normalized : null;
+}
+
+function buildDefaultNickname() {
+  return `Neri${randomId(4)}`;
+}
+
+function buildMember({ userUuid, nickname, role, joinedAt, memberSecret }) {
+  const normalizedUserUuid = normalizeUserUuid(userUuid);
+  return {
+    userUuid: normalizedUserUuid,
+    userId: normalizedUserUuid,
+    nickname: sanitizeNicknameOrNull(nickname) || buildDefaultNickname(),
+    role,
+    joinedAt: Number(joinedAt) || nowMs(),
+    memberSecret: normalizeOptionalString(memberSecret) || randomMemberSecret(),
+  };
+}
+
+function normalizeStoredMember(member, fallbackUserUuid = null) {
+  const userUuid = normalizeUserUuid(member?.userUuid || member?.userId || fallbackUserUuid);
+  if (!userUuid) return null;
+  return buildMember({
+    userUuid,
+    nickname: sanitizeNicknameOrNull(member?.nickname) || sanitizeNicknameOrNull(member?.userId) || fallbackUserUuid,
+    role: normalizeOptionalString(member?.role) || 'listener',
+    joinedAt: member?.joinedAt,
+    memberSecret: member?.memberSecret,
+  });
+}
+
+function memberSecretsMatch(expected, provided) {
+  const expectedValue = String(expected || '');
+  const providedValue = String(provided || '');
+  if (!expectedValue || expectedValue.length !== providedValue.length) return false;
+  let difference = 0;
+  for (let index = 0; index < expectedValue.length; index++) {
+    difference |= expectedValue.charCodeAt(index) ^ providedValue.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+function sanitizeMemberForState(member) {
+  const normalized = normalizeStoredMember(member);
+  if (!normalized) return null;
+  const { memberSecret, ...publicMember } = normalized;
+  return publicMember;
+}
+
+function extractIdentity(body = {}) {
+  const userUuid = normalizeUserUuid(body.userUuid || body.userId);
+  const preferredNickname = sanitizeNicknameOrNull(body.nickname);
+  const legacyNickname = sanitizeNicknameOrNull(body.userId);
+  const nickname =
+    preferredNickname ||
+    legacyNickname ||
+    buildDefaultNickname();
+  return {
+    userUuid,
+    nickname,
+  };
+}
+
+function isPlainObject(value) {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizePlaybackState(value, fallback = 'paused') {
+  if (value === 'playing' || value === 'paused') return value;
+  return fallback;
+}
+
+function normalizeRepeatMode(value, fallback = 0) {
+  const mode = Number(value);
+  if (mode === 0 || mode === 1 || mode === 2) return mode;
+  return fallback;
+}
+
+const REPEAT_MODE_ONE = 1;
+
+function wrapSingleTrackRepeatPosition(positionMs, playback, track) {
+  const normalizedPositionMs = Math.max(0, Math.floor(Number(positionMs) || 0));
+  const durationMs = Number(track?.durationMs);
+  if (
+    playback?.repeatMode !== REPEAT_MODE_ONE ||
+    !Number.isFinite(durationMs) ||
+    durationMs <= 0
+  ) {
+    return normalizedPositionMs;
+  }
+  return normalizedPositionMs % Math.floor(durationMs);
+}
+
+function normalizeIndex(index, queueLength, fallback = 0) {
+  const safeFallback = Number.isInteger(fallback) ? fallback : 0;
+  if (queueLength <= 0) return 0;
+  if (!Number.isInteger(index)) return Math.min(Math.max(safeFallback, 0), queueLength - 1);
+  return Math.min(Math.max(index, 0), queueLength - 1);
+}
+
+function normalizeOptionalString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeHttpUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' || url.protocol === 'https:') {
+      return url.toString();
+    }
+  } catch {}
+  return null;
+}
+
+function normalizeHttpUrls(values) {
+  if (!Array.isArray(values)) return [];
+  const urls = [];
+  for (const value of values) {
+    const url = normalizeHttpUrl(value);
+    if (url && !urls.includes(url)) urls.push(url);
+    if (urls.length >= MAX_STREAM_URL_CANDIDATES) break;
+  }
+  return urls;
+}
+
+function sanitizeTrack(track) {
+  if (!isPlainObject(track)) return null;
+  const stableKey = normalizeOptionalString(track.stableKey);
+  const channelId = normalizeOptionalString(track.channelId);
+  const audioId = normalizeOptionalString(track.audioId);
+  const name = normalizeOptionalString(track.name);
+  const artist = normalizeOptionalString(track.artist);
+  if (!stableKey || !channelId || !audioId || !name || !artist) return null;
+  if (channelId.toLowerCase() === 'local') return null;
+  const durationMs = Number.isFinite(Number(track.durationMs)) ? Math.max(0, Math.floor(Number(track.durationMs))) : 0;
+  const streamUrls = normalizeHttpUrls([
+    ...(Array.isArray(track.streamUrls) ? track.streamUrls : []),
+    track.streamUrl,
+  ]);
+  return {
+    stableKey,
+    channelId,
+    audioId,
+    subAudioId: normalizeOptionalString(track.subAudioId),
+    playlistContextId: normalizeOptionalString(track.playlistContextId),
+    mediaUri: normalizeOptionalString(track.mediaUri),
+    streamUrl: streamUrls[0] || null,
+    streamUrls,
+    name,
+    artist,
+    album: normalizeOptionalString(track.album),
+    durationMs,
+    coverUrl: normalizeHttpUrl(track.coverUrl),
+  };
+}
+
+function isLocalTrackInput(track) {
+  return isPlainObject(track) && normalizeOptionalString(track.channelId)?.toLowerCase() === 'local';
+}
+
+function eventContainsLocalTrack(event) {
+  if (isLocalTrackInput(event?.track)) return true;
+  return Array.isArray(event?.queue) && event.queue.some(isLocalTrackInput);
+}
+
+function sanitizeQueue(queue) {
+  if (!Array.isArray(queue)) return [];
+  const next = [];
+  for (const item of queue) {
+    const sanitized = sanitizeTrack(item);
+    if (sanitized) next.push(sanitized);
+    if (next.length >= MAX_QUEUE_SIZE) break;
+  }
+  return next;
+}
+
+function stripTrackAudioLink(track) {
+  return track ? { ...track, streamUrl: null, streamUrls: [] } : track;
+}
+
+function requestedStableKeyForEvent(event, queue, currentIndex, track) {
+  return normalizeOptionalString(event?.requestTrackStableKey) ||
+    sanitizeTrack(event?.track)?.stableKey ||
+    queue?.[currentIndex]?.stableKey ||
+    track?.stableKey ||
+    null;
+}
+
+function requestedStableKeyFromRequesterEvent(event) {
+  const requesterQueue = Array.isArray(event?.queue) ? sanitizeQueue(event.queue) : [];
+  const requesterIndex = normalizeIndex(event?.currentIndex, requesterQueue.length, 0);
+  return normalizeOptionalString(event?.requestTrackStableKey) ||
+    sanitizeTrack(event?.track)?.stableKey ||
+    requesterQueue[requesterIndex]?.stableKey ||
+    null;
+}
+
+function sanitizeRoomSettings(settings) {
+  return {
+    allowMemberControl: settings?.allowMemberControl !== false,
+    autoPauseOnMemberChange: settings?.autoPauseOnMemberChange !== false,
+    shareAudioLinks: settings?.shareAudioLinks !== false,
+  };
+}
+
+function normalizePositiveInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return Math.floor(number);
+}
+
+function normalizeControlOrderKey(value) {
+  const normalized = String(value || '').trim();
+  if (!normalized || normalized.length > 160) return null;
+  return /^[A-Za-z0-9:_-]+$/.test(normalized) ? normalized : null;
+}
+
+function normalizeControlOrderMap(value) {
+  if (!isPlainObject(value)) return {};
+  const next = {};
+  for (const [key, rawValue] of Object.entries(value)) {
+    const orderKey = normalizeControlOrderKey(key);
+    const number = normalizePositiveInteger(rawValue);
+    if (orderKey && number != null) {
+      next[orderKey] = number;
+    }
+  }
+  return next;
+}
+
+function buildWsUrl(requestUrl, roomId, token) {
+  const url = new URL(requestUrl);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = `/api/rooms/${roomId}/ws`;
+  url.search = `token=${encodeURIComponent(token)}`;
+  return url.toString();
+}
+
+export default {
+  async fetch(request, env) {
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        headers: {
+          'access-control-allow-origin': '*',
+          'access-control-allow-methods': 'GET,POST,OPTIONS',
+          'access-control-allow-headers': 'content-type,authorization',
+        },
+      });
+    }
+
+    const url = new URL(request.url);
+    const { pathname } = url;
+
+    if (request.method === 'POST' && pathname === '/api/rooms') {
+      const body = await request.json().catch(() => ({}));
+      const roomId = randomId(6);
+      const identity = extractIdentity(body);
+      const userUuidError = validateUserUuid(identity.userUuid);
+      if (userUuidError) return json({ ok: false, error: userUuidError }, 400);
+      const nicknameError = validateNickname(identity.nickname);
+      if (nicknameError) return json({ ok: false, error: nicknameError }, 400);
+      const initialSnapshot = body.initialSnapshot || {};
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(roomId));
+      const doResp = await roomStub.fetch('https://room.internal/bootstrap', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ roomId, userUuid: identity.userUuid, nickname: identity.nickname, initialSnapshot }),
+      });
+      const payload = await doResp.json();
+      payload.wsUrl = buildWsUrl(request.url, roomId, payload.token);
+      return json(payload, doResp.status);
+    }
+
+    const joinMatch = pathname.match(/^\/api\/rooms\/([^/]+)\/join$/);
+    if (request.method === 'POST' && joinMatch) {
+      const [, roomId] = joinMatch;
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const roomIdError = validateRoomId(normalizedRoomId);
+      if (roomIdError) return json({ ok: false, error: roomIdError }, 400);
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(normalizedRoomId));
+      const doResp = await roomStub.fetch('https://room.internal/join', request);
+      const payload = await doResp.json();
+      if (payload?.token) {
+        payload.wsUrl = buildWsUrl(request.url, normalizedRoomId, payload.token);
+      }
+      return json(payload, doResp.status);
+    }
+
+    const match = pathname.match(/^\/api\/rooms\/([^/]+)\/(join|state|control|leave|ws)$/);
+    if (match) {
+      const [, roomId, action] = match;
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const roomIdError = validateRoomId(normalizedRoomId);
+      if (roomIdError) return json({ ok: false, error: roomIdError }, 400);
+      const roomStub = env.ROOMS.get(env.ROOMS.idFromName(normalizedRoomId));
+
+      let targetPath = `/${action}`;
+      if (action === 'ws') {
+        targetPath += url.search || '';
+      }
+
+      return roomStub.fetch(`https://room.internal${targetPath}`, request);
+    }
+
+    if (pathname === '/' || pathname === '/healthz') {
+      return json({ ok: true, service: 'neriplayer-listen-together-worker' });
+    }
+
+    return json({ ok: false, error: 'Not found' }, 404);
+  },
+};
+
+export class ListeningRoomDO extends DurableObject {
+  constructor(state, env) {
+    super(state, env);
+    this.state = state;
+    this.env = env;
+    this.sessions = new Map();
+    this.linkRequestCooldowns = new Map();
+    this.room = this.createEmptyRoom();
+    this.tokenKeyPromise = null;
+    this.initialized = this.state.blockConcurrencyWhile(async () => {
+      this.restoreSocketSessions();
+      if (typeof this.state.setWebSocketAutoResponse === 'function') {
+        try {
+          this.state.setWebSocketAutoResponse(
+            new WebSocketRequestResponsePair('{"type":"ping"}', '{"type":"pong"}')
+          );
+        } catch {}
+      }
+      await this.load();
+    });
+  }
+
+  createEmptyRoom() {
+    return {
+      roomId: null,
+      joinSecret: null,
+      version: 0,
+      schemaVersion: 1,
+      controllerUserUuid: null,
+      controllerUserId: null,
+      controllerHeartbeatAt: null,
+      settings: {
+        allowMemberControl: true,
+        autoPauseOnMemberChange: true,
+        shareAudioLinks: true,
+      },
+      members: {},
+      queue: [],
+      currentIndex: 0,
+      track: null,
+      streamUrlCache: {},
+      playback: {
+        state: 'paused',
+        basePositionMs: 0,
+        baseTimestampMs: nowMs(),
+        playbackRate: 1,
+      },
+      controllerOfflineSince: null,
+      roomStatus: 'active',
+      closedReason: null,
+      processedEventIds: [],
+      lastControlCommittedAt: 0,
+      lastControlCommittedBy: null,
+      lastControlCommittedRole: null,
+      lastControlCommittedType: null,
+      lastControlClientSequences: {},
+      lastControlClientTimes: {},
+      // legacy relay sequence is kept so older persisted rooms hydrate without migration
+      lastMemberControlRequestSequence: 0,
+      trackFinishBarrier: null,
+      memberChangePausePending: false,
+      updatedAt: nowMs(),
+    };
+  }
+
+  async load() {
+    const saved = await this.state.storage.get('room');
+    if (saved) {
+      const joinSecret = normalizeOptionalString(saved?.joinSecret) || randomRoomJoinSecret();
+      const settings = this.normalizeSettings(saved?.settings);
+      const queue = sanitizeQueue(saved?.queue);
+      const currentIndex = normalizeIndex(saved?.currentIndex, queue.length, 0);
+      const selectedQueueTrack = queue[currentIndex] || null;
+      const savedTrack = sanitizeTrack(saved?.track);
+      const track = savedTrack?.stableKey === selectedQueueTrack?.stableKey
+        ? savedTrack
+        : selectedQueueTrack;
+      let streamUrlCache = normalizeStreamUrlCache(saved?.streamUrlCache);
+      if (settings.shareAudioLinks) {
+        streamUrlCache = cacheStreamUrls(
+          streamUrlCache,
+          track?.stableKey,
+          track?.streamUrls,
+          saved?.updatedAt
+        );
+      } else {
+        streamUrlCache = {};
+      }
+      const rawMembers = saved?.members && typeof saved.members === 'object' ? saved.members : {};
+      const members = {};
+      for (const [memberKey, memberValue] of Object.entries(rawMembers)) {
+        const normalizedMember = normalizeStoredMember(memberValue, memberKey);
+        if (normalizedMember) {
+          members[normalizedMember.userUuid] = normalizedMember;
+        }
+      }
+      const controllerUserUuid = normalizeUserUuid(saved?.controllerUserUuid || saved?.controllerUserId);
+      this.room = {
+        ...this.createEmptyRoom(),
+        ...saved,
+        joinSecret,
+        settings,
+        controllerUserUuid,
+        controllerUserId: controllerUserUuid,
+        members,
+        queue: queue.map(stripTrackAudioLink),
+        currentIndex,
+        track: stripTrackAudioLink(track),
+        streamUrlCache,
+        processedEventIds: Array.isArray(saved.processedEventIds) ? saved.processedEventIds : [],
+        lastControlCommittedAt: Number(saved?.lastControlCommittedAt) || 0,
+        lastControlCommittedBy: normalizeOptionalString(saved?.lastControlCommittedBy),
+        lastControlCommittedRole: normalizeOptionalString(saved?.lastControlCommittedRole),
+        lastControlCommittedType: normalizeOptionalString(saved?.lastControlCommittedType),
+        lastControlClientSequences: normalizeControlOrderMap(saved?.lastControlClientSequences),
+        lastControlClientTimes: normalizeControlOrderMap(saved?.lastControlClientTimes),
+        lastMemberControlRequestSequence: Number(saved?.lastMemberControlRequestSequence) || 0,
+        trackFinishBarrier: this.normalizeTrackFinishBarrier(saved?.trackFinishBarrier),
+        memberChangePausePending: saved?.memberChangePausePending === true,
+      };
+      const hadStoredAudioLink = queue.some((item) => item.streamUrls?.length) ||
+        Boolean(savedTrack?.streamUrls?.length);
+      const hadStoredLocalTrack = eventContainsLocalTrack(saved);
+      const cacheChanged = JSON.stringify(streamUrlCache) !== JSON.stringify(saved?.streamUrlCache || {});
+      if (!normalizeOptionalString(saved?.joinSecret) || hadStoredAudioLink || hadStoredLocalTrack || cacheChanged) {
+        await this.persist();
+      }
+    }
+  }
+
+  makeSessionId(userUuid) {
+    return `${userUuid}:${randomId(16)}`;
+  }
+
+  buildSocketAttachment(sessionId, auth) {
+    return {
+      sessionId,
+      auth: {
+        roomId: normalizeRoomId(auth.roomId),
+        userUuid: normalizeUserUuid(auth.userUuid || auth.userId),
+        userId: normalizeUserUuid(auth.userUuid || auth.userId),
+        nickname: sanitizeNicknameOrNull(auth.nickname) || buildDefaultNickname(),
+        role: auth.role,
+      },
+    };
+  }
+
+  getSocketAttachment(ws) {
+    try {
+      return ws.deserializeAttachment();
+    } catch {
+      return null;
+    }
+  }
+
+  restoreSocketSessions() {
+    this.sessions.clear();
+    if (typeof this.state.getWebSockets !== 'function') return;
+    for (const ws of this.state.getWebSockets()) {
+      const attachment = this.getSocketAttachment(ws);
+      const sessionId = attachment?.sessionId;
+      const auth = attachment?.auth;
+      if (!sessionId || !auth?.userUuid) continue;
+      this.sessions.set(sessionId, { ws, auth });
+    }
+  }
+
+  rememberSocketSession(ws, auth) {
+    const sessionId = this.makeSessionId(auth.userUuid);
+    const attachment = this.buildSocketAttachment(sessionId, auth);
+    if (typeof ws.serializeAttachment === 'function') {
+      ws.serializeAttachment(attachment);
+    }
+    this.sessions.set(sessionId, { ws, auth: attachment.auth });
+    return { sessionId, auth: attachment.auth };
+  }
+
+  ensureSessionForSocket(ws) {
+    const attachment = this.getSocketAttachment(ws);
+    const sessionId = attachment?.sessionId;
+    const auth = attachment?.auth;
+    if (!sessionId || !auth?.userUuid) return null;
+    const cached = this.sessions.get(sessionId);
+    if (!cached) {
+      this.sessions.set(sessionId, { ws, auth });
+      return { sessionId, ws, auth };
+    }
+    if (cached.ws !== ws) {
+      this.sessions.set(sessionId, { ws, auth: cached.auth || auth });
+    }
+    return this.sessions.get(sessionId)
+      ? { sessionId, ...this.sessions.get(sessionId) }
+      : null;
+  }
+
+  sanitizeRoomState() {
+    return publicRoomStateWithCurrentStreamUrl({
+      roomId: this.room.roomId,
+      version: this.room.version,
+      schemaVersion: this.room.schemaVersion,
+      controllerUserUuid: this.room.controllerUserUuid,
+      controllerUserId: this.room.controllerUserId,
+      controllerHeartbeatAt: this.room.controllerHeartbeatAt ?? null,
+      settings: this.room.settings || {
+        allowMemberControl: true,
+        autoPauseOnMemberChange: true,
+        shareAudioLinks: true,
+      },
+      members: Object.values(this.room.members).map(sanitizeMemberForState).filter(Boolean),
+      queue: this.room.queue,
+      currentIndex: this.room.currentIndex,
+      track: this.room.track,
+      playback: this.room.playback,
+      controllerOfflineSince: this.room.controllerOfflineSince ?? null,
+      roomStatus: this.room.roomStatus || 'active',
+      closedReason: this.room.closedReason ?? null,
+      updatedAt: this.room.updatedAt,
+    }, this.room.streamUrlCache);
+  }
+
+  refreshCurrentStreamUrlCache() {
+    if (this.room.settings?.shareAudioLinks !== false) {
+      const currentTrack = this.currentTrack();
+      const queueTrack = this.room.queue[this.room.currentIndex] || null;
+      const candidate = [this.room.track, queueTrack].find((track) =>
+        track?.stableKey === currentTrack?.stableKey && track.streamUrls?.length
+      );
+      this.room.streamUrlCache = cacheStreamUrls(
+        this.room.streamUrlCache,
+        currentTrack?.stableKey,
+        candidate?.streamUrls
+      );
+    } else {
+      this.room.streamUrlCache = {};
+    }
+    this.normalizeCurrentTrack();
+    this.room.queue = this.room.queue.map(stripTrackAudioLink);
+    this.room.track = stripTrackAudioLink(this.room.track);
+  }
+
+  expectedPosition(atMs = nowMs()) {
+    const p = this.room.playback;
+    if (p.state !== 'playing') return p.basePositionMs;
+    const projectedPositionMs = p.basePositionMs +
+      (atMs - p.baseTimestampMs) * (p.playbackRate || 1);
+    return wrapSingleTrackRepeatPosition(
+      projectedPositionMs,
+      p,
+      this.currentTrack()
+    );
+  }
+
+  async persist() {
+    this.room.updatedAt = nowMs();
+    await this.state.storage.put('room', this.room);
+  }
+
+  hasProcessedEvent(eventId) {
+    if (!eventId) return false;
+    return this.room.processedEventIds.includes(eventId);
+  }
+
+  markProcessedEvent(eventId) {
+    if (!eventId) return;
+    const next = Array.isArray(this.room.processedEventIds)
+      ? this.room.processedEventIds.filter((id) => id !== eventId)
+      : [];
+    next.push(eventId);
+    if (next.length > MAX_PROCESSED_EVENT_IDS) {
+      next.splice(0, next.length - MAX_PROCESSED_EVENT_IDS);
+    }
+    this.room.processedEventIds = next;
+  }
+
+  controllerSessions() {
+    const results = [];
+    for (const session of this.sessions.values()) {
+      if (session.auth.userUuid === this.room.controllerUserUuid) {
+        results.push(session);
+      }
+    }
+    return results;
+  }
+
+  sendToController(payload) {
+    for (const { ws } of this.controllerSessions()) {
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch {}
+    }
+  }
+
+  async clearControllerOfflineTimeout() {
+    if (typeof this.state.storage.deleteAlarm === 'function') {
+      await this.state.storage.deleteAlarm();
+    }
+  }
+
+  refreshControllerHeartbeat() {
+    this.room.controllerHeartbeatAt = nowMs();
+  }
+
+  async refreshControllerHeartbeatForSocket(session) {
+    if (session?.auth?.userUuid !== this.room.controllerUserUuid) return;
+    if (this.room.roomStatus === 'closed') return;
+    this.refreshControllerHeartbeat();
+    if (this.room.roomStatus === 'controller_offline') {
+      await this.markControllerOnline();
+      return;
+    }
+    await this.persist();
+    await this.scheduleLifecycleAlarm();
+  }
+
+  controllerHeartbeatDeadline() {
+    if (!this.room.controllerUserUuid) return null;
+    const lastHeartbeatAt = this.room.controllerHeartbeatAt ?? this.room.updatedAt ?? nowMs();
+    return lastHeartbeatAt + CONTROLLER_HEARTBEAT_TIMEOUT_MS;
+  }
+
+  controllerOfflineDeadline() {
+    if (!this.room.controllerOfflineSince) return null;
+    return this.room.controllerOfflineSince + CONTROLLER_OFFLINE_GRACE_PERIOD_MS;
+  }
+
+  async scheduleLifecycleAlarm() {
+    if (typeof this.state.storage.setAlarm !== 'function') return;
+    const deadlines = [];
+    if (this.room.roomStatus === 'active') {
+      const heartbeatDeadline = this.controllerHeartbeatDeadline();
+      if (heartbeatDeadline) deadlines.push(heartbeatDeadline);
+    }
+    if (this.room.roomStatus === 'controller_offline') {
+      const offlineDeadline = this.controllerOfflineDeadline();
+      if (offlineDeadline) deadlines.push(offlineDeadline);
+    }
+    if (deadlines.length === 0) {
+      await this.clearControllerOfflineTimeout();
+      return;
+    }
+    await this.state.storage.setAlarm(Math.min(...deadlines));
+  }
+
+  async markControllerOffline() {
+    if (!this.room.roomId || this.room.roomStatus === 'closed') return;
+    if (this.room.controllerOfflineSince) return;
+    this.room.controllerOfflineSince = nowMs();
+    this.room.roomStatus = 'controller_offline';
+    this.room.closedReason = null;
+    this.room.version += 1;
+    await this.persist();
+    await this.scheduleLifecycleAlarm();
+    this.broadcast({
+      type: 'room_suspended',
+      roomId: this.room.roomId,
+      version: this.room.version,
+      state: this.sanitizeRoomState(),
+      expectedPositionMs: this.expectedPosition(),
+      nowMs: nowMs(),
+      message: 'controller_offline',
+    });
+  }
+
+  async markControllerOnline() {
+    if (!this.room.roomId || this.room.roomStatus === 'closed') return;
+    if (this.room.roomStatus !== 'controller_offline') return;
+    this.room.controllerOfflineSince = null;
+    this.room.roomStatus = 'active';
+    this.room.closedReason = null;
+    this.room.version += 1;
+    await this.persist();
+    await this.scheduleLifecycleAlarm();
+    this.broadcast({
+      type: 'room_resumed',
+      roomId: this.room.roomId,
+      version: this.room.version,
+      state: this.sanitizeRoomState(),
+      expectedPositionMs: this.expectedPosition(),
+      nowMs: nowMs(),
+      message: 'controller_reconnected',
+    });
+  }
+
+  broadcast(payload) {
+    for (const { ws } of this.sessions.values()) {
+      try {
+        ws.send(JSON.stringify(payload));
+      } catch {}
+    }
+  }
+
+  async broadcastRoomState(type = 'room_state_updated', causedBy = null, message = null) {
+    if (!this.room.roomId || this.room.roomStatus === 'closed') return;
+    const payload = {
+      type,
+      roomId: this.room.roomId,
+      version: this.room.version,
+      state: this.sanitizeRoomState(),
+      expectedPositionMs: this.expectedPosition(),
+      nowMs: nowMs(),
+      causedBy,
+      message,
+    };
+    this.broadcast(payload);
+  }
+
+  normalizeSettings(settings) {
+    return sanitizeRoomSettings(settings);
+  }
+
+  sanitizeInitialSnapshot(snapshot) {
+    const queue = sanitizeQueue(snapshot?.queue);
+    const currentIndex = normalizeIndex(snapshot?.currentIndex, queue.length, 0);
+    const track = queue[currentIndex] || null;
+    return {
+      settings: this.normalizeSettings(snapshot?.settings),
+      queue,
+      currentIndex,
+      track,
+      isPlaying: snapshot?.isPlaying === true,
+      positionMs: Number.isFinite(Number(snapshot?.positionMs)) ? Math.max(0, Math.floor(Number(snapshot.positionMs))) : 0,
+      repeatMode: normalizeRepeatMode(snapshot?.repeatMode, 0),
+      shuffleEnabled: snapshot?.shuffleEnabled === true,
+    };
+  }
+
+  eventQueueOrCurrent(eventQueue) {
+    if (!Array.isArray(eventQueue)) return this.room.queue;
+    const nextQueue = sanitizeQueue(eventQueue);
+    return nextQueue.length ? nextQueue : this.room.queue;
+  }
+
+  normalizeCurrentTrack() {
+    this.room.currentIndex = normalizeIndex(
+      this.room.currentIndex,
+      this.room.queue.length,
+      this.room.currentIndex
+    );
+    const queueTrack = this.room.queue[this.room.currentIndex] || null;
+    this.room.track = queueTrack || sanitizeTrack(this.room.track);
+  }
+
+  currentTrack() {
+    return this.room.queue[this.room.currentIndex] || this.room.track || null;
+  }
+
+  currentTrackStableKey() {
+    return this.currentTrack()?.stableKey || null;
+  }
+
+  normalizeTrackFinishBarrier(barrier) {
+    if (!isPlainObject(barrier)) return null;
+    const trackStableKey = normalizeOptionalString(barrier.trackStableKey);
+    if (!trackStableKey) return null;
+    const targetUserUuids = Array.isArray(barrier.targetUserUuids)
+      ? [...new Set(barrier.targetUserUuids.map(normalizeUserUuid).filter(Boolean))]
+      : [];
+    const finishedUserUuids = Array.isArray(barrier.finishedUserUuids)
+      ? [...new Set(barrier.finishedUserUuids.map(normalizeUserUuid).filter(Boolean))]
+      : [];
+    const proposal = isPlainObject(barrier.controllerProposal)
+      ? {
+          queue: sanitizeQueue(barrier.controllerProposal.queue),
+          currentIndex: Number.isInteger(barrier.controllerProposal.currentIndex)
+            ? barrier.controllerProposal.currentIndex
+            : 0,
+          track: sanitizeTrack(barrier.controllerProposal.track),
+          shouldAdvance: barrier.controllerProposal.shouldAdvance === true,
+        }
+      : null;
+    return {
+      trackStableKey,
+      targetUserUuids,
+      finishedUserUuids,
+      controllerProposal: proposal,
+      finishPositionMs: Math.max(0, Number(barrier.finishPositionMs ?? 0)),
+      createdAt: Number(barrier.createdAt) || nowMs(),
+    };
+  }
+
+  activeMemberUserUuids() {
+    const active = new Set();
+    for (const { auth } of this.sessions.values()) {
+      if (auth?.userUuid && this.room.members[auth.userUuid]) {
+        active.add(auth.userUuid);
+      }
+    }
+    return [...active];
+  }
+
+  clearTrackFinishBarrier() {
+    this.room.trackFinishBarrier = null;
+  }
+
+  clearMemberChangePauseBarrier() {
+    this.room.memberChangePausePending = false;
+  }
+
+  eventClientSequence(event) {
+    return normalizePositiveInteger(event?.clientSequence);
+  }
+
+  eventClientInstanceId(event) {
+    const instanceId = normalizeOptionalString(event?.clientInstanceId);
+    if (!instanceId || instanceId.length > 80) return null;
+    return /^[A-Za-z0-9:_-]+$/.test(instanceId) ? instanceId : null;
+  }
+
+  eventClientTime(event) {
+    return normalizePositiveInteger(event?.clientTimeMs);
+  }
+
+  shouldOrderControlEvent(type, effectiveType) {
+    return CONTROLLABLE_EVENT_TYPES.has(effectiveType) ||
+      REQUEST_CONTROL_EVENT_TYPES.has(type);
+  }
+
+  controlSequenceOrderKey(event, senderId) {
+    const userUuid = normalizeUserUuid(senderId);
+    const instanceId = this.eventClientInstanceId(event);
+    if (!userUuid || !instanceId) return null;
+    return `${userUuid}:${instanceId}`;
+  }
+
+  controlTimeOrderKey(senderId) {
+    return normalizeUserUuid(senderId);
+  }
+
+  shouldDropOutdatedControlEvent(event, type, effectiveType, senderId) {
+    if (!this.shouldOrderControlEvent(type, effectiveType)) return false;
+
+    const clientSequence = this.eventClientSequence(event);
+    const sequenceKey = this.controlSequenceOrderKey(event, senderId);
+    const lastClientSequence = Number(this.room.lastControlClientSequences?.[sequenceKey]) || 0;
+    if (clientSequence != null && sequenceKey) {
+      return lastClientSequence > 0 && clientSequence <= lastClientSequence;
+    }
+
+    const clientTime = this.eventClientTime(event);
+    const timeKey = this.controlTimeOrderKey(senderId);
+    const lastClientTime = Number(this.room.lastControlClientTimes?.[timeKey]) || 0;
+    return clientTime != null && lastClientTime > 0 && clientTime < lastClientTime;
+  }
+
+  recordControlOrder(event, senderId) {
+    this.room.lastControlClientSequences = normalizeControlOrderMap(this.room.lastControlClientSequences);
+    this.room.lastControlClientTimes = normalizeControlOrderMap(this.room.lastControlClientTimes);
+
+    const clientSequence = this.eventClientSequence(event);
+    const sequenceKey = this.controlSequenceOrderKey(event, senderId);
+    if (clientSequence != null && sequenceKey) {
+      const previousSequence = Number(this.room.lastControlClientSequences[sequenceKey]) || 0;
+      this.room.lastControlClientSequences[sequenceKey] = Math.max(previousSequence, clientSequence);
+    }
+
+    const clientTime = this.eventClientTime(event);
+    const timeKey = this.controlTimeOrderKey(senderId);
+    if (clientTime != null && timeKey) {
+      const previousTime = Number(this.room.lastControlClientTimes[timeKey]) || 0;
+      this.room.lastControlClientTimes[timeKey] = Math.max(previousTime, clientTime);
+    }
+  }
+
+  trackCommittedControl(type, senderId, role, committedAt = nowMs(), event = null) {
+    this.room.lastControlCommittedAt = committedAt;
+    this.room.lastControlCommittedBy = normalizeOptionalString(senderId);
+    this.room.lastControlCommittedRole = normalizeOptionalString(role);
+    this.room.lastControlCommittedType = normalizeOptionalString(type);
+    this.recordControlOrder(event, senderId);
+  }
+
+  buildAppliedPayload(type, senderId, eventId, senderNickname = null) {
+    return {
+      type,
+      roomId: this.room.roomId,
+      version: this.room.version,
+      state: this.sanitizeRoomState(),
+      expectedPositionMs: this.expectedPosition(),
+      nowMs: nowMs(),
+      causedBy: {
+        userUuid: senderId,
+        userId: senderId,
+        nickname: normalizeNickname(senderNickname),
+        eventId,
+        type,
+      },
+    };
+  }
+
+  nextMemberControlRequestSequence() {
+    const next = (Number(this.room.lastMemberControlRequestSequence) || 0) + 1;
+    this.room.lastMemberControlRequestSequence = next;
+    return next;
+  }
+
+  sanitizeForwardedControlPayload(event, effectiveType) {
+    const fallbackQueue = Array.isArray(this.room.queue) ? this.room.queue : [];
+    const fallbackIndex = normalizeIndex(this.room.currentIndex, fallbackQueue.length, 0);
+    const requesterQueue = Array.isArray(event.queue) ? sanitizeQueue(event.queue) : [];
+    const shouldReplaceQueue = effectiveType === 'SET_TRACK' && requesterQueue.length > 0;
+    const requestedStableKey = requestedStableKeyFromRequesterEvent(event);
+    const nextQueue = shouldReplaceQueue ? requesterQueue : fallbackQueue;
+    const requestedIndex = effectiveType === 'SET_TRACK'
+      ? nextQueue.findIndex((track) => track?.stableKey === requestedStableKey)
+      : -1;
+    const nextIndex = requestedIndex >= 0 ? requestedIndex : fallbackIndex;
+    const nextTrack = effectiveType === 'SET_TRACK'
+      ? nextQueue[nextIndex] || this.currentTrack()
+      : this.currentTrack() || nextQueue[nextIndex] || null;
+    const nextPositionMs = Math.max(0, Number(event.positionMs ?? this.expectedPosition()));
+    const nextState =
+      effectiveType === 'PLAY'
+        ? 'playing'
+        : effectiveType === 'PAUSE'
+          ? 'paused'
+          : normalizePlaybackState(event.state, this.room.playback.state);
+    const shouldPlay =
+      typeof event.shouldPlay === 'boolean'
+        ? event.shouldPlay
+        : nextState === 'playing';
+    return {
+      queue: nextQueue,
+      currentIndex: nextIndex,
+      track: nextTrack || null,
+      positionMs: nextPositionMs,
+      shouldPlay,
+      stateName: nextState,
+      clientTimeMs: Number(event.clientTimeMs) || nowMs(),
+      requestTrackStableKey: requestedStableKey || nextTrack?.stableKey || null,
+      repeatMode: normalizeRepeatMode(event.repeatMode, this.room.playback.repeatMode ?? 0),
+      shuffleEnabled: typeof event.shuffleEnabled === 'boolean'
+        ? event.shuffleEnabled
+        : this.room.playback.shuffleEnabled === true,
+    };
+  }
+
+  shouldAcceptTrackBoundRequest(event, type) {
+    const requestedStableKey = requestedStableKeyFromRequesterEvent(event);
+    if (TRACK_BOUND_REQUEST_TYPES.has(type)) {
+      const currentStableKey = this.currentTrackStableKey();
+      if (requestedStableKey && currentStableKey && requestedStableKey === currentStableKey) {
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        error: 'member control target mismatch',
+      };
+    }
+    if (TRACK_QUEUE_BOUND_REQUEST_TYPES.has(type)) {
+      if (!requestedStableKey) {
+        return { ok: false, error: 'missing member control target' };
+      }
+      if (Array.isArray(event.queue)) {
+        const requesterQueue = sanitizeQueue(event.queue);
+        if (!requesterQueue.length) {
+          return { ok: false, error: 'member control queue unavailable' };
+        }
+        if (requesterQueue.some((track) => track?.stableKey === requestedStableKey)) {
+          return { ok: true };
+        }
+        return { ok: false, error: 'member control target unavailable' };
+      }
+      const roomQueue = Array.isArray(this.room.queue) ? this.room.queue : [];
+      if (roomQueue.some((track) => track?.stableKey === requestedStableKey)) {
+        return { ok: true };
+      }
+      return { ok: false, error: 'member control target unavailable' };
+    }
+    return { ok: true };
+  }
+
+  shouldAcceptRequestedControl() {
+    if (this.room.settings?.allowMemberControl === false) {
+      return { ok: false, error: 'member control disabled' };
+    }
+    if (!this.controllerSessions().length) {
+      return { ok: false, error: 'controller offline' };
+    }
+    return { ok: true };
+  }
+
+  shouldApplyControllerHeartbeat(now) {
+    const lastAt = Number(this.room.lastControlCommittedAt) || 0;
+    const lastRole = this.room.lastControlCommittedRole;
+    if (
+      lastRole === 'listener' &&
+      now - lastAt < HEARTBEAT_SUPPRESSION_AFTER_MEMBER_CONTROL_MS
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  shouldIgnoreMemberChangeHeartbeat(event, isController) {
+    if (!isController || !this.room.memberChangePausePending) return false;
+    return normalizePlaybackState(event?.state, this.room.playback.state) === 'playing';
+  }
+
+  shouldIgnoreHeartbeatForTrackFinishBarrier(event) {
+    const barrier = this.room.trackFinishBarrier;
+    if (!barrier?.trackStableKey) return false;
+    const eventTrack = sanitizeTrack(event.track);
+    const eventStableKey =
+      normalizeOptionalString(event.finishedTrackStableKey) ||
+      normalizeOptionalString(event.requestTrackStableKey) ||
+      eventTrack?.stableKey ||
+      this.currentTrackStableKey();
+    return eventStableKey === barrier.trackStableKey;
+  }
+
+  trackFinishTargets(senderId) {
+    const active = this.activeMemberUserUuids();
+    if (senderId && !active.includes(senderId) && this.room.members[senderId]) {
+      active.push(senderId);
+    }
+    return [...new Set(active)];
+  }
+
+  sanitizeTrackFinishProposal(event) {
+    const nextQueue = this.eventQueueOrCurrent(event.queue);
+    if (!nextQueue.length) {
+      return {
+        queue: [],
+        currentIndex: 0,
+        track: null,
+        shouldAdvance: false,
+      };
+    }
+    const rawNextIndex = Number.isInteger(event.nextIndex)
+      ? event.nextIndex
+      : event.currentIndex;
+    const nextIndex = normalizeIndex(rawNextIndex, nextQueue.length, this.room.currentIndex);
+    const nextTrack = nextQueue[nextIndex] || null;
+    return {
+      queue: nextQueue,
+      currentIndex: nextIndex,
+      track: nextTrack,
+      shouldAdvance: event.shouldPlay === true && Boolean(nextTrack),
+    };
+  }
+
+  pruneTrackFinishBarrierTargets() {
+    const barrier = this.room.trackFinishBarrier;
+    if (!barrier) return null;
+    const liveTargets = barrier.targetUserUuids.filter((userUuid) => this.room.members[userUuid]);
+    barrier.targetUserUuids = liveTargets;
+    barrier.finishedUserUuids = barrier.finishedUserUuids.filter((userUuid) => liveTargets.includes(userUuid));
+    return barrier;
+  }
+
+  isTrackFinishBarrierReady() {
+    const barrier = this.pruneTrackFinishBarrierTargets();
+    if (!barrier) return false;
+    if (!barrier.targetUserUuids.length) return true;
+    return barrier.targetUserUuids.every((userUuid) => barrier.finishedUserUuids.includes(userUuid));
+  }
+
+  async completeTrackFinishBarrier({ senderId, senderNickname, role, eventId, commitAt }) {
+    const barrier = this.room.trackFinishBarrier;
+    if (!barrier) return this.buildAppliedPayload('TRACK_FINISHED', senderId, eventId, senderNickname);
+    const proposal = barrier.controllerProposal;
+    this.clearTrackFinishBarrier();
+    this.clearMemberChangePauseBarrier();
+    if (proposal?.shouldAdvance && proposal.track) {
+      this.room.queue = proposal.queue;
+      this.room.currentIndex = normalizeIndex(proposal.currentIndex, proposal.queue.length, this.room.currentIndex);
+      this.room.track = proposal.track;
+      this.room.playback = {
+        ...this.room.playback,
+        state: 'playing',
+        basePositionMs: 0,
+        baseTimestampMs: commitAt,
+      };
+    } else {
+      this.room.playback = {
+        ...this.room.playback,
+        state: 'paused',
+        basePositionMs: Math.max(0, Number(barrier.finishPositionMs ?? this.expectedPosition(commitAt))),
+        baseTimestampMs: commitAt,
+      };
+    }
+    this.refreshCurrentStreamUrlCache();
+    if (role === 'controller') {
+      this.refreshControllerHeartbeat();
+    }
+    this.trackCommittedControl('TRACK_FINISHED', senderId, role === 'controller' ? 'controller' : 'listener', commitAt);
+    this.room.roomStatus = 'active';
+    this.room.controllerOfflineSince = null;
+    this.room.closedReason = null;
+    this.room.version += 1;
+    await this.persist();
+    await this.scheduleLifecycleAlarm();
+    const payload = this.buildAppliedPayload('TRACK_FINISHED', senderId, eventId, senderNickname);
+    this.broadcast({
+      type: 'room_state_updated',
+      roomId: payload.roomId,
+      version: payload.version,
+      state: payload.state,
+      expectedPositionMs: payload.expectedPositionMs,
+      nowMs: payload.nowMs,
+      causedBy: payload.causedBy,
+    });
+    return payload;
+  }
+
+  async handleTrackFinishedEvent({ event, senderId, senderNickname, role, eventId, isController, commitAt }) {
+    const currentStableKey = this.currentTrackStableKey();
+    const finishedStableKey =
+      normalizeOptionalString(event.finishedTrackStableKey) ||
+      normalizeOptionalString(event.requestTrackStableKey) ||
+      currentStableKey;
+    if (!finishedStableKey || finishedStableKey !== currentStableKey) {
+      this.markProcessedEvent(eventId);
+      await this.persist();
+      return {
+        ok: true,
+        applied: this.buildAppliedPayload('TRACK_FINISHED', senderId, eventId, senderNickname),
+      };
+    }
+    let barrier = this.room.trackFinishBarrier;
+    if (!barrier || barrier.trackStableKey !== finishedStableKey) {
+      barrier = {
+        trackStableKey: finishedStableKey,
+        targetUserUuids: this.trackFinishTargets(senderId),
+        finishedUserUuids: [],
+        controllerProposal: null,
+        finishPositionMs: Math.max(0, Number(event.positionMs ?? this.expectedPosition(commitAt))),
+        createdAt: commitAt,
+      };
+      this.room.trackFinishBarrier = barrier;
+    }
+    if (!barrier.targetUserUuids.includes(senderId) && this.room.members[senderId]) {
+      barrier.targetUserUuids.push(senderId);
+    }
+    if (!barrier.finishedUserUuids.includes(senderId)) {
+      barrier.finishedUserUuids.push(senderId);
+    }
+    barrier.finishPositionMs = Math.max(
+      barrier.finishPositionMs || 0,
+      Number(event.positionMs ?? this.expectedPosition(commitAt)) || 0
+    );
+    if (isController) {
+      barrier.controllerProposal = this.sanitizeTrackFinishProposal(event);
+      this.refreshControllerHeartbeat();
+    }
+    this.markProcessedEvent(eventId);
+    if (isController || this.isTrackFinishBarrierReady()) {
+      const applied = await this.completeTrackFinishBarrier({
+        senderId,
+        senderNickname,
+        role,
+        eventId,
+        commitAt,
+      });
+      return { ok: true, applied };
+    }
+    await this.persist();
+    return {
+      ok: true,
+      applied: {
+        type: 'TRACK_FINISHED',
+        roomId: this.room.roomId,
+        causedBy: {
+          userUuid: senderId,
+          userId: senderId,
+          nickname: senderNickname,
+          eventId,
+          type: 'TRACK_FINISHED',
+        },
+      },
+    };
+  }
+
+  async commitControlEvent({ event, type, effectiveType, senderId, senderNickname, role, eventId, isController, commitAt }) {
+    const committedAt = commitAt || nowMs();
+    if (effectiveType !== 'HEARTBEAT' && effectiveType !== 'LINK_READY' && effectiveType !== 'UPDATE_SETTINGS') {
+      this.clearTrackFinishBarrier();
+    }
+    if (effectiveType === 'PLAY' || effectiveType === 'SET_TRACK') {
+      this.clearMemberChangePauseBarrier();
+    }
+    const nextRepeatMode = normalizeRepeatMode(event.repeatMode, this.room.playback.repeatMode ?? 0);
+    const nextShuffleEnabled = typeof event.shuffleEnabled === 'boolean'
+      ? event.shuffleEnabled
+      : this.room.playback.shuffleEnabled === true;
+    if (effectiveType === 'PLAY') {
+      const nextQueue = this.eventQueueOrCurrent(event.queue);
+      const nextIndex = normalizeIndex(event.currentIndex, nextQueue.length, this.room.currentIndex);
+      this.room.playback = {
+        ...this.room.playback,
+        state: 'playing',
+        basePositionMs: Math.max(0, Number(event.positionMs ?? this.expectedPosition())),
+        baseTimestampMs: committedAt,
+        repeatMode: nextRepeatMode,
+        shuffleEnabled: nextShuffleEnabled,
+      };
+      this.room.queue = nextQueue;
+      this.room.currentIndex = nextIndex;
+      this.room.track = sanitizeTrack(event.track) || nextQueue[nextIndex] || this.room.track;
+    } else if (effectiveType === 'PAUSE') {
+      const nextQueue = this.eventQueueOrCurrent(event.queue);
+      const nextIndex = normalizeIndex(event.currentIndex, nextQueue.length, this.room.currentIndex);
+      this.room.playback = {
+        ...this.room.playback,
+        state: 'paused',
+        basePositionMs: Math.max(0, Number(event.positionMs ?? this.expectedPosition())),
+        baseTimestampMs: committedAt,
+        repeatMode: nextRepeatMode,
+        shuffleEnabled: nextShuffleEnabled,
+      };
+      this.room.queue = nextQueue;
+      this.room.currentIndex = nextIndex;
+      this.room.track = sanitizeTrack(event.track) || nextQueue[nextIndex] || this.room.track;
+    } else if (effectiveType === 'SEEK') {
+      const nextQueue = this.eventQueueOrCurrent(event.queue);
+      const nextIndex = normalizeIndex(event.currentIndex, nextQueue.length, this.room.currentIndex);
+      const currentTrack = sanitizeTrack(event.track) || nextQueue[nextIndex] || this.currentTrack();
+      this.room.playback = {
+        ...this.room.playback,
+        basePositionMs: Math.max(0, Number(event.positionMs ?? 0)),
+        baseTimestampMs: committedAt,
+        repeatMode: nextRepeatMode,
+        shuffleEnabled: nextShuffleEnabled,
+      };
+      this.room.queue = nextQueue;
+      this.room.currentIndex = nextIndex;
+      this.room.track = currentTrack;
+    } else if (effectiveType === 'HEARTBEAT') {
+      const nextQueue = this.eventQueueOrCurrent(event.queue);
+      const nextIndex = normalizeIndex(event.currentIndex, nextQueue.length, this.room.currentIndex);
+      this.room.playback = {
+        ...this.room.playback,
+        state: normalizePlaybackState(event.state, this.room.playback.state),
+        basePositionMs: Math.max(0, Number(event.positionMs ?? this.expectedPosition())),
+        baseTimestampMs: committedAt,
+        repeatMode: nextRepeatMode,
+        shuffleEnabled: nextShuffleEnabled,
+      };
+      this.room.queue = nextQueue;
+      this.room.currentIndex = nextIndex;
+      this.room.track = sanitizeTrack(event.track) || nextQueue[nextIndex] || this.room.track;
+    } else if (effectiveType === 'PLAYBACK_MODE') {
+      this.room.playback = {
+        ...this.room.playback,
+        repeatMode: nextRepeatMode,
+        shuffleEnabled: nextShuffleEnabled,
+      };
+    } else if (effectiveType === 'LINK_READY') {
+      if (!isController) {
+        return { ok: false, error: 'only controller can publish link' };
+      }
+      if (this.room.settings?.shareAudioLinks === false) {
+        return { ok: false, error: 'audio link sharing disabled' };
+      }
+      const sanitizedEventTrack = sanitizeTrack(event.track);
+      const targetStableKey =
+        normalizeOptionalString(event.requestTrackStableKey) ||
+        sanitizedEventTrack?.stableKey ||
+        this.currentTrack()?.stableKey ||
+        null;
+      if (!targetStableKey) {
+        return { ok: false, error: 'missing requestTrackStableKey' };
+      }
+      const currentStableKey = this.currentTrackStableKey();
+      if (!currentStableKey || targetStableKey !== currentStableKey) {
+        return { ok: false, error: 'link target does not match current track' };
+      }
+      const streamUrls = sanitizedEventTrack?.streamUrls || [];
+      if (!streamUrls.length) {
+        return { ok: false, error: 'missing direct stream URLs' };
+      }
+      this.room.streamUrlCache = cacheStreamUrls(
+        this.room.streamUrlCache,
+        targetStableKey,
+        streamUrls,
+        committedAt
+      );
+    } else if (effectiveType === 'SET_TRACK') {
+      const nextQueue = this.eventQueueOrCurrent(event.queue);
+      const nextIndex = normalizeIndex(event.currentIndex, nextQueue.length, this.room.currentIndex);
+      this.room.queue = nextQueue;
+      this.room.currentIndex = nextIndex;
+      this.room.track = sanitizeTrack(event.track) || nextQueue[nextIndex] || null;
+      this.room.playback = {
+        ...this.room.playback,
+        state: event.shouldPlay ? 'playing' : 'paused',
+        basePositionMs: Math.max(0, Number(event.positionMs ?? 0)),
+        baseTimestampMs: committedAt,
+        repeatMode: nextRepeatMode,
+        shuffleEnabled: nextShuffleEnabled,
+      };
+    } else if (effectiveType === 'SET_QUEUE') {
+      this.room.queue = this.eventQueueOrCurrent(event.queue);
+      this.room.currentIndex = normalizeIndex(event.currentIndex, this.room.queue.length, this.room.currentIndex);
+      this.room.track = this.room.queue[this.room.currentIndex] || this.room.track;
+    } else if (effectiveType === 'UPDATE_SETTINGS') {
+      this.room.settings = this.normalizeSettings(event.roomSettings);
+      if (this.room.settings.shareAudioLinks === false) {
+        this.room.queue = this.room.queue.map(stripTrackAudioLink);
+        this.room.track = stripTrackAudioLink(this.room.track);
+      }
+    }
+
+    this.refreshCurrentStreamUrlCache();
+
+    if (isController) {
+      this.refreshControllerHeartbeat();
+    }
+    if (ARBITRATED_CONTROL_TYPES.has(effectiveType) || REQUEST_CONTROL_EVENT_TYPES.has(type)) {
+      this.trackCommittedControl(effectiveType, senderId, isController ? 'controller' : 'listener', committedAt, event);
+    }
+    this.markProcessedEvent(eventId);
+
+    this.room.roomStatus = 'active';
+    this.room.controllerOfflineSince = null;
+    this.room.closedReason = null;
+    this.room.version += 1;
+    await this.persist();
+    await this.scheduleLifecycleAlarm();
+
+    const payload = this.buildAppliedPayload(type, senderId, eventId, senderNickname);
+    this.broadcast({
+      type: 'room_state_updated',
+      roomId: payload.roomId,
+      version: payload.version,
+      state: payload.state,
+      expectedPositionMs: payload.expectedPositionMs,
+      nowMs: payload.nowMs,
+      causedBy: payload.causedBy,
+    });
+    return { ok: true, applied: payload };
+  }
+
+  consumeLinkRequestBudget(userUuid, stableKey) {
+    const key = `${userUuid}:${stableKey}`;
+    const now = nowMs();
+    const lastAt = this.linkRequestCooldowns.get(key) || 0;
+    if (now - lastAt < LINK_REQUEST_COOLDOWN_MS) {
+      return false;
+    }
+    this.linkRequestCooldowns.set(key, now);
+    return true;
+  }
+
+  async publishCachedLinkState(senderId, senderNickname, eventId) {
+    this.markProcessedEvent(eventId);
+    this.room.version += 1;
+    await this.persist();
+    const payload = this.buildAppliedPayload('REQUEST_LINK', senderId, eventId, senderNickname);
+    this.broadcast({
+      type: 'room_state_updated',
+      roomId: payload.roomId,
+      version: payload.version,
+      state: payload.state,
+      expectedPositionMs: payload.expectedPositionMs,
+      nowMs: payload.nowMs,
+      causedBy: payload.causedBy,
+    });
+    return { ok: true, applied: payload };
+  }
+
+  shouldSkipMemberChangeAutoPause(expectedVersion) {
+    if (this.room.settings?.autoPauseOnMemberChange !== true) return true;
+    if (expectedVersion != null && this.room.version !== expectedVersion) return true;
+    return false;
+  }
+
+  async pauseForMemberChange(message, userUuid, nickname, causedByType, expectedVersion = null) {
+    if (this.shouldSkipMemberChangeAutoPause(expectedVersion)) return false;
+    this.room.memberChangePausePending = true;
+    this.room.playback = {
+      ...this.room.playback,
+      state: 'paused',
+      basePositionMs: Number(this.expectedPosition()),
+      baseTimestampMs: nowMs(),
+    };
+    this.room.version += 1;
+    await this.persist();
+    await this.broadcastRoomState(
+      'room_state_updated',
+      {
+        userUuid,
+        userId: userUuid,
+        nickname,
+        eventId: null,
+        type: causedByType,
+      },
+      message
+    );
+    return true;
+  }
+
+  async leaveMember(auth) {
+    if (auth.userUuid === this.room.controllerUserUuid) {
+      await this.closeRoom('controller_left');
+      return { ok: true };
+    }
+
+    const member = this.room.members[auth.userUuid];
+    if (!member) return { ok: false, error: 'member not in room' };
+    const nickname = member.nickname || auth.nickname || auth.userUuid;
+    delete this.room.members[auth.userUuid];
+    this.room.version += 1;
+    for (const [sessionId, session] of this.sessions.entries()) {
+      if (session.auth.userUuid !== auth.userUuid) continue;
+      this.sessions.delete(sessionId);
+      try {
+        session.ws.close(4000, 'member_left');
+      } catch {}
+    }
+    await this.persist();
+    await this.broadcastRoomState(
+      'room_state_updated',
+      {
+        userUuid: auth.userUuid,
+        userId: auth.userUuid,
+        nickname,
+        eventId: null,
+        type: 'MEMBER_LEFT',
+      },
+      `member_left:${nickname}`
+    );
+    return {
+      ok: true,
+      applied: this.buildAppliedPayload('MEMBER_LEFT', auth.userUuid, null, nickname),
+    };
+  }
+
+  async closeRoom(reason = 'controller_timeout') {
+    if (!this.room.roomId || this.room.roomStatus === 'closed') return;
+    this.room.roomStatus = 'closed';
+    this.room.closedReason = reason;
+    this.room.controllerOfflineSince = this.room.controllerOfflineSince ?? nowMs();
+    this.room.version += 1;
+    const payload = {
+      type: 'room_closed',
+      roomId: this.room.roomId,
+      version: this.room.version,
+      state: this.sanitizeRoomState(),
+      expectedPositionMs: this.expectedPosition(),
+      nowMs: nowMs(),
+      message: reason,
+    };
+    this.broadcast(payload);
+    await this.clearControllerOfflineTimeout();
+    for (const { ws } of this.sessions.values()) {
+      try {
+        ws.close(4001, reason);
+      } catch {}
+    }
+    this.sessions.clear();
+    if (typeof this.state.storage.deleteAll === 'function') {
+      await this.state.storage.deleteAll();
+    }
+    this.room = this.createEmptyRoom();
+  }
+
+  async tokenKey() {
+    if (!this.tokenKeyPromise) {
+      const secret = this.env.LISTEN_TOGETHER_TOKEN_SECRET || '';
+      if (!secret) {
+        throw new Error('LISTEN_TOGETHER_TOKEN_SECRET missing');
+      }
+      this.tokenKeyPromise = crypto.subtle.importKey(
+        'raw',
+        textEncoder.encode(secret),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign', 'verify']
+      );
+    }
+    return this.tokenKeyPromise;
+  }
+
+  async signTokenPayload(payloadJson) {
+    const signature = await crypto.subtle.sign('HMAC', await this.tokenKey(), textEncoder.encode(payloadJson));
+    return toBase64Url(new Uint8Array(signature));
+  }
+
+  async makeToken({ roomId, userUuid, nickname, role }) {
+    const payload = {
+      roomId: normalizeRoomId(roomId),
+      userUuid: normalizeUserUuid(userUuid),
+      userId: normalizeUserUuid(userUuid),
+      nickname: normalizeNickname(nickname),
+      role,
+      issuedAt: nowMs(),
+      expiresAt: nowMs() + TOKEN_TTL_MS,
+    };
+    const payloadJson = JSON.stringify(payload);
+    const payloadEncoded = toBase64Url(textEncoder.encode(payloadJson));
+    const signature = await this.signTokenPayload(payloadJson);
+    return `${payloadEncoded}.${signature}`;
+  }
+
+  async parseToken(token) {
+    try {
+      const [payloadEncoded, signature] = String(token || '').split('.');
+      if (!payloadEncoded || !signature) return null;
+      const payloadBytes = fromBase64Url(payloadEncoded);
+      const payloadJson = new TextDecoder().decode(payloadBytes);
+      const verified = await crypto.subtle.verify(
+        'HMAC',
+        await this.tokenKey(),
+        fromBase64Url(signature),
+        textEncoder.encode(payloadJson)
+      );
+      if (!verified) return null;
+      const parsed = JSON.parse(payloadJson);
+      const roomId = normalizeRoomId(parsed.roomId);
+      const userUuid = normalizeUserUuid(parsed.userUuid || parsed.userId);
+      const nickname = sanitizeNicknameOrNull(parsed.nickname);
+      if (validateRoomId(roomId) || validateUserUuid(userUuid)) return null;
+      const expiresAt = Number(parsed.expiresAt);
+      if (!Number.isFinite(expiresAt) || expiresAt <= nowMs()) return null;
+      return { ...parsed, roomId, userUuid, userId: userUuid, nickname };
+    } catch {
+      return null;
+    }
+  }
+
+  async authenticateMember(request) {
+    const token = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+    const auth = token ? await this.parseToken(token) : null;
+    if (!auth || auth.roomId !== this.room.roomId) return null;
+    const member = this.room.members[auth.userUuid];
+    if (!member || member.role !== auth.role) return null;
+    return auth;
+  }
+
+  async fetch(request) {
+    await this.initialized;
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    if (request.method === 'POST' && path === '/bootstrap') {
+      const { roomId, userUuid, nickname, initialSnapshot } = await request.json();
+      const normalizedRoomId = normalizeRoomId(roomId);
+      const normalizedUserUuid = normalizeUserUuid(userUuid);
+      const normalizedNickname = normalizeNickname(nickname) || buildDefaultNickname();
+      const roomIdError = validateRoomId(normalizedRoomId);
+      if (roomIdError) return json({ ok: false, error: roomIdError }, 400);
+      const userUuidError = validateUserUuid(normalizedUserUuid);
+      if (userUuidError) return json({ ok: false, error: userUuidError }, 400);
+      const nicknameError = validateNickname(normalizedNickname);
+      if (nicknameError) return json({ ok: false, error: nicknameError }, 400);
+      if (eventContainsLocalTrack(initialSnapshot)) {
+        return json({ ok: false, error: 'local tracks cannot be shared' }, 400);
+      }
+      if (this.room.roomId) {
+        return json({ ok: false, error: 'room already initialized' }, 409);
+      }
+      if (!this.room.roomId) {
+        const snapshot = this.sanitizeInitialSnapshot(initialSnapshot);
+        if (!snapshot.track || snapshot.queue.length === 0) {
+          return json({ ok: false, error: 'initial snapshot requires a shareable current track' }, 400);
+        }
+        this.room.roomId = normalizedRoomId;
+        this.room.joinSecret = randomRoomJoinSecret();
+        this.room.controllerUserUuid = normalizedUserUuid;
+        this.room.controllerUserId = normalizedUserUuid;
+        this.room.schemaVersion = 1;
+        this.room.settings = snapshot.settings;
+        this.room.members[normalizedUserUuid] = buildMember({ userUuid: normalizedUserUuid, nickname: normalizedNickname, role: 'controller', joinedAt: nowMs() });
+        this.refreshControllerHeartbeat();
+        this.room.queue = snapshot.queue;
+        this.room.currentIndex = snapshot.currentIndex;
+        this.room.track = snapshot.track;
+        this.refreshCurrentStreamUrlCache();
+        this.room.playback = {
+          state: snapshot.isPlaying ? 'playing' : 'paused',
+          basePositionMs: snapshot.positionMs,
+          baseTimestampMs: nowMs(),
+          playbackRate: 1,
+          repeatMode: snapshot.repeatMode,
+          shuffleEnabled: snapshot.shuffleEnabled,
+        };
+        this.room.version = 1;
+        await this.persist();
+        await this.scheduleLifecycleAlarm();
+      }
+      const controllerMember = this.room.members[normalizedUserUuid];
+      const token = await this.makeToken({ roomId: normalizedRoomId, userUuid: normalizedUserUuid, nickname: normalizedNickname, role: 'controller' });
+      return json({ ok: true, roomId: normalizedRoomId, userUuid: normalizedUserUuid, userId: normalizedUserUuid, nickname: normalizedNickname, role: 'controller', memberSecret: controllerMember?.memberSecret || null, joinSecret: this.room.joinSecret, token, state: this.sanitizeRoomState() });
+    }
+
+    if (request.method === 'POST' && path === '/join') {
+      const body = await request.json().catch(() => ({}));
+      const identity = extractIdentity(body);
+      const suppliedMemberSecret = normalizeOptionalString(body.memberSecret);
+      const suppliedJoinSecret = normalizeOptionalString(body.joinSecret);
+      const userUuidError = validateUserUuid(identity.userUuid);
+      if (userUuidError) return json({ ok: false, error: userUuidError }, 400);
+      const nicknameError = validateNickname(identity.nickname);
+      if (nicknameError) return json({ ok: false, error: nicknameError }, 400);
+      if (!this.room.roomId) return json({ ok: false, error: 'room not initialized' }, 404);
+      if (this.room.roomStatus === 'closed') return json({ ok: false, error: 'room closed' }, 410);
+      const existingMember = this.room.members[identity.userUuid];
+      const bearerToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || '';
+      const bearerAuth = bearerToken ? await this.parseToken(bearerToken) : null;
+      const bearerMatchesIdentity = Boolean(
+        existingMember &&
+        bearerAuth?.roomId === this.room.roomId &&
+        bearerAuth.userUuid === identity.userUuid &&
+        bearerAuth.role === existingMember.role
+      );
+      if (existingMember && !memberSecretsMatch(existingMember.memberSecret, suppliedMemberSecret) && !bearerMatchesIdentity) {
+        return json({ ok: false, error: 'member_secret_required' }, 403);
+      }
+      if (!existingMember && !memberSecretsMatch(this.room.joinSecret, suppliedJoinSecret)) {
+        return json({ ok: false, error: 'join_secret_required' }, 403);
+      }
+      const role = identity.userUuid === this.room.controllerUserUuid ? 'controller' : 'listener';
+      const isNewMember = !existingMember;
+      const nicknameChanged = existingMember?.nickname !== identity.nickname;
+      this.room.members[identity.userUuid] = buildMember({
+        userUuid: identity.userUuid,
+        nickname: identity.nickname,
+        role,
+        joinedAt: existingMember?.joinedAt || nowMs(),
+        memberSecret: existingMember?.memberSecret || suppliedMemberSecret,
+      });
+      if (isNewMember || nicknameChanged) {
+        this.room.version += 1;
+        const memberChangeVersion = this.room.version;
+        if (
+          isNewMember &&
+          !this.room.trackFinishBarrier &&
+          this.room.settings?.autoPauseOnMemberChange === true
+        ) {
+          const paused = await this.pauseForMemberChange(
+            `member_joined:${identity.nickname}`,
+            identity.userUuid,
+            identity.nickname,
+            'MEMBER_JOINED',
+            memberChangeVersion
+          );
+          if (!paused) {
+            await this.persist();
+            await this.broadcastRoomState(
+              'room_state_updated',
+              {
+                userUuid: identity.userUuid,
+                userId: identity.userUuid,
+                nickname: identity.nickname,
+                eventId: null,
+                type: 'MEMBER_JOINED',
+              },
+              `member_joined:${identity.nickname}`
+            );
+          }
+        } else {
+          await this.persist();
+          await this.broadcastRoomState(
+            'room_state_updated',
+            {
+              userUuid: identity.userUuid,
+              userId: identity.userUuid,
+              nickname: identity.nickname,
+              eventId: null,
+              type: isNewMember ? 'MEMBER_JOINED' : 'MEMBER_REJOINED',
+            },
+            isNewMember ? `member_joined:${identity.nickname}` : `member_rejoined:${identity.nickname}`
+          );
+        }
+      }
+      const token = await this.makeToken({ roomId: this.room.roomId, userUuid: identity.userUuid, nickname: identity.nickname, role });
+      const memberSecret = this.room.members[identity.userUuid]?.memberSecret || null;
+      return json({
+        ok: true,
+        roomId: this.room.roomId,
+        userUuid: identity.userUuid,
+        userId: identity.userUuid,
+        nickname: identity.nickname,
+        role,
+        memberSecret,
+        joinSecret: this.room.joinSecret,
+        autoPauseOnJoin: isNewMember && this.room.settings?.autoPauseOnMemberChange === true,
+        token,
+        state: this.sanitizeRoomState(),
+        wsUrl: buildWsUrl(request.url, this.room.roomId, token),
+      });
+    }
+
+    if (request.method === 'GET' && path === '/state') {
+      if (!this.room.roomId) return json({ ok: false, error: 'room not initialized' }, 404);
+      const auth = await this.authenticateMember(request);
+      if (!auth) return json({ ok: false, error: 'unauthorized' }, 401);
+      return json({
+        ok: true,
+        state: this.sanitizeRoomState(),
+        expectedPositionMs: this.expectedPosition(),
+        serverNowMs: nowMs(),
+        autoPauseOnJoin: this.room.settings?.autoPauseOnMemberChange === true,
+      });
+    }
+
+    if (request.method === 'POST' && path === '/leave') {
+      if (!this.room.roomId) return json({ ok: false, error: 'room not initialized' }, 404);
+      const auth = await this.authenticateMember(request);
+      if (!auth) return json({ ok: false, error: 'unauthorized' }, 401);
+      if (this.room.roomStatus === 'closed') return json({ ok: false, error: 'room closed' }, 410);
+      const result = await this.leaveMember(auth);
+      return json(result, result.ok ? 200 : 400);
+    }
+
+    if (request.method === 'POST' && path === '/control') {
+      const auth = await this.authenticateMember(request);
+      if (!auth) return json({ ok: false, error: 'unauthorized' }, 401);
+      if (this.room.roomStatus === 'closed') return json({ ok: false, error: 'room closed' }, 410);
+
+      const event = await request.json().catch(() => ({}));
+      const result = await this.applyEvent({ ...event, senderId: auth.userUuid, senderNickname: auth.nickname, role: auth.role });
+      return json(result, result.ok ? 200 : 400);
+    }
+
+    if (path === '/ws') {
+      const token = url.searchParams.get('token') || '';
+      const auth = await this.parseToken(token);
+      if (!auth || auth.roomId !== this.room.roomId) return json({ ok: false, error: 'unauthorized' }, 401);
+      const member = this.room.members[auth.userUuid];
+      if (!member || member.role !== auth.role) {
+        return json({ ok: false, error: 'member not in room' }, 401);
+      }
+      if (this.room.roomStatus === 'closed') return json({ ok: false, error: 'room closed' }, 410);
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      await this.handleWsSession(server, auth);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    return json({ ok: false, error: 'not found in DO' }, 404);
+  }
+
+  async handleWsSession(ws, auth) {
+    this.state.acceptWebSocket(ws);
+    const session = this.rememberSocketSession(ws, auth);
+    await this.refreshControllerHeartbeatForSocket(session);
+
+    ws.send(JSON.stringify({
+      type: 'welcome',
+      sessionId: session.sessionId,
+      userUuid: session.auth.userUuid,
+      userId: session.auth.userUuid,
+      nickname: session.auth.nickname,
+      role: session.auth.role,
+      autoPauseOnJoin: this.room.settings?.autoPauseOnMemberChange === true,
+      state: this.sanitizeRoomState(),
+      expectedPositionMs: this.expectedPosition(),
+      nowMs: nowMs(),
+    }));
+  }
+
+  async cleanupSocketSession(ws) {
+    const session = this.ensureSessionForSocket(ws);
+    if (!session) return;
+    this.sessions.delete(session.sessionId);
+    const auth = session.auth;
+    // websocket close is transport churn, not an explicit room leave
+    // keeping the credential-bound member avoids a pause when it reconnects
+    if (auth.userUuid === this.room.controllerUserUuid) {
+      await this.scheduleLifecycleAlarm();
+    }
+    if (this.room.trackFinishBarrier && this.isTrackFinishBarrierReady()) {
+      await this.completeTrackFinishBarrier({
+        senderId: auth.userUuid,
+        senderNickname: auth.nickname || auth.userUuid,
+        role: auth.role,
+        eventId: null,
+        commitAt: nowMs(),
+      });
+    }
+  }
+
+  async webSocketMessage(ws, message) {
+    await this.initialized;
+    const session = this.ensureSessionForSocket(ws);
+    if (!session) {
+      try {
+        ws.send(JSON.stringify({ type: 'error', message: 'session_not_found' }));
+      } catch {}
+      return;
+    }
+    try {
+      const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
+      const msg = JSON.parse(text);
+      if (msg.type === 'ping') {
+        await this.refreshControllerHeartbeatForSocket(session);
+        ws.send(JSON.stringify({ type: 'pong', nowMs: nowMs() }));
+        return;
+      }
+      if (msg.type === 'np_ping') {
+        await this.refreshControllerHeartbeatForSocket(session);
+        ws.send(JSON.stringify({ type: 'np_pong', t: Number(msg.t) || null, nowMs: nowMs() }));
+        return;
+      }
+      const result = await this.applyEvent({ ...msg, senderId: session.auth.userUuid, senderNickname: session.auth.nickname, role: session.auth.role });
+      ws.send(JSON.stringify({
+        type: 'control_result',
+        ok: result.ok,
+        result,
+        nowMs: nowMs(),
+        message: result.error || null,
+      }));
+    } catch (err) {
+      try {
+        ws.send(JSON.stringify({ type: 'error', message: String(err) }));
+      } catch {}
+    }
+  }
+
+  async webSocketClose(ws) {
+    await this.initialized;
+    await this.cleanupSocketSession(ws);
+  }
+
+  async webSocketError(ws) {
+    await this.initialized;
+    await this.cleanupSocketSession(ws);
+  }
+
+  async applyEvent(event) {
+    const type = event.type;
+    const senderId = event.senderId;
+    const senderNickname = event.senderNickname || this.room.members[senderId]?.nickname || null;
+    const role = event.role;
+    const eventId = event.eventId || null;
+    const isController = role === 'controller' && senderId === this.room.controllerUserUuid;
+    const normalizedRequestType = REQUEST_CONTROL_EVENT_TYPES.has(type)
+      ? type.replace(/^REQUEST_/, '')
+      : null;
+    const effectiveType = normalizedRequestType || type;
+    const committedAt = nowMs();
+    if (!ALLOWED_EVENT_TYPES.has(type)) {
+      return { ok: false, error: `unsupported event type: ${type}` };
+    }
+    if (this.room.roomStatus === 'closed') {
+      return { ok: false, error: 'room closed' };
+    }
+    if (senderId && !this.room.members[senderId]) {
+      return { ok: false, error: 'member not in room' };
+    }
+    if (eventContainsLocalTrack(event)) {
+      return { ok: false, error: 'local tracks cannot be shared' };
+    }
+    if ((CONTROLLABLE_EVENT_TYPES.has(type) || REQUEST_CONTROL_EVENT_TYPES.has(type)) && this.room.roomStatus === 'controller_offline' && !isController) {
+      return { ok: false, error: 'controller offline' };
+    }
+    if (type === 'UPDATE_SETTINGS' && !isController) {
+      return { ok: false, error: 'only controller can update settings' };
+    }
+    if (CONTROLLABLE_EVENT_TYPES.has(type) && !isController) {
+      return { ok: false, error: 'only controller can control playback' };
+    }
+    if (this.hasProcessedEvent(eventId)) {
+      return {
+        ok: true,
+        applied: {
+          type: effectiveType,
+          roomId: this.room.roomId,
+          version: this.room.version,
+          state: this.sanitizeRoomState(),
+          expectedPositionMs: this.expectedPosition(),
+          causedBy: {
+            userUuid: senderId,
+            userId: senderId,
+            nickname: senderNickname,
+            eventId,
+            type,
+          },
+        },
+      };
+    }
+
+    if (this.shouldDropOutdatedControlEvent(event, type, effectiveType, senderId)) {
+      this.markProcessedEvent(eventId);
+      await this.persist();
+      return {
+        ok: true,
+        applied: this.buildAppliedPayload(type, senderId, eventId, senderNickname),
+      };
+    }
+
+    if (type === 'TRACK_FINISHED') {
+      return this.handleTrackFinishedEvent({
+        event,
+        senderId,
+        senderNickname,
+        role,
+        eventId,
+        isController,
+        commitAt: committedAt,
+      });
+    }
+
+    if (type === 'REQUEST_LINK') {
+      if (this.room.settings?.shareAudioLinks === false) {
+        return { ok: false, error: 'audio link sharing disabled' };
+      }
+      const targetTrack = this.currentTrack();
+      const requestTrackStableKey = normalizeOptionalString(event.requestTrackStableKey);
+      if (!requestTrackStableKey) {
+        return { ok: false, error: 'missing requestTrackStableKey' };
+      }
+      if (!targetTrack || requestTrackStableKey !== targetTrack.stableKey) {
+        return { ok: false, error: 'requested link does not match current track' };
+      }
+      if (!isController && !this.consumeLinkRequestBudget(senderId, requestTrackStableKey)) {
+        return { ok: false, error: 'link request throttled' };
+      }
+      if (!event.forceRefresh && cachedStreamUrlsForTrack(this.room.streamUrlCache, requestTrackStableKey).length) {
+        return this.publishCachedLinkState(senderId, senderNickname, eventId);
+      }
+      if (this.room.roomStatus === 'controller_offline' && !isController) {
+        return { ok: false, error: 'controller offline' };
+      }
+      if (!isController && !this.controllerSessions().length) {
+        return { ok: false, error: 'controller offline' };
+      }
+      this.sendToController({
+        type: 'link_requested',
+        roomId: this.room.roomId,
+        causedBy: {
+          userUuid: senderId,
+          userId: senderId,
+          nickname: senderNickname,
+          eventId: event.eventId || null,
+          type,
+        },
+        track: targetTrack,
+        currentIndex: this.room.currentIndex,
+        requestTrackStableKey,
+      });
+      return {
+        ok: true,
+        applied: {
+          type,
+          roomId: this.room.roomId,
+          causedBy: {
+            userUuid: senderId,
+            userId: senderId,
+            nickname: senderNickname,
+            eventId: event.eventId || null,
+            type,
+          },
+        },
+      };
+    }
+    if (REQUEST_CONTROL_EVENT_TYPES.has(type)) {
+      if (isController) {
+        return this.commitControlEvent({
+          event,
+          type,
+          effectiveType,
+          senderId,
+          senderNickname,
+          role,
+          eventId,
+          isController,
+          commitAt: committedAt,
+        });
+      }
+      const arbitration = this.shouldAcceptRequestedControl();
+      if (!arbitration.ok) {
+        return { ok: false, error: arbitration.error };
+      }
+      const trackBoundCheck = this.shouldAcceptTrackBoundRequest(event, type);
+      if (!trackBoundCheck.ok) {
+        return { ok: false, error: trackBoundCheck.error };
+      }
+      const forwardedPayload = this.sanitizeForwardedControlPayload(event, effectiveType);
+      const committedEvent = {
+        ...event,
+        queue: forwardedPayload.queue,
+        currentIndex: forwardedPayload.currentIndex,
+        track: forwardedPayload.track,
+        positionMs: forwardedPayload.positionMs,
+        shouldPlay: forwardedPayload.shouldPlay,
+        state: forwardedPayload.stateName,
+        repeatMode: forwardedPayload.repeatMode,
+        shuffleEnabled: forwardedPayload.shuffleEnabled,
+        clientTimeMs: forwardedPayload.clientTimeMs,
+        requestTrackStableKey: forwardedPayload.requestTrackStableKey,
+      };
+      return this.commitControlEvent({
+        event: committedEvent,
+        type,
+        effectiveType,
+        senderId,
+        senderNickname,
+        role,
+        eventId,
+        isController,
+        commitAt: committedAt,
+      });
+    }
+    if (effectiveType === 'HEARTBEAT' && this.shouldIgnoreHeartbeatForTrackFinishBarrier(event)) {
+      if (isController) {
+        this.refreshControllerHeartbeat();
+      }
+      this.markProcessedEvent(eventId);
+      await this.persist();
+      await this.scheduleLifecycleAlarm();
+      return {
+        ok: true,
+        applied: this.buildAppliedPayload(type, senderId, eventId, senderNickname),
+      };
+    }
+    if (
+      effectiveType === 'HEARTBEAT' &&
+      this.shouldIgnoreMemberChangeHeartbeat(event, isController)
+    ) {
+      if (isController) {
+        this.refreshControllerHeartbeat();
+      }
+      this.markProcessedEvent(eventId);
+      await this.persist();
+      await this.scheduleLifecycleAlarm();
+      return {
+        ok: true,
+        applied: this.buildAppliedPayload(type, senderId, eventId, senderNickname),
+      };
+    }
+    if (effectiveType === 'HEARTBEAT' && !this.shouldApplyControllerHeartbeat(committedAt)) {
+      this.markProcessedEvent(eventId);
+      return {
+        ok: true,
+        applied: this.buildAppliedPayload(type, senderId, eventId, senderNickname),
+      };
+    }
+
+    return this.commitControlEvent({
+      event,
+      type,
+      effectiveType,
+      senderId,
+      senderNickname,
+      role,
+      eventId,
+      isController,
+      commitAt: committedAt,
+    });
+  }
+
+  async alarm() {
+    await this.initialized;
+    if (!this.room.roomId) return;
+    if (this.room.roomStatus === 'active') {
+      const heartbeatDeadline = this.controllerHeartbeatDeadline();
+      if (heartbeatDeadline && nowMs() >= heartbeatDeadline) {
+        await this.markControllerOffline();
+        return;
+      }
+      await this.scheduleLifecycleAlarm();
+      return;
+    }
+    if (this.room.roomStatus !== 'controller_offline') return;
+    const offlineSince = this.room.controllerOfflineSince ?? 0;
+    if (nowMs() - offlineSince < CONTROLLER_OFFLINE_GRACE_PERIOD_MS) {
+      await this.scheduleLifecycleAlarm();
+      return;
+    }
+    await this.closeRoom('controller_timeout');
+  }
+}

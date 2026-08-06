@@ -1,0 +1,31 @@
+{
+  "name": "neriplayer-listen-together-worker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "NeriPlayer 一起听 Cloudflare Worker 服务端",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "node --check src/worker.js && node --check src/stream-url-cache.js",
+    "test": "node --test test/*.test.mjs",
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "check": "npm run lint && npm test && npm run deploy:dry-run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "cloudflare": {
+    "bindings": {
+      "LISTEN_TOGETHER_TOKEN_SECRET": {
+        "description": "用于签发房间 HTTP / WebSocket token 的 HMAC 密钥。建议使用 `openssl rand -hex 32` 生成。"
+      },
+      "ROOMS": {
+        "description": "Durable Object 绑定，每个房间对应一个 `ListeningRoomDO` 实例。Deploy to Cloudflare 会自动创建。"
+      }
+    }
+  },
+  "devDependencies": {
+    "wrangler": "^4.76.0"
+  }
+}
