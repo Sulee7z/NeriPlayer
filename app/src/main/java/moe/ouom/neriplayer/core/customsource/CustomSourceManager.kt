@@ -205,7 +205,7 @@ class CustomSourceManager(
     /**
      * 直接解析一首 QQ 音乐歌曲的播放地址。
      *
-     * 不经过跨平台搜索: [songQqSongMid] 就是 QQ 音乐原生 ID, 直接交给脚本的 tx 平台解析。
+     * 不经过跨平台搜索: [qqSongMid] 就是 QQ 音乐原生 ID, 直接交给脚本的 tx 平台解析。
      * 供 QQ 音乐曲目的播放链路使用(QQ 官方接口已不再对匿名请求下发播放地址)。
      */
     suspend fun resolveQqSongUrl(
@@ -213,18 +213,46 @@ class CustomSourceManager(
         qqSongMid: String,
         qualityKey: String
     ): String? {
-        if (qqSongMid.isBlank()) return null
+        return resolveSongByPlatform(
+            song = song,
+            platformKey = CustomAudioSource.LX_SOURCE_TENCENT,
+            nativeId = qqSongMid,
+            extra = emptyMap(),
+            qualityKey = qualityKey,
+            cachePrefix = "qq"
+        )
+    }
+
+    /**
+     * 用指定平台的原生 ID 让自定义音源脚本解析播放地址。
+     *
+     * 与 LX Mobile 的 getOtherSource 思路一致: app 层负责搜索目标平台的原生 ID,
+     * 脚本只负责用该 ID 解析 URL。不受脚本 inited 声明的平台限制。
+     *
+     * @param nativeId 目标平台的原生曲目 ID (QQ songmid / 酷我 rid / 酷狗 hash / 咪咕 copyrightId)
+     * @param extra 该平台解析可能需要的附加字段 (如酷狗的 hash / album_id)
+     */
+    suspend fun resolveSongByPlatform(
+        song: SongItem,
+        platformKey: String,
+        nativeId: String,
+        extra: Map<String, String> = emptyMap(),
+        qualityKey: String,
+        cachePrefix: String = "platform"
+    ): String? {
+        if (nativeId.isBlank()) return null
         val actives = repository.activeSources
         if (actives.isEmpty()) return null
 
         val lxQuality = mapNeteaseQualityToLx(qualityKey)
-        val cacheKey = "qq:$song.id:$qualityKey"
+        val cacheKey = "$cachePrefix:${song.id}:$platformKey:$qualityKey"
         readUrlCache(cacheKey)?.let { return it }
 
         val baseInfo = buildMusicInfo(song).apply {
-            put("songmid", qqSongMid)
-            put("id", qqSongMid)
-            put("source", CustomAudioSource.LX_SOURCE_TENCENT)
+            put("songmid", nativeId)
+            put("id", nativeId)
+            put("source", platformKey)
+            extra.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
         }
 
         for (active in actives) {
@@ -238,17 +266,17 @@ class CustomSourceManager(
             while (true) {
                 val result = try {
                     eng.resolve(
-                        source = CustomAudioSource.LX_SOURCE_TENCENT,
+                        source = platformKey,
                         quality = lxQuality,
                         musicInfo = baseInfo
                     )
                 } catch (e: Exception) {
-                    NPLogger.w(TAG, "自定义音源解析异常(QQ/${active.name})", e)
+                    NPLogger.w(TAG, "自定义音源解析异常($platformKey/${active.name})", e)
                     LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
                 }
                 if (!result.url.isNullOrBlank()) {
                     writeUrlCache(cacheKey, result.url)
-                    NPLogger.i(TAG, "自定义音源命中(QQ): ${active.name} id=${song.id}")
+                    NPLogger.i(TAG, "自定义音源命中($platformKey): ${active.name} id=${song.id}")
                     return result.url
                 }
                 if (result.transient) sawTransient = true
@@ -260,7 +288,55 @@ class CustomSourceManager(
                 failureCooldowns[active.id] = System.currentTimeMillis() + SOURCE_FAILURE_COOLDOWN_MS
             }
         }
-        NPLogger.w(TAG, "自定义音源 QQ 解析全部失败: id=${song.id} songmid=$qqSongMid")
+        NPLogger.w(TAG, "自定义音源 $platformKey 解析全部失败: id=${song.id} nativeId=$nativeId")
+        return null
+    }
+
+    /**
+     * 网易云歌曲自动切换其它音乐平台 (类似 LX 的 getOtherSource)。
+     *
+     * 按 QQ音乐 -> 酷我 -> 酷狗 -> 咪咕 顺序, 用 [PlatformSongMatcher] 按歌名+歌手
+     * 搜索目标平台的原生 ID, 再交给自定义音源脚本解析播放地址。任一平台命中即返回。
+     *
+     * @return 播放 URL; 全部失败或无可用脚本返回 null
+     */
+    suspend fun resolveNeteaseViaOtherPlatforms(
+        song: SongItem,
+        qualityKey: String
+    ): String? {
+        if (song.name.isBlank()) return null
+        if (repository.activeSources.isEmpty()) return null
+
+        val platformOrder = listOf(
+            CustomAudioSource.LX_SOURCE_TENCENT,
+            CustomAudioSource.LX_SOURCE_KUWO,
+            CustomAudioSource.LX_SOURCE_KUGOU,
+            CustomAudioSource.LX_SOURCE_MIGU
+        )
+        for (platform in platformOrder) {
+            val match = PlatformSongMatcher.findNativeId(
+                platform = platform,
+                name = song.name,
+                artist = song.artist,
+                durationMs = song.durationMs
+            ) ?: continue
+            val url = resolveSongByPlatform(
+                song = song,
+                platformKey = platform,
+                nativeId = match.songmid,
+                extra = match.extra,
+                qualityKey = qualityKey,
+                cachePrefix = "auto"
+            )
+            if (!url.isNullOrBlank()) {
+                NPLogger.i(
+                    TAG,
+                    "网易云自动切换平台成功: id=${song.id} name=${song.name} -> $platform"
+                )
+                return url
+            }
+        }
+        NPLogger.w(TAG, "网易云自动切换平台全部失败: id=${song.id} name=${song.name}")
         return null
     }
 

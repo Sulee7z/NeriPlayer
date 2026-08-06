@@ -1152,7 +1152,19 @@ private suspend fun PlayerManager.getNeteaseSongUrl(
                 lastFailureReason == NeteasePlaybackResponseParser.FailureReason.NO_PERMISSION ||
                 lastFailureReason == NeteasePlaybackResponseParser.FailureReason.NO_PLAY_URL)
         ) {
+            // 1. 脚本直接解析网易云(wy)
             resolveNeteaseCustomSource(song, effectiveQuality)?.let { return@withContext it }
+            // 2. 脚本 wy 失败后, 自动搜索其它音乐平台(QQ/酷我/酷狗/咪咕)原生 ID 并切换播放 (类似 LX getOtherSource)
+            val switchedUrl = customManager.resolveNeteaseViaOtherPlatforms(
+                song = song,
+                qualityKey = effectiveQuality
+            )
+            if (!switchedUrl.isNullOrBlank()) {
+                return@withContext SongUrlResult.Success(
+                    url = switchedUrl,
+                    durationMs = song.durationMs.takeIf { it > 0 }
+                )
+            }
         }
 
         previewFallback?.let { return@withContext it }
