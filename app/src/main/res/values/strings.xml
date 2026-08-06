@@ -918,6 +918,13 @@
     <string name="settings_netease_auto_source_switch_desc">网易云歌曲无权限或仅返回试听片段时，自动在哔哩哔哩查找音源</string>
     <string name="settings_netease_local_source_fallback">本地音频兜底</string>
     <string name="settings_netease_local_source_fallback_desc">网易云歌曲无权限或仅返回试听片段时，优先播放已匹配相同歌曲信息的本地音频</string>
+    <string name="settings_netease_scrobble">同步听歌记录到网易云</string>
+    <string name="settings_netease_scrobble_desc">仅对拥有网易云音乐 ID 的歌曲生效，播放达到一定时长后自动上报到网易云账号的听歌记录</string>
+    <string name="qq_playlist_meta">%1$d 首歌曲 · %2$s 次播放</string>
+    <string name="qq_playlist_empty">歌单为空或歌曲列表获取失败</string>
+    <string name="qq_playlist_offline_unavailable">离线模式无法加载 QQ 音乐歌单</string>
+    <string name="explore_link_qq_playlist_fallback">QQ 音乐歌单 %1$d</string>
+    <string name="player_qq_music_no_play_url">QQ 音乐官方接口未返回播放地址，请先启用自定义音源(LX 脚本)后重试</string>
     <string name="settings_youtube_playback_source">YouTube 播放源</string>
     <string name="settings_youtube_playback_source_desc">选择优先使用的 YouTube 播放客户端；不可用时会自动回退到其余来源</string>
     <string name="settings_youtube_playback_source_web_remix">Web Remix 低延迟</string>
@@ -2371,6 +2378,10 @@
     <string name="custom_source_priority_desc">开启后优先用自定义音源解析(失败回退官方);关闭则仅在官方拿不到完整音频时使用。</string>
     <string name="custom_source_entry_title">自定义音源</string>
     <string name="custom_source_entry_desc">导入洛雪音乐(LX)音源脚本,增强网易云播放解析</string>
+    <string name="custom_source_import_url">从 URL 导入</string>
+    <string name="custom_source_import_url_desc">粘贴脚本文件的直链(需以 http/https 开头),应用会先下载、校验再导入</string>
+    <string name="custom_source_validate_ok">看起来是有效的 LX 脚本,可以导入</string>
+    <string name="custom_source_validate_warn">未检测到 lx.on / musicUrl 等脚本标记,请确认内容正确</string>
     <string name="custom_source_ok">确定</string>
     <string name="custom_source_view_all">查看全部</string>
 </resources>

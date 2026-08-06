@@ -67,6 +67,7 @@ import moe.ouom.neriplayer.ui.screen.artist.YouTubeMusicCreatorItemsScreen
 import moe.ouom.neriplayer.ui.screen.playlist.BiliPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteaseAlbumDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteasePlaylistDetailScreen
+import moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.tab.ExploreScreen
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSceneMotion
@@ -105,6 +106,7 @@ internal sealed class ExploreSelectedItem {
         val creator: YouTubeMusicCreatorSummary,
         val section: YouTubeMusicCreatorSection
     ) : ExploreSelectedItem()
+    data class QQMusic(val playlist: PlaylistSummary) : ExploreSelectedItem()
 }
 
 private val ExploreSelectedItem?.navigationDepth: Int
@@ -207,7 +209,6 @@ fun ExploreHostScreen(
             }
         }
     }
-
     fun closeSelectedDetail() {
         cancelPendingNeteaseCoverWarmup()
         selected = resolveExploreSelectedDetailBackTarget(selected)
@@ -357,7 +358,11 @@ fun ExploreHostScreen(
                                             source = "netease"
                                         )
                                     }
-                                    openExploreSelectedItem(ExploreSelectedItem.Netease(pl))
+                                    if (pl.source == "qq") {
+                                        openExploreSelectedItem(ExploreSelectedItem.QQMusic(pl))
+                                    } else {
+                                        openExploreSelectedItem(ExploreSelectedItem.Netease(pl))
+                                    }
                                 },
                                 onBiliPlaylistClick = { playlist ->
                                     captureExploreScrollPosition()
@@ -467,6 +472,15 @@ fun ExploreHostScreen(
 
                             is ExploreSelectedItem.YouTubeMusic -> {
                                 YouTubeMusicPlaylistDetailScreen(
+                                    playlist = current.playlist,
+                                    onBack = ::closeSelectedDetail,
+                                    onSongClick = onSongClick,
+                                    offlineMode = offlineMode
+                                )
+                            }
+
+                            is ExploreSelectedItem.QQMusic -> {
+                                QQMusicPlaylistDetailScreen(
                                     playlist = current.playlist,
                                     onBack = ::closeSelectedDetail,
                                     onSongClick = onSongClick,

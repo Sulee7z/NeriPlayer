@@ -1694,6 +1694,15 @@ object AutoSettingsSchema {
             icon = AutoSettingIcon.AdsClick
         )
 
+        @AutoSetting(order = 139)
+        val neteaseScrobbleEnabled = autoSwitchSetting(
+            key = "netease_scrobble_enabled",
+            defaultValue = false,
+            titleRes = R.string.settings_netease_scrobble,
+            descriptionRes = R.string.settings_netease_scrobble_desc,
+            iconRes = R.drawable.ic_netease_cloud_music
+        )
+
         @AutoSetting(
             key = "keep_playback_mode_state",
             type = SettingValueType.Boolean,

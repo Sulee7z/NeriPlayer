@@ -57,6 +57,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
@@ -211,8 +212,10 @@ import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
 import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
 import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
+import moe.ouom.neriplayer.data.netease.resolveNeteaseSongIdOrNull
 import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
 import moe.ouom.neriplayer.data.platform.youtube.isYouTubeMusicSong
+import moe.ouom.neriplayer.data.settings.AutoSettingsSchema
 import moe.ouom.neriplayer.data.settings.DEFAULT_CLOUD_MUSIC_LYRIC_OFFSET_MS
 import moe.ouom.neriplayer.data.settings.DEFAULT_QQ_MUSIC_LYRIC_OFFSET_MS
 import moe.ouom.neriplayer.data.settings.PlaybackPreferenceSnapshot
@@ -251,6 +254,7 @@ internal data class LocalPlaylistPlaybackSource(
 object PlayerManager {
     const val BILI_SOURCE_TAG = "Bilibili"
     const val NETEASE_SOURCE_TAG = "Netease"
+    const val QQ_SOURCE_TAG = "QQMusic"
 
     internal data class UsbExclusiveLoudPlaybackConfirmation(
         val id: Long,
@@ -1411,6 +1415,10 @@ object PlayerManager {
         return song.channelId == ListenTogetherChannels.BILIBILI ||
             song.album.startsWith(BILI_SOURCE_TAG)
     }
+
+    internal fun isQQMusicTrack(song: SongItem): Boolean {
+        return song.album.startsWith(QQ_SOURCE_TAG)
+    }
     internal fun shouldPersistEmbeddedLyrics(song: SongItem): Boolean {
         return song.matchedLyric != null ||
             song.matchedTranslatedLyric != null ||
@@ -2140,6 +2148,43 @@ object PlayerManager {
         if (snapshot.playCountIncrement > 0) {
             snapshot.localPlaylistId?.let { playlistId ->
                 AppContainer.localPlaylistPlaybackStatsRepo.recordPlayNow(playlistId)
+            }
+            // 只有真正被计入一次播放(达到本地统计的最短收听时长)时才上报网易云听歌记录,
+            // 避免切歌太快或误触时把没有认真听的曲目也算作一次播放
+            scrobbleToNeteaseIfEnabled(snapshot.song, snapshot.listenedMs)
+        }
+    }
+
+    /**
+     * 若用户开启了"同步听歌记录到网易云"且已登录, 且这首歌能确定网易云音乐 ID,
+     * 则异步上报一次播放记录到网易云 (weapi/feedback/weblog)
+     *
+     * 该调用是 fire-and-forget 的, 不会影响播放/统计主流程, 失败只记录日志
+     */
+    private fun scrobbleToNeteaseIfEnabled(song: SongItem, listenedMs: Long) {
+        ioScope.launch {
+            runCatching {
+                val enabled = settingsRepo
+                    .settingFlow(AutoSettingsSchema.playback.neteaseScrobbleEnabled)
+                    .first()
+                if (!enabled) return@launch
+
+                val neteaseId = resolveNeteaseSongIdOrNull(song) ?: return@launch
+
+                val client = AppContainer.neteaseClient
+                if (!client.hasLogin()) return@launch
+
+                val playedSeconds = (listenedMs / 1000L)
+                    .coerceAtLeast(1L)
+                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                    .toInt()
+                client.scrobble(
+                    songId = neteaseId,
+                    playedTimeSeconds = playedSeconds,
+                    endType = "playend"
+                )
+            }.onFailure { error ->
+                NPLogger.e("NERI-PlayerManager", "netease scrobble failed: ${error.message}", error)
             }
         }
     }

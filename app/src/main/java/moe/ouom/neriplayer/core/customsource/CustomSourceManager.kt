@@ -34,12 +34,19 @@ import moe.ouom.neriplayer.core.logging.NPLogger
 import moe.ouom.neriplayer.data.model.SongItem
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.random.Random
 
 private const val TAG = "NERI-CustomSourceMgr"
 private const val MAX_RESOLVE_RETRIES = 2
 private const val RETRY_DELAY_BASE_MS = 1_500L
 private const val RETRY_DELAY_MAX_MS = 5_000L
+
+/** 解析成功 URL 的内存缓存时长: 短 TTL 即可覆盖"同一首重播/seek 刷新"的热点场景 */
+private const val URL_CACHE_TTL_MS = 15 * 60 * 1000L
+
+/** 音源整体判定失败后的冷却窗口: 冷却期内直接跳过该音源, 避免每次都白等超时 */
+private const val SOURCE_FAILURE_COOLDOWN_MS = 60 * 1000L
 
 class CustomSourceManager(
     private val appContext: Context,
@@ -48,6 +55,29 @@ class CustomSourceManager(
     private val engineMutex = Mutex()
     // 多源共存:每个启用音源各持有一个引擎,按 id 缓存
     private val engines = HashMap<String, LxScriptEngine>()
+
+    private data class CachedUrl(val url: String, val ts: Long)
+    private val urlCache = ConcurrentHashMap<String, CachedUrl>()
+
+    /** sourceId -> 最近一次确定性失败时间戳 */
+    private val failureCooldowns = ConcurrentHashMap<String, Long>()
+
+    private fun cacheKey(songId: String, qualityKey: String, sourceId: String) =
+        "$sourceId:$qualityKey:$songId"
+
+    private fun readUrlCache(key: String): String? {
+        val now = System.currentTimeMillis()
+        val entry = urlCache[key] ?: return null
+        if (now - entry.ts >= URL_CACHE_TTL_MS) {
+            urlCache.remove(key)
+            return null
+        }
+        return entry.url
+    }
+
+    private fun writeUrlCache(key: String, url: String) {
+        urlCache[key] = CachedUrl(url, System.currentTimeMillis())
+    }
 
     /**
      * 是否存在已启用的音源。
@@ -88,12 +118,29 @@ class CustomSourceManager(
         if (actives.isEmpty()) return null
 
         val lxQuality = mapNeteaseQualityToLx(neteaseQualityKey)
+
+        // 同一首歌短时间内重播/seek 刷新时, 直接复用上次解析结果, 不再跑脚本
+        val songIdKey = "${song.id}:$neteaseQualityKey"
+        val cached = readUrlCache(songIdKey)
+        if (cached != null) {
+            NPLogger.d(TAG, "自定义音源命中缓存: id=${song.id} quality=$neteaseQualityKey")
+            return cached
+        }
+
         val baseMusicInfo = buildMusicInfo(song)
 
         for (active in actives) {
+            val now = System.currentTimeMillis()
+            val cooldownUntil = failureCooldowns[active.id] ?: 0L
+            if (now < cooldownUntil) {
+                NPLogger.d(TAG, "跳过冷却中的音源: ${active.name}")
+                continue
+            }
+
             val eng = ensureEngine(active) ?: continue
             val platforms = resolvePlatformOrder(active)
 
+            var sawTransient = false
             for (platform in platforms) {
                 // 网易云直接用源曲目自己的 ID;其它平台的 ID 命名空间跟网易云不通用,
                 // 必须先按歌名+歌手在目标平台搜一次,换成该平台自己的原生 ID 再解析,
@@ -121,26 +168,147 @@ class CustomSourceManager(
 
                 var retries = 0
                 while (true) {
-                    val url = try {
-                        eng.getMusicUrl(source = platform, quality = lxQuality, musicInfo = musicInfo)
+                    val result = try {
+                        eng.resolve(source = platform, quality = lxQuality, musicInfo = musicInfo)
                     } catch (e: Exception) {
                         NPLogger.w(TAG, "自定义音源解析异常(${active.name}/$platform/$lxQuality)", e)
-                        null
+                        LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
                     }
+                    val url = result.url
                     if (!url.isNullOrBlank()) {
+                        writeUrlCache(songIdKey, url)
                         NPLogger.i(TAG, "自定义音源命中: ${active.name}/$platform quality=$lxQuality id=${song.id} retries=$retries")
                         return url
                     }
-                    if (retries >= MAX_RESOLVE_RETRIES) break
+                    // 确定性失败(脚本明确说没有/无版权)再试多少次都一样, 不重试
+                    if (result.transient) sawTransient = true
+                    if (!result.transient || retries >= MAX_RESOLVE_RETRIES) {
+                        NPLogger.d(TAG, "自定义音源放弃: ${active.name}/$platform transient=${result.transient}: ${result.detail}")
+                        break
+                    }
                     retries++
                     val backoffMs = Random.nextLong(RETRY_DELAY_BASE_MS, RETRY_DELAY_MAX_MS)
                     NPLogger.d(TAG, "自定义音源重试: ${active.name}/$platform retry=$retries backoffMs=$backoffMs name=${song.name}")
                     delay(backoffMs)
                 }
             }
+
+            // 该音源对这首歌全是确定性失败(没有超时/网络抖动迹象) → 进入冷却, 下次解析优先跳过
+            if (!sawTransient) {
+                failureCooldowns[active.id] = System.currentTimeMillis() + SOURCE_FAILURE_COOLDOWN_MS
+            }
         }
         NPLogger.w(TAG, "自定义音源全部失败: id=${song.id} name=${song.name} artist=${song.artist}")
         return null
+    }
+
+    /**
+     * 直接解析一首 QQ 音乐歌曲的播放地址。
+     *
+     * 不经过跨平台搜索: [songQqSongMid] 就是 QQ 音乐原生 ID, 直接交给脚本的 tx 平台解析。
+     * 供 QQ 音乐曲目的播放链路使用(QQ 官方接口已不再对匿名请求下发播放地址)。
+     */
+    suspend fun resolveQqSongUrl(
+        song: SongItem,
+        qqSongMid: String,
+        qualityKey: String
+    ): String? {
+        if (qqSongMid.isBlank()) return null
+        val actives = repository.activeSources
+        if (actives.isEmpty()) return null
+
+        val lxQuality = mapNeteaseQualityToLx(qualityKey)
+        val cacheKey = "qq:$song.id:$qualityKey"
+        readUrlCache(cacheKey)?.let { return it }
+
+        val baseInfo = buildMusicInfo(song).apply {
+            put("songmid", qqSongMid)
+            put("id", qqSongMid)
+            put("source", CustomAudioSource.LX_SOURCE_TENCENT)
+        }
+
+        for (active in actives) {
+            val now = System.currentTimeMillis()
+            val cooldownUntil = failureCooldowns[active.id] ?: 0L
+            if (now < cooldownUntil) continue
+
+            val eng = ensureEngine(active) ?: continue
+            var sawTransient = false
+            var retries = 0
+            while (true) {
+                val result = try {
+                    eng.resolve(
+                        source = CustomAudioSource.LX_SOURCE_TENCENT,
+                        quality = lxQuality,
+                        musicInfo = baseInfo
+                    )
+                } catch (e: Exception) {
+                    NPLogger.w(TAG, "自定义音源解析异常(QQ/${active.name})", e)
+                    LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
+                }
+                if (!result.url.isNullOrBlank()) {
+                    writeUrlCache(cacheKey, result.url)
+                    NPLogger.i(TAG, "自定义音源命中(QQ): ${active.name} id=${song.id}")
+                    return result.url
+                }
+                if (result.transient) sawTransient = true
+                if (!result.transient || retries >= MAX_RESOLVE_RETRIES) break
+                retries++
+                delay(Random.nextLong(RETRY_DELAY_BASE_MS, RETRY_DELAY_MAX_MS))
+            }
+            if (!sawTransient) {
+                failureCooldowns[active.id] = System.currentTimeMillis() + SOURCE_FAILURE_COOLDOWN_MS
+            }
+        }
+        NPLogger.w(TAG, "自定义音源 QQ 解析全部失败: id=${song.id} songmid=$qqSongMid")
+        return null
+    }
+
+    /**
+     * 导入前快速校验脚本内容是否像 LX 脚本:
+     * 必须存在 lx 对象注册 (lx.on / globalThis.lx / EVENT_NAMES) 或 musicUrl 处理器关键词,
+     * 避免把明显不是脚本的文件丢进 WebView 白等 20 秒超时。
+     */
+    fun validateScriptContent(scriptContent: String): Boolean {
+        if (scriptContent.isBlank() || scriptContent.length < 64) return false
+        val sample = scriptContent.take(30_000).lowercase()
+        val hasLxRegistration = sample.contains("lx.on") ||
+            sample.contains("globalthis.lx") ||
+            sample.contains("window.lx") ||
+            sample.contains("lx =") ||
+            sample.contains("lx=")
+        val hasMusicUrlHandler = sample.contains("musicurl") ||
+            sample.contains("EVENT_NAMES".lowercase()) ||
+            sample.contains("request")
+        return hasLxRegistration || hasMusicUrlHandler
+    }
+
+    /**
+     * 从 URL 下载脚本内容(导入用)。返回 null 表示下载失败。
+     */
+    suspend fun fetchScriptFromUrl(url: String): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (!url.startsWith("http://") && !url.startsWith("https://")) return@withContext null
+        try {
+            val client = okhttp3.OkHttpClient.Builder()
+                .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+                .followRedirects(true)
+                .build()
+            val request = okhttp3.Request.Builder()
+                .url(url)
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36")
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                if (body.length > 2 * 1024 * 1024) return@withContext null
+                body
+            }
+        } catch (e: Exception) {
+            NPLogger.w(TAG, "下载脚本失败: $url -> ${e.message}")
+            null
+        }
     }
 
     /**

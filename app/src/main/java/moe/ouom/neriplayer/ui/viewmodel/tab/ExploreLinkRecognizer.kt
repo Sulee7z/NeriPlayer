@@ -30,6 +30,7 @@ internal sealed class ExploreLinkTarget {
     data class BiliShortLink(val url: String) : ExploreLinkTarget()
     data class YouTubeVideo(val videoId: String, val playlistId: String? = null) : ExploreLinkTarget()
     data class YouTubePlaylist(val playlistId: String) : ExploreLinkTarget()
+    data class QQMusicPlaylist(val dissId: Long) : ExploreLinkTarget()
     data class Unsupported(val platform: String, val type: String) : ExploreLinkTarget()
 }
 
@@ -45,8 +46,29 @@ internal fun recognizeExploreLink(input: String): ExploreLinkTarget? {
         host == "youtu.be" || host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com") -> {
             recognizeYouTubeLink(uri)
         }
+        host.endsWith("qq.com") -> recognizeQqLink(uri, normalized)
         else -> null
     }
+}
+
+private fun recognizeQqLink(uri: URI, raw: String): ExploreLinkTarget? {
+    val path = uri.path.orEmpty().lowercase(Locale.US)
+    val params = queryParameters(uri.rawQuery)
+
+    // PC 网页: https://y.qq.com/n/ryqq/playlist/8546612834
+    QQ_PLAYLIST_PATH_REGEX.find(path)?.groupValues?.getOrNull(1)
+        ?.toLongOrNull()
+        ?.takeIf { it > 0L }
+        ?.let { return ExploreLinkTarget.QQMusicPlaylist(it) }
+
+    // 移动端分享: https://i.y.qq.com/n2/m/share/details/taoge.html?id=8546612834
+    if (path.contains("taoge.html")) {
+        params["id"]?.toLongOrNull()
+            ?.takeIf { it > 0L }
+            ?.let { return ExploreLinkTarget.QQMusicPlaylist(it) }
+    }
+    // 老版分享: https://y.qq.com/n/yqq/playlist.html?openid=...&dirid=... 无 dissid, 无法识别
+    return null
 }
 
 private fun recognizeNeteaseLink(uri: URI): ExploreLinkTarget? {
@@ -254,6 +276,10 @@ private val BILI_BVID_REGEX = Regex("""BV[0-9A-Za-z]{10}""")
 private val BILI_AVID_REGEX = Regex("""(?:/video/av|[?&]aid=)(\d+)""")
 private val BILI_MEDIA_LIST_REGEX = Regex(
     """/medialist/(?:detail|play)/(?:ml)?(\d+)""",
+    RegexOption.IGNORE_CASE
+)
+private val QQ_PLAYLIST_PATH_REGEX = Regex(
+    """/n/(?:ryqq|yqq)/playlist/(\d+)""",
     RegexOption.IGNORE_CASE
 )
 private val HTTP_URL_REGEX = Regex("""https?://[^\s]+""", RegexOption.IGNORE_CASE)

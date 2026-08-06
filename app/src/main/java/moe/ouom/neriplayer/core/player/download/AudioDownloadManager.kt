@@ -51,6 +51,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.bili.resolveBiliSong
+import moe.ouom.neriplayer.core.api.qq.QQMusicSongBuilder
 import moe.ouom.neriplayer.core.api.youtube.YouTubePlayableAudio
 import moe.ouom.neriplayer.core.api.youtube.YouTubePlayableStreamType
 import moe.ouom.neriplayer.core.di.AppContainer
@@ -1190,6 +1191,7 @@ object AudioDownloadManager {
 
                     val isYouTubeMusic = isYouTubeMusicSong(song)
                     val isBili = song.album.startsWith(PlayerManager.BILI_SOURCE_TAG)
+                    val isQQ = song.album.startsWith(PlayerManager.QQ_SOURCE_TAG)
                     var attemptNumber = 1
                     var activeTransportKind: DownloadTransportKind? = null
                     var activeWorkingFileName: String? = null
@@ -1206,6 +1208,7 @@ object AudioDownloadManager {
                                     avoidDirect = avoidYouTubeDirectSource
                                 )
                                 isBili -> resolveBili(song)
+                                isQQ -> resolveQQ(song)
                                 else -> resolveNetease(song.id)
                             }
                             if (resolved == null) {
@@ -2861,8 +2864,7 @@ object AudioDownloadManager {
 
     // 解析网易云直链
     private suspend fun resolveNetease(songId: Long): ResolvedDownloadSource? {
-        val quality = try { AppContainer.settingsRepo.audioQualityFlow.first() } catch (_: Exception) { "exhigh" }
-        val raw = AppContainer.neteaseClient.getSongDownloadUrl(songId, level = quality)
+        val quality = try { AppContainer.settingsRepo.audioQualityFlow.first() } catch (_: Exception) { "exhigh" }        val raw = AppContainer.neteaseClient.getSongDownloadUrl(songId, level = quality)
         return try {
             val root = JSONObject(raw)
             if (root.optInt("code") != 200) return tryWeapiFallback(songId, quality)
@@ -3027,6 +3029,23 @@ object AudioDownloadManager {
         val mime = chosen.mimeType
         val ext = mimeToExt(mime)
         return ResolvedDownloadSource(url = url, mimeType = mime, fileExtensionHint = ext)
+    }
+
+    // QQ 音乐无匿名官方下载地址, 走自定义音源(LX 脚本)解析, 失败返回 null 交给统一重试/报错
+    private suspend fun resolveQQ(song: SongItem): ResolvedDownloadSource? {
+        val songMid = QQMusicSongBuilder.qqSongMidOrNull(song) ?: return null
+        val quality = try {
+            AppContainer.settingsRepo.audioQualityFlow.first()
+        } catch (_: Exception) {
+            "exhigh"
+        }
+        val url = AppContainer.customSourceManager.resolveQqSongUrl(song, songMid, quality)
+            ?: return null
+        return ResolvedDownloadSource(
+            url = url,
+            mimeType = guessMimeFromUrl(url),
+            fileExtensionHint = mimeToExt(guessMimeFromUrl(url))
+        )
     }
 
     private data class DownloadedLyrics(

@@ -39,7 +39,9 @@ data class PlaylistSummary(
     val name: String,
     val picUrl: String,
     val playCount: Long,
-    val trackCount: Int
+    val trackCount: Int,
+    /** 来源平台标记: netease / qq 等, 用于搜索结果卡片点击后的路由 */
+    val source: String = "netease"
 ) : Parcelable
 
 /**

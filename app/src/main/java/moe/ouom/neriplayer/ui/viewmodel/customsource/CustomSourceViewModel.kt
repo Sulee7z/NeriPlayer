@@ -69,12 +69,51 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
     /** 导入脚本文本:先探测运行,回填支持平台,再入库。 */
     fun importScript(scriptContent: String) {
         if (scriptContent.isBlank()) return
+        if (!manager.validateScriptContent(scriptContent)) {
+            _uiState.value = _uiState.value.copy(
+                message = "内容看起来不像 LX 音源脚本(缺少 lx.on / musicUrl 等标记), 已取消导入"
+            )
+            return
+        }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true, message = null)
             val result = runCatching {
                 val probe = manager.probeScript(scriptContent)
                 repo.importScript(
                     scriptContent = scriptContent,
+                    supportedSources = if (probe.ok) probe.sources else emptyMap()
+                )
+                if (!probe.ok) {
+                    "已导入,但脚本自检未通过: ${probe.error ?: "未知"}"
+                } else if (!probe.sources.containsKey(CustomAudioSource.LX_SOURCE_NETEASE)) {
+                    "已导入,但该脚本似乎不支持网易云(wy)"
+                } else {
+                    "导入成功"
+                }
+            }
+            manager.onActiveSourceChanged()
+            _uiState.value = _uiState.value.copy(
+                busy = false,
+                message = result.getOrElse { "导入失败: ${it.message}" }
+            )
+        }
+    }
+
+    /** 从 URL 下载脚本后导入。 */
+    fun importScriptFromUrl(url: String) {
+        val trimmed = url.trim()
+        if (trimmed.isBlank()) return
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(busy = true, message = null)
+            val result = runCatching {
+                val content = manager.fetchScriptFromUrl(trimmed)
+                    ?: return@runCatching "下载失败,请确认链接可访问(需以 http/https 开头)"
+                if (!manager.validateScriptContent(content)) {
+                    return@runCatching "下载的内容看起来不像 LX 音源脚本, 已取消导入"
+                }
+                val probe = manager.probeScript(content)
+                repo.importScript(
+                    scriptContent = content,
                     supportedSources = if (probe.ok) probe.sources else emptyMap()
                 )
                 if (!probe.ok) {

@@ -75,6 +75,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.customsource.CustomAudioSource
+import moe.ouom.neriplayer.core.customsource.CustomSourceMetadataParser
 import moe.ouom.neriplayer.ui.viewmodel.customsource.CustomSourceViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -94,6 +95,7 @@ fun CustomSourceScreen(
     val ui by vm.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     var showPasteDialog by remember { mutableStateOf(false) }
+    var showUrlDialog by remember { mutableStateOf(false) }
 
     // 结果/诊断信息用对话框显示(可多行,不会被截断)
     if (ui.message != null) {
@@ -168,6 +170,10 @@ fun CustomSourceScreen(
                         enabled = !ui.busy
                     ) { Text(stringResource(R.string.custom_source_import_paste)) }
                     OutlinedButton(
+                        onClick = { showUrlDialog = true },
+                        enabled = !ui.busy
+                    ) { Text(stringResource(R.string.custom_source_import_url)) }
+                    OutlinedButton(
                         onClick = { vm.testActiveSource() },
                         enabled = !ui.busy
                     ) { Text(stringResource(R.string.custom_source_test)) }
@@ -237,6 +243,16 @@ fun CustomSourceScreen(
             }
         )
     }
+
+    if (showUrlDialog) {
+        UrlImportDialog(
+            onDismiss = { showUrlDialog = false },
+            onConfirm = { url ->
+                showUrlDialog = false
+                vm.importScriptFromUrl(url)
+            }
+        )
+    }
 }
 
 @Composable
@@ -290,23 +306,100 @@ private fun PasteScriptDialog(
     onConfirm: (String) -> Unit
 ) {
     var text by remember { mutableStateOf("") }
+    val meta = remember(text) {
+        CustomSourceMetadataParser.parse(text)
+    }
+    val looksLikeScript = remember(text) {
+        text.isNotBlank() && (
+            text.contains("lx.on", ignoreCase = true) ||
+                text.contains("musicUrl", ignoreCase = true) ||
+                text.contains("EVENT_NAMES", ignoreCase = true)
+            )
+    }
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.custom_source_import_paste)) },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                modifier = Modifier.fillMaxWidth(),
-                minLines = 6,
-                maxLines = 12,
-                placeholder = { Text("// LX Music source script...") }
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 6,
+                    maxLines = 12,
+                    placeholder = { Text("// LX Music source script...") }
+                )
+                if (text.isNotBlank()) {
+                    Text(
+                        text = buildString {
+                            append(meta.name)
+                            if (meta.version.isNotBlank()) append(" · v${meta.version}")
+                            if (meta.author.isNotBlank()) append(" · ${meta.author}")
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = if (looksLikeScript) {
+                            stringResource(R.string.custom_source_validate_ok)
+                        } else {
+                            stringResource(R.string.custom_source_validate_warn)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (looksLikeScript) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.error
+                        }
+                    )
+                }
+            }
         },
         confirmButton = {
             OutlinedButton(
                 onClick = { onConfirm(text) },
-                enabled = text.isNotBlank()
+                enabled = text.isNotBlank() && looksLikeScript
+            ) { Text(stringResource(R.string.custom_source_import_confirm)) }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text(stringResource(R.string.custom_source_cancel))
+            }
+        }
+    )
+}
+
+@Composable
+private fun UrlImportDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var url by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.custom_source_import_url)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("https://example.com/source.js") }
+                )
+                Text(
+                    stringResource(R.string.custom_source_import_url_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            OutlinedButton(
+                onClick = { onConfirm(url) },
+                enabled = url.trim().startsWith("http://") || url.trim().startsWith("https://")
             ) { Text(stringResource(R.string.custom_source_import_confirm)) }
         },
         dismissButton = {

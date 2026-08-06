@@ -867,6 +867,9 @@ class ExploreViewModel(application: Application) : AndroidViewModel(application)
             is ExploreLinkTarget.YouTubePlaylist -> ExploreSearchResult.YouTubePlaylist(
                 fetchLinkedYouTubePlaylist(target.playlistId)
             )
+            is ExploreLinkTarget.QQMusicPlaylist -> ExploreSearchResult.Playlist(
+                fetchLinkedQQPlaylist(target.dissId)
+            )
             is ExploreLinkTarget.Unsupported -> ExploreSearchResult.Notice(
                 title = app.getString(R.string.explore_link_unsupported_title),
                 message = app.getString(
@@ -921,6 +924,29 @@ class ExploreViewModel(application: Application) : AndroidViewModel(application)
                 picUrl = "",
                 playCount = 0L,
                 trackCount = 0
+            )
+        }
+    }
+
+    private suspend fun fetchLinkedQQPlaylist(playlistId: Long): PlaylistSummary {
+        return runCatching {
+            val detail = AppContainer.qqMusicApi.getPlaylistDetail(playlistId, num = 30)
+            PlaylistSummary(
+                id = playlistId,
+                name = detail.title,
+                picUrl = detail.coverUrl.orEmpty(),
+                playCount = detail.listenCount,
+                trackCount = detail.totalSongCount,
+                source = "qq"
+            )
+        }.getOrElse {
+            PlaylistSummary(
+                id = playlistId,
+                name = app.getString(R.string.explore_link_qq_playlist_fallback, playlistId),
+                picUrl = "",
+                playCount = 0L,
+                trackCount = 0,
+                source = "qq"
             )
         }
     }

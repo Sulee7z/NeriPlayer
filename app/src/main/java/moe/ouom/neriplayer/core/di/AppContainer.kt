@@ -41,6 +41,7 @@ import moe.ouom.neriplayer.core.api.lyrics.EditableLyricsMatcher
 import moe.ouom.neriplayer.core.api.lyrics.KugouLyricsClient
 import moe.ouom.neriplayer.core.api.lyrics.LrcLibClient
 import moe.ouom.neriplayer.core.api.netease.NeteaseClient
+import moe.ouom.neriplayer.core.api.qq.QQMusicApi
 import moe.ouom.neriplayer.core.api.search.CloudMusicSearchApi
 import moe.ouom.neriplayer.core.api.search.QQMusicSearchApi
 import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicClient
@@ -402,6 +403,7 @@ object AppContainer {
 
     val cloudMusicSearchApi by lazy { CloudMusicSearchApi(neteaseClient) }
     val qqMusicSearchApi by lazy { QQMusicSearchApi() }
+    val qqMusicApi by lazy { QQMusicApi(sharedOkHttpClient) }
     val lrcLibClient by lazy { LrcLibClient(sharedOkHttpClient) }
     val amllTtmlClient by lazy { AmllTtmlClient(sharedOkHttpClient) }
     val kugouLyricsClient by lazy { KugouLyricsClient(sharedOkHttpClient) }

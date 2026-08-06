@@ -852,6 +852,40 @@ class NeteaseClient {
     }
 
     /**
+     * 上报一首歌的听歌记录 (weapi/feedback/weblog)
+     *
+     * 网易云网页端/客户端的听歌记录都是通过这个接口上报的, 参数含义:
+     * - id: 网易云歌曲 ID
+     * - time: 已播放时长 (秒)
+     * - end: playend=完整听完, 其他值表示中途切歌
+     * - sourceId: 可选, 播放来源 (播放列表 ID 等)
+     */
+    @Throws(IOException::class)
+    fun scrobble(
+        songId: Long,
+        playedTimeSeconds: Int,
+        sourceId: Long? = null,
+        endType: String = "playend"
+    ): String {
+        val logJson = JSONObject().apply {
+            put("download", 0)
+            put("end", endType)
+            put("id", songId)
+            put("sourceId", sourceId?.toString().orEmpty())
+            put("time", playedTimeSeconds.coerceAtLeast(0))
+            put("type", "song")
+            put("wifi", 0)
+        }
+        val logEntry = JSONObject().apply {
+            put("action", "play")
+            put("json", logJson)
+        }
+        val logs = JSONArray().apply { put(logEntry) }.toString()
+        val params = mapOf("logs" to logs)
+        return callWeApi("/feedback/weblog", params, usePersistedCookies = true)
+    }
+
+    /**
      * 获取当前登录用户的账户信息 (包含 userId)
      */
     @Throws(IOException::class)

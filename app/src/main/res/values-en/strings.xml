@@ -918,6 +918,13 @@
     <string name="settings_netease_auto_source_switch_desc">Search Bilibili automatically when a NetEase song is unavailable or only returns a preview clip</string>
     <string name="settings_netease_local_source_fallback">Local Audio Fallback</string>
     <string name="settings_netease_local_source_fallback_desc">Prefer a local audio file matched to the same song when a NetEase song is unavailable or only returns a preview clip</string>
+    <string name="settings_netease_scrobble">Sync Listening History to NetEase</string>
+    <string name="settings_netease_scrobble_desc">Applies only to songs with a NetEase Cloud Music ID. Automatically reports plays to your NetEase account\'s listening history once a song has played long enough</string>
+    <string name="qq_playlist_meta">%1$d songs · %2$s plays</string>
+    <string name="qq_playlist_empty">Playlist is empty or could not be loaded</string>
+    <string name="qq_playlist_offline_unavailable">QQ Music playlists are unavailable in offline mode</string>
+    <string name="explore_link_qq_playlist_fallback">QQ Music playlist %1$d</string>
+    <string name="player_qq_music_no_play_url">QQ Music returned no playable URL. Enable a custom source (LX script) first and try again</string>
     <string name="settings_youtube_playback_source">YouTube Playback Source</string>
     <string name="settings_youtube_playback_source_desc">Choose the preferred YouTube playback client; unavailable clients fall back to the remaining sources</string>
     <string name="settings_youtube_playback_source_web_remix">Web Remix Low Latency</string>
@@ -2371,6 +2378,10 @@
     <string name="custom_source_priority_desc">When on, resolve via custom source first (fall back to official on failure); when off, only used when official cannot return full audio.</string>
     <string name="custom_source_entry_title">Custom Source</string>
     <string name="custom_source_entry_desc">Import LX Music source scripts to enhance NetEase playback</string>
+    <string name="custom_source_import_url">Import from URL</string>
+    <string name="custom_source_import_url_desc">Paste a direct link to the script file (http/https). It will be downloaded, validated, then imported</string>
+    <string name="custom_source_validate_ok">Looks like a valid LX script, ready to import</string>
+    <string name="custom_source_validate_warn">No lx.on / musicUrl markers detected. Please check the content</string>
     <string name="custom_source_ok">OK</string>
     <string name="custom_source_view_all">View all</string>
 </resources>

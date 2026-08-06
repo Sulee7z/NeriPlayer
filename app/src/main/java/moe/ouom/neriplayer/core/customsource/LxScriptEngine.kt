@@ -113,7 +113,9 @@ class LxScriptEngine(
     /** 解析结果:url 为 null 表示失败,detail 给出可读的诊断信息(供 UI/日志展示)。 */
     data class ResolveResult(
         val url: String?,
-        val detail: String
+        val detail: String,
+        /** true=瞬时性失败(超时/网络抖动), 值得重试; false=脚本/服务端的确定性失败(404/无版权等), 重试无意义 */
+        val transient: Boolean = true
     )
 
     /** 最近一次脚本内部报告的错误(console.error / window.onerror / 未捕获 Promise)。 */
@@ -206,7 +208,7 @@ class LxScriptEngine(
         if (raw == null) {
             NPLogger.w(TAG, "musicUrl 超时: source=$source quality=$quality")
             val extra = lastScriptError?.let { " | 脚本错误: $it" } ?: ""
-            return ResolveResult(null, "解析超时(${timeoutMs}ms),脚本可能未返回或网络阻塞$extra")
+            return ResolveResult(null, "解析超时(${timeoutMs}ms),脚本可能未返回或网络阻塞$extra", transient = true)
         }
         return try {
             val obj = JSONObject(raw)
@@ -218,11 +220,11 @@ class LxScriptEngine(
                 val cleanErr = err.takeIf { it.isNotBlank() } ?: "未知错误"
                 NPLogger.w(TAG, "musicUrl 脚本返回失败($source/$quality): $cleanErr")
                 val extra = lastScriptError?.let { " | $it" } ?: ""
-                ResolveResult(null, "脚本返回失败($source/$quality): $cleanErr$extra")
+                ResolveResult(null, "脚本返回失败($source/$quality): $cleanErr$extra", transient = false)
             }
         } catch (e: Exception) {
             NPLogger.w(TAG, "musicUrl 结果解析失败($source/$quality): $raw", e)
-            ResolveResult(null, "结果解析异常($source/$quality): ${e.message}")
+            ResolveResult(null, "结果解析异常($source/$quality): ${e.message}", transient = false)
         }
     }
 

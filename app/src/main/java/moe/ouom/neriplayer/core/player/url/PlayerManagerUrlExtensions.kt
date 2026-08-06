@@ -18,6 +18,7 @@ import moe.ouom.neriplayer.core.api.bili.BiliSponsorBlockTarget
 import moe.ouom.neriplayer.core.api.bili.resolveBiliSong
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
+import moe.ouom.neriplayer.core.api.qq.QQMusicSongBuilder
 import moe.ouom.neriplayer.core.player.PlayerManager
 import moe.ouom.neriplayer.core.player.download.AudioDownloadManager
 import moe.ouom.neriplayer.core.player.lifecycle.updateAudioOffloadPreferences
@@ -137,7 +138,7 @@ internal suspend fun PlayerManager.resolveSongUrl(
                     }
                 }
 
-                !isBiliTrack(song) -> {
+                !isBiliTrack(song) && !isQQMusicTrack(song) -> {
                     buildNeteaseOfflineCacheAudioInfo(effectiveNeteaseQuality()) {
                         getLocalizedString(it)
                     }
@@ -183,6 +184,11 @@ internal suspend fun PlayerManager.resolveSongUrl(
                 sideEffects = resolverSideEffects
             )
             isBiliTrack(song) -> getBiliAudioUrl(
+                song = song,
+                suppressError = suppressError,
+                sideEffects = resolverSideEffects
+            )
+            isQQMusicTrack(song) -> getQQMusicAudioUrl(
                 song = song,
                 suppressError = suppressError,
                 sideEffects = resolverSideEffects
@@ -278,6 +284,11 @@ internal suspend fun PlayerManager.resolveShareableListenTogetherStreamUrl(
                 suppressError = true,
                 sideEffects = sideEffects
             )
+            isQQMusicTrack(song) -> getQQMusicAudioUrl(
+                song = song,
+                suppressError = true,
+                sideEffects = sideEffects
+            )
             else -> getNeteaseSongUrl(
                 song = song,
                 suppressError = true,
@@ -309,7 +320,7 @@ internal suspend fun PlayerManager.resolveShareableListenTogetherStreamUrls(
 
     addResult(resolveShareableListenTogetherStreamUrl(song))
     when {
-        isBiliTrack(song) -> Unit
+        isBiliTrack(song) || isQQMusicTrack(song) -> Unit
         isYouTubeMusicTrack(song) && urls.size < MAX_LISTEN_TOGETHER_STREAM_URL_CANDIDATES -> {
             addResult(
                 getYouTubeMusicAudioUrl(
@@ -343,7 +354,7 @@ private suspend fun PlayerManager.resolveAdditionalNeteaseShareableUrls(
     song: SongItem,
     maxCount: Int
 ): List<String> = withContext(Dispatchers.IO) {
-    if (maxCount <= 0 || isLocalSong(song) || isBiliTrack(song) || isYouTubeMusicTrack(song)) {
+    if (maxCount <= 0 || isLocalSong(song) || isBiliTrack(song) || isYouTubeMusicTrack(song) || isQQMusicTrack(song)) {
         return@withContext emptyList()
     }
     val urls = linkedSetOf<String>()
@@ -1201,6 +1212,71 @@ private suspend fun PlayerManager.resolveNeteaseCustomSource(
         if (e is CancellationException) throw e
         NPLogger.w("NERI-PlayerManager", "自定义音源解析异常", e)
         null
+    }
+}
+
+/**
+ * QQ 音乐歌曲播放地址解析。
+ *
+ * QQ 官方接口已不再对匿名请求下发播放地址, 播放优先走自定义音源(LX 脚本的 tx 平台);
+ * 自定义音源不可用时再尝试官方 vkey(免费歌曲仍可能命中), 最后返回明确错误提示。
+ */
+private suspend fun PlayerManager.getQQMusicAudioUrl(
+    song: SongItem,
+    suppressError: Boolean = false,
+    sideEffects: RefreshResolverSideEffects = RefreshResolverSideEffects()
+): SongUrlResult = withContext(Dispatchers.IO) {
+    try {
+        val songMid = QQMusicSongBuilder.qqSongMidOrNull(song) ?: return@withContext SongUrlResult.Failure
+
+        // 1. 自定义音源(LX 脚本 tx 平台)直接解析
+        val customManager = AppContainer.customSourceManager
+        if (customManager.hasActiveNeteaseSource()) {
+            val customUrl = customManager.resolveQqSongUrl(song, songMid, effectiveNeteaseQuality())
+            if (!customUrl.isNullOrBlank()) {
+                NPLogger.d("NERI-PlayerManager", "自定义音源解析QQ成功: id=${song.id} songmid=$songMid")
+                return@withContext SongUrlResult.Success(
+                    url = customUrl,
+                    durationMs = song.durationMs.takeIf { it > 0 }
+                )
+            }
+        }
+
+        // 2. 官方 vkey(匿名可用性有限)
+        val officialUrl = AppContainer.qqMusicApi.resolveSongPlayUrl(songMid)
+        if (!officialUrl.isNullOrBlank()) {
+            return@withContext SongUrlResult.Success(
+                url = officialUrl,
+                durationMs = song.durationMs.takeIf { it > 0 }
+            )
+        }
+
+        if (!suppressError) {
+            sideEffects.emitError {
+                postPlayerEvent(
+                    PlayerEvent.ShowError(
+                        getLocalizedString(R.string.player_qq_music_no_play_url)
+                    )
+                )
+            }
+        }
+        SongUrlResult.Failure
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
+        NPLogger.e("NERI-PlayerManager", "QQ音乐解析失败", e)
+        if (!suppressError) {
+            sideEffects.emitError {
+                postPlayerEvent(
+                    PlayerEvent.ShowError(
+                        getLocalizedString(
+                            R.string.player_playback_url_error_detail,
+                            e.message.orEmpty()
+                        )
+                    )
+                )
+            }
+        }
+        SongUrlResult.Failure
     }
 }
 
