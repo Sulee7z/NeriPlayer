@@ -52,7 +52,7 @@ zxingCore = "3.5.4"
 [libraries]
 accompanist-navigation-animation = { module = "com.google.accompanist:accompanist-navigation-animation", version.ref = "accompanistNavigationAnimation" }
 android-tools = { module = "com.android.tools.build:gradle", version.ref = "agp" }
-commons-net = { module = "org.apache.commons:commons-net", version.ref = "commonsNet" }
+commons-net = { module = "commons-net:commons-net", version.ref = "commonsNet" }
 androidx-animation = { module = "androidx.compose.animation:animation" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
