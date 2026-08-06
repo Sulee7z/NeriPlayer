@@ -392,25 +392,25 @@ object QQMusicSongBuilder {
         song.audioId?.takeIf { it.isNotBlank() }?.let { return it }
         return song.id.takeIf { it > 0L }?.toString()
     }
+}
 
-    /**
-     * 把 QQ 歌单/专辑歌曲转换为播放器 [SongItem]。
-     *
-     * 平台识别沿用 album 前缀约定: 以 [QQ_SOURCE_TAG]("QQMusic") 开头,
-     * 真实专辑名接在后面; QQ 原生 ID(songmid) 保存在 [SongItem.audioId]。
-     */
-    @SuppressLint("DefaultLocale")
-    fun QQPlaylistSong.toSongItem(albumTag: String = QQ_SOURCE_TAG): SongItem {
-        return SongItem(
-            id = songMid.hashCode().toLong() and 0x7fffffffL,
-            name = songName,
-            artist = singer.joinToString("/") { it.name },
-            album = if (albumName.isNullOrBlank()) albumTag else "$albumTag$albumName",
-            albumId = 0L,
-            durationMs = interval * 1000L,
-            coverUrl = albumMid?.let { "https://y.qq.com/music/photo_new/T002R800x800M000$it.jpg" },
-            audioId = songMid,
-            sourceStableKey = "qq:$songMid"
-        )
-    }
+/**
+ * 把 QQ 歌单/专辑歌曲转换为播放器 [SongItem]。
+ *
+ * 平台识别沿用 album 前缀约定: 以 [QQMusicSongBuilder.QQ_SOURCE_TAG]("QQMusic") 开头,
+ * 真实专辑名接在后面; QQ 原生 ID(songmid) 保存在 [SongItem.audioId]。
+ */
+@SuppressLint("DefaultLocale")
+fun QQPlaylistSong.toSongItem(albumTag: String = QQMusicSongBuilder.QQ_SOURCE_TAG): SongItem {
+    return SongItem(
+        id = songMid.hashCode().toLong() and 0x7fffffffL,
+        name = songName,
+        artist = singer.joinToString("/") { it.name },
+        album = if (albumName.isNullOrBlank()) albumTag else "$albumTag$albumName",
+        albumId = 0L,
+        durationMs = interval * 1000L,
+        coverUrl = albumMid?.let { "https://y.qq.com/music/photo_new/T002R800x800M000$it.jpg" },
+        audioId = songMid,
+        sourceStableKey = "qq:$songMid"
+    )
 }

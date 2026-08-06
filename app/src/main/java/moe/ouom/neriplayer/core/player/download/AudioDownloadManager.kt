@@ -2864,7 +2864,12 @@ object AudioDownloadManager {
 
     // 解析网易云直链
     private suspend fun resolveNetease(songId: Long): ResolvedDownloadSource? {
-        val quality = try { AppContainer.settingsRepo.audioQualityFlow.first() } catch (_: Exception) { "exhigh" }        val raw = AppContainer.neteaseClient.getSongDownloadUrl(songId, level = quality)
+        val quality = try {
+            AppContainer.settingsRepo.audioQualityFlow.first()
+        } catch (_: Exception) {
+            "exhigh"
+        }
+        val raw = AppContainer.neteaseClient.getSongDownloadUrl(songId, level = quality)
         return try {
             val root = JSONObject(raw)
             if (root.optInt("code") != 200) return tryWeapiFallback(songId, quality)
@@ -3041,10 +3046,11 @@ object AudioDownloadManager {
         }
         val url = AppContainer.customSourceManager.resolveQqSongUrl(song, songMid, quality)
             ?: return null
+        val mime = guessMimeFromUrl(url)
         return ResolvedDownloadSource(
             url = url,
-            mimeType = guessMimeFromUrl(url),
-            fileExtensionHint = mimeToExt(guessMimeFromUrl(url))
+            mimeType = mime,
+            fileExtensionHint = mime?.let { mimeToExt(it) }
         )
     }
 

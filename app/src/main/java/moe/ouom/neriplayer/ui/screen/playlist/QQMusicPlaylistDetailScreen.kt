@@ -73,8 +73,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.qq.QQMusicApi
-import moe.ouom.neriplayer.core.api.qq.QQMusicPlaylistDetail
+import moe.ouom.neriplayer.core.api.qq.QQPlaylistDetail
 import moe.ouom.neriplayer.core.api.qq.QQMusicSongBuilder
+import moe.ouom.neriplayer.core.api.qq.toSongItem
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.data.model.stableKey
@@ -84,7 +85,7 @@ import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 
 private sealed interface QQPlaylistUiState {
     data object Loading : QQPlaylistUiState
-    data class Ready(val detail: QQMusicPlaylistDetail) : QQPlaylistUiState
+    data class Ready(val detail: QQPlaylistDetail) : QQPlaylistUiState
     data class Error(val message: String) : QQPlaylistUiState
 }
 
@@ -229,7 +230,7 @@ fun QQMusicPlaylistDetailScreen(
 
 @Composable
 private fun QQPlaylistHeader(
-    detail: QQMusicPlaylistDetail,
+    detail: QQPlaylistDetail,
     fallbackCoverUrl: String,
     offlineMode: Boolean
 ) {
