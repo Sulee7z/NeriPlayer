@@ -150,55 +150,54 @@ fun FtpLibraryPage(offlineMode: Boolean = false) {
                 }
             }
 
-            ui.error != null -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = ui.error,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(horizontal = 32.dp)
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        OutlinedButton(onClick = vm::refresh) {
-                            Text(stringResource(R.string.ftp_refresh))
+            else -> {
+                val errorMessage = ui.error
+                if (errorMessage != null) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = errorMessage,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 32.dp)
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            OutlinedButton(onClick = vm::refresh) {
+                                Text(stringResource(R.string.ftp_refresh))
+                            }
                         }
                     }
-                }
-            }
-
-            ui.entries.isEmpty() -> {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = stringResource(R.string.ftp_empty),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            else -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = 8.dp,
-                        end = 8.dp,
-                        top = 8.dp,
-                        bottom = 8.dp + miniPlayerHeight
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(ui.entries, key = { it.path }) { entry ->
-                        FtpEntryRow(
-                            entry = entry,
-                            onClick = {
-                                if (entry.isDirectory) {
-                                    vm.enterDirectory(entry)
-                                } else if (isPlayableMedia(entry.name)) {
-                                    vm.downloadAndPlay(entry)
-                                }
-                            }
+                } else if (ui.entries.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = stringResource(R.string.ftp_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 8.dp,
+                            end = 8.dp,
+                            top = 8.dp,
+                            bottom = 8.dp + miniPlayerHeight
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(ui.entries, key = { it.path }) { entry ->
+                            FtpEntryRow(
+                                entry = entry,
+                                onClick = {
+                                    if (entry.isDirectory) {
+                                        vm.enterDirectory(entry)
+                                    } else if (isPlayableMedia(entry.name)) {
+                                        vm.downloadAndPlay(entry)
+                                    }
+                                }
+                            )
+                        }
                     }
                 }
             }
