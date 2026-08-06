@@ -21,12 +21,15 @@ package moe.ouom.neriplayer.ui.screen.tab.settings.auth
  */
 
 import android.content.Intent
-import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.activity.auth.KugouKuwoWebLoginActivity
+import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.ui.viewmodel.auth.KugouAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.KuwoAuthViewModel
 
@@ -48,6 +51,24 @@ internal fun SettingsKugouAuthDialogs(
 ) {
     val composeResources = LocalResources.current
     val context = LocalContext.current
+    val webLoginLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val json = result.data?.getStringExtra(KugouKuwoWebLoginActivity.RESULT_COOKIE) ?: "{}"
+            vm.importCookiesFromMap(vm.parseJsonToMap(json))
+        } else {
+            onInlineMsgChange(composeResources.getString(R.string.settings_cookie_cancelled))
+        }
+    }
+    val launchWebLogin: () -> Unit = {
+        onInlineMsgChange(null)
+        AppContainer.pauseYouTubeBackgroundWebWorkForForegroundLogin()
+        webLoginLauncher.launch(
+            Intent(context, KugouKuwoWebLoginActivity::class.java)
+                .putExtra(KugouKuwoWebLoginActivity.EXTRA_PLATFORM, KugouKuwoWebLoginActivity.PLATFORM_KUGOU)
+        )
+    }
 
     if (showSavedCookieDialog) {
         SavedCookieActionDialog(
@@ -82,14 +103,7 @@ internal fun SettingsKugouAuthDialogs(
                 )
             },
             cookieLabel = stringResource(R.string.login_paste_kugou_cookie_hint),
-            onBrowserLogin = {
-                onInlineMsgChange(null)
-                runCatching {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://www.kugou.com"))
-                    )
-                }
-            },
+            onBrowserLogin = launchWebLogin,
             onSaveCookie = { rawCookie ->
                 if (rawCookie.isBlank()) {
                     onInlineMsgChange(composeResources.getString(R.string.auth_cookie_empty))
@@ -115,6 +129,24 @@ internal fun SettingsKuwoAuthDialogs(
 ) {
     val composeResources = LocalResources.current
     val context = LocalContext.current
+    val webLoginLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val json = result.data?.getStringExtra(KugouKuwoWebLoginActivity.RESULT_COOKIE) ?: "{}"
+            vm.importCookiesFromMap(vm.parseJsonToMap(json))
+        } else {
+            onInlineMsgChange(composeResources.getString(R.string.settings_cookie_cancelled))
+        }
+    }
+    val launchWebLogin: () -> Unit = {
+        onInlineMsgChange(null)
+        AppContainer.pauseYouTubeBackgroundWebWorkForForegroundLogin()
+        webLoginLauncher.launch(
+            Intent(context, KugouKuwoWebLoginActivity::class.java)
+                .putExtra(KugouKuwoWebLoginActivity.EXTRA_PLATFORM, KugouKuwoWebLoginActivity.PLATFORM_KUWO)
+        )
+    }
 
     if (showSavedCookieDialog) {
         SavedCookieActionDialog(
@@ -149,14 +181,7 @@ internal fun SettingsKuwoAuthDialogs(
                 )
             },
             cookieLabel = stringResource(R.string.login_paste_kuwo_cookie_hint),
-            onBrowserLogin = {
-                onInlineMsgChange(null)
-                runCatching {
-                    context.startActivity(
-                        Intent(Intent.ACTION_VIEW, Uri.parse("https://www.kuwo.cn"))
-                    )
-                }
-            },
+            onBrowserLogin = launchWebLogin,
             onSaveCookie = { rawCookie ->
                 if (rawCookie.isBlank()) {
                     onInlineMsgChange(composeResources.getString(R.string.auth_cookie_empty))

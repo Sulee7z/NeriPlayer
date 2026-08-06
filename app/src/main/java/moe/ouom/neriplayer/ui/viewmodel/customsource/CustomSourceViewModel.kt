@@ -140,6 +140,19 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
+    fun rename(id: String, name: String) {
+        if (name.trim().isBlank()) return
+        viewModelScope.launch { repo.rename(id, name) }
+    }
+
+    fun moveUp(id: String) {
+        viewModelScope.launch { repo.move(id, -1) }
+    }
+
+    fun moveDown(id: String) {
+        viewModelScope.launch { repo.move(id, 1) }
+    }
+
     fun setPriorityMode(priority: Boolean) {
         viewModelScope.launch { repo.setPriorityMode(priority) }
     }
@@ -151,11 +164,13 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    /** 端到端测试:对启用音源真实解析一首示例歌曲,显示详细结果。 */
-    fun testActiveSource() {
+    /** 端到端测试:对指定音源真实解析一首示例歌曲,显示详细结果。 */
+    fun testSource(id: String) {
         viewModelScope.launch {
+            val source = _uiState.value.sources.firstOrNull { it.id == id }
+                ?: return@launch
             _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val msg = runCatching { manager.diagnoseActiveNetease() }
+            val msg = runCatching { manager.diagnoseNetease(source) }
                 .getOrElse { "测试异常: ${it.message}" }
             _uiState.value = _uiState.value.copy(busy = false, message = msg)
         }

@@ -70,6 +70,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
@@ -273,6 +274,62 @@ internal fun SettingsPlaybackSection(
                     },
                     onCheckedChange = { enabled ->
                         scope.launch { autoSettingsRepository.setBiliSponsorBlockEnabled(enabled) }
+                    },
+                    highlightTargetId = highlightTargetId,
+                    highlightPulse = highlightPulse,
+                    onHighlightFinished = onHighlightFinished
+                )
+
+                val neteaseScrobbleEnabled by autoSettingsRepository.neteaseScrobbleEnabledFlow
+                    .collectAsState(initial = false)
+                PlaybackSwitchItem(
+                    setting = AutoSettingsMetadata.requireSetting(
+                        AutoSettingsKeys.NETEASE_SCROBBLE_ENABLED
+                    ),
+                    checked = neteaseScrobbleEnabled,
+                    icon = {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_netease_cloud_music),
+                            contentDescription = stringResource(R.string.settings_netease_scrobble),
+                            modifier = Modifier.size(24.dp),
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    onToggle = {
+                        scope.launch {
+                            autoSettingsRepository.setNeteaseScrobbleEnabled(!neteaseScrobbleEnabled)
+                        }
+                    },
+                    onCheckedChange = { enabled ->
+                        scope.launch { autoSettingsRepository.setNeteaseScrobbleEnabled(enabled) }
+                    },
+                    highlightTargetId = highlightTargetId,
+                    highlightPulse = highlightPulse,
+                    onHighlightFinished = onHighlightFinished
+                )
+
+                val neteaseAutoSyncLikeEnabled by autoSettingsRepository.neteaseAutoSyncLikeEnabledFlow
+                    .collectAsState(initial = false)
+                PlaybackSwitchItem(
+                    setting = AutoSettingsMetadata.requireSetting(
+                        AutoSettingsKeys.NETEASE_AUTO_SYNC_LIKE_ENABLED
+                    ),
+                    checked = neteaseAutoSyncLikeEnabled,
+                    icon = {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_netease_cloud_music),
+                            contentDescription = stringResource(R.string.settings_netease_auto_sync_like),
+                            modifier = Modifier.size(24.dp),
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    },
+                    onToggle = {
+                        scope.launch {
+                            autoSettingsRepository.setNeteaseAutoSyncLikeEnabled(!neteaseAutoSyncLikeEnabled)
+                        }
+                    },
+                    onCheckedChange = { enabled ->
+                        scope.launch { autoSettingsRepository.setNeteaseAutoSyncLikeEnabled(enabled) }
                     },
                     highlightTargetId = highlightTargetId,
                     highlightPulse = highlightPulse,

@@ -146,6 +146,35 @@ class CustomSourceRepository(private val appContext: Context) {
         }
     }
 
+    /** 重命名音源(仅展示名,脚本文件名不变)。 */
+    suspend fun rename(id: String, name: String) = withContext(Dispatchers.IO) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return@withContext
+        mutex.withLock {
+            val list = readIndex().map { if (it.id == id) it.copy(name = trimmed) else it }
+            writeIndex(list)
+            _sources.value = list
+        }
+    }
+
+    /**
+     * 调整音源顺序(列表顺序即回退尝试顺序)。
+     * [direction] = -1 上移(优先级更高), +1 下移。
+     */
+    suspend fun move(id: String, direction: Int) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val list = readIndex().toMutableList()
+            val index = list.indexOfFirst { it.id == id }
+            if (index < 0) return@withContext
+            val target = index + direction
+            if (target < 0 || target >= list.size) return@withContext
+            val item = list.removeAt(index)
+            list.add(target, item)
+            writeIndex(list)
+            _sources.value = list
+        }
+    }
+
     suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         mutex.withLock {
             val list = readIndex()

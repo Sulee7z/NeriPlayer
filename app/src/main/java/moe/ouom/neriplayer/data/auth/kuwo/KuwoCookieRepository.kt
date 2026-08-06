@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.data.auth.common.PlatformCookieRepository
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import org.json.JSONObject
@@ -39,18 +40,20 @@ private const val KUWO_AUTH_PREFS = "kuwo_auth_secure_prefs"
 private const val KEY_KUWO_AUTH_BUNDLE = "kuwo_auth_bundle"
 
 /**
- * 閰风嫍闊充箰鐧诲綍 cookie銆? *
- * 鍦?www.kuwo.cn 鐧诲綍鍚庡鍒?Cookie 瀵煎叆鍗冲彲; openid/userid 绛?cookie
- * 鐢ㄤ簬鐢ㄦ埛姝屽崟鎺ュ彛, 娌℃湁鐧诲綍鎬佹椂濯掍綋搴撳睍绀虹儹闂ㄦ瓕鍗曘€? */
-class KuwoCookieRepository(private val context: Context) {
+ * 酷我音乐登录 cookie。
+ *
+ * 在 www.kuwo.cn 登录后复制 Cookie 导入即可; kw_token/csrf 等 cookie
+ * 用于用户歌单接口, 没有登录态时媒体库展示热门歌单。
+ */
+class KuwoCookieRepository(private val context: Context) : PlatformCookieRepository {
     private var encryptedPrefs: SharedPreferences
     private val _cookieFlow: MutableStateFlow<Map<String, String>>
     private val _authHealthFlow: MutableStateFlow<SavedCookieAuthHealth>
 
-    val cookieFlow: StateFlow<Map<String, String>>
+    override val cookieFlow: StateFlow<Map<String, String>>
         get() = _cookieFlow.asStateFlow()
 
-    val authHealthFlow: StateFlow<SavedCookieAuthHealth>
+    override val authHealthFlow: StateFlow<SavedCookieAuthHealth>
         get() = _authHealthFlow.asStateFlow()
 
     init {
@@ -60,11 +63,11 @@ class KuwoCookieRepository(private val context: Context) {
         _authHealthFlow = MutableStateFlow(evaluateHealth(cookies))
     }
 
-    fun getCookiesOnce(): Map<String, String> = _cookieFlow.value
+    override fun getCookiesOnce(): Map<String, String> = _cookieFlow.value
 
-    fun getAuthHealthOnce(): SavedCookieAuthHealth = _authHealthFlow.value
+    override fun getAuthHealthOnce(): SavedCookieAuthHealth = _authHealthFlow.value
 
-    fun saveCookies(cookies: Map<String, String>) {
+    override fun saveCookies(cookies: Map<String, String>) {
         val normalized = cookies.filterKeys { it.isNotBlank() }
         encryptedPrefs.edit {
             putString(KEY_KUWO_AUTH_BUNDLE, encode(normalized))
@@ -74,13 +77,13 @@ class KuwoCookieRepository(private val context: Context) {
         NPLogger.d("NERI-KuwoCookieRepo", "Saved Kuwo cookies: keys=${normalized.keys.joinToString()}")
     }
 
-    fun clear() {
+    override fun clear() {
         encryptedPrefs.edit { remove(KEY_KUWO_AUTH_BUNDLE) }
         _cookieFlow.value = emptyMap()
         _authHealthFlow.value = evaluateHealth(emptyMap())
     }
 
-    fun refreshHealth() {
+    override fun refreshHealth() {
         _authHealthFlow.value = evaluateHealth(_cookieFlow.value)
     }
 

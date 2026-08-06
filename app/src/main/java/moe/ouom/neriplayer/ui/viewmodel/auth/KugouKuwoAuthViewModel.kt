@@ -59,10 +59,11 @@ open class KugouKuwoAuthViewModel(
         KUWO
     }
 
-    private val repo = when (cookieKey) {
-        CookieKey.KUGOU -> AppContainer.kugouCookieRepo
-        CookieKey.KUWO -> AppContainer.kuwoCookieRepo
-    }
+    private val repo: moe.ouom.neriplayer.data.auth.common.PlatformCookieRepository =
+        when (cookieKey) {
+            CookieKey.KUGOU -> AppContainer.kugouCookieRepo
+            CookieKey.KUWO -> AppContainer.kuwoCookieRepo
+        }
 
     private val _uiState = MutableStateFlow(
         KugouKuwoAuthUiState(

@@ -213,6 +213,7 @@ import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
 import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.data.netease.resolveNeteaseSongIdOrNull
+import moe.ouom.neriplayer.data.netease.resolveNeteaseSongIdWithSearch
 import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
 import moe.ouom.neriplayer.data.platform.youtube.isYouTubeMusicSong
 import moe.ouom.neriplayer.data.settings.AutoSettingsSchema
@@ -2160,8 +2161,9 @@ object PlayerManager {
                 AppContainer.localPlaylistPlaybackStatsRepo.recordPlayNow(playlistId)
             }
             // 只有真正被计入一次播放(达到本地统计的最短收听时长)时才上报网易云听歌记录,
-            // 避免切歌太快或误触时把没有认真听的曲目也算作一次播放
-            scrobbleToNeteaseIfEnabled(snapshot.song, snapshot.listenedMs)
+            // 避免切歌太快或误触时把没有认真听的曲目也算作一次播放;
+            // 上报时长使用整次播放的累计值, 而非单次 flush 窗口的零碎时长
+            scrobbleToNeteaseIfEnabled(snapshot.song, snapshot.playListenedMs)
         }
     }
 
@@ -2179,7 +2181,11 @@ object PlayerManager {
                     .first()
                 if (!enabled) return@launch
 
-                val neteaseId = resolveNeteaseSongIdOrNull(song) ?: return@launch
+                // 网易云来源的歌直接用原生 ID; 第三方音源(QQ/酷狗/酷我等)的歌
+                // 先做"歌名+歌手 → 网易云 ID"的搜索转换, 转换成功才能上报
+                val neteaseId = resolveNeteaseSongIdOrNull(song)
+                    ?: resolveNeteaseSongIdWithSearch(song)
+                if (neteaseId == null) return@launch
 
                 val client = AppContainer.neteaseClient
                 if (!client.hasLogin()) return@launch

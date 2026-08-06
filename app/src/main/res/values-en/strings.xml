@@ -241,10 +241,10 @@
     <string name="playback_restore_failed">Failed to restore playback state: %1$s</string>
     <string name="playback_url_error_detail">Failed to resolve playback URL: %1$s</string>
     <string name="nowplaying_no_playback">No Playback</string>
-    <string name="notification_timer_remaining">鈴?Stops in %1$s</string>
-    <string name="notification_timer_finish_current_remaining">鈴?Stop after current song in %1$s</string>
-    <string name="notification_stop_after_current">鈴?Stop After Current</string>
-    <string name="notification_stop_after_playlist">鈴?Stop After Playlist</string>
+    <string name="notification_timer_remaining">⏱ Stops in %1$s</string>
+    <string name="notification_timer_finish_current_remaining">⏱ Stop after current song in %1$s</string>
+    <string name="notification_stop_after_current">⏱ Stop After Current</string>
+    <string name="notification_stop_after_playlist">⏱ Stop After Playlist</string>
     <string name="notification_hide_floating_lyrics">Hide floating lyrics</string>
     <string name="notification_show_floating_lyrics">Enable floating lyrics</string>
     <string name="nowplaying_favorited">Favorited</string>
@@ -378,7 +378,7 @@
     <string name="cover_preview_title">Cover Artwork</string>
     <string name="cover_preview_image_content_description">Full-size song artwork</string>
     <string name="cover_preview_image_content_description_named">Full-size artwork for %s</string>
-    <string name="cover_preview_zoom_hint">Pinch to zoom 路 Drag to explore</string>
+    <string name="cover_preview_zoom_hint">Pinch to zoom · Drag to explore</string>
     <string name="cover_preview_zoom_percent">%1$d%%</string>
     <string name="cover_preview_reset_zoom">Reset zoom</string>
     <string name="music_view_album">View Album %s</string>
@@ -406,8 +406,8 @@
     <string name="playlist_import_failed">Import Failed</string>
     <string name="playlist_export_progress">Export Progress</string>
     <string name="playlist_import_progress">Import Progress</string>
-    <string name="playlist_exporting">Exporting playlists鈥?/string>
-    <string name="playlist_importing">Importing playlists鈥?/string>
+    <string name="playlist_exporting">Exporting playlists…</string>
+    <string name="playlist_importing">Importing playlists…</string>
     <string name="playlist_import_complete">Import Complete!</string>
     <string name="playlist_export_to_local">Export to Local</string>
     <string name="playlist_play_in_order">Play in Order</string>
@@ -418,7 +418,7 @@
     <string name="playlist_mode_repeat_all">Repeat All</string>
     <string name="playlist_mode_repeat_one">Repeat One</string>
     <string name="playlist_all_songs">All Songs</string>
-    <string name="playlist_song_count_format" formatted="false">%1$d songs 路 %2$s</string>
+    <string name="playlist_song_count_format" formatted="false">%1$d songs · %2$s</string>
     <string name="playlist_export_to">Export to Playlist</string>
     <string name="playlist_create_and_export">Create and Export</string>
     <string name="playlist_create_and_add">Create and Add</string>
@@ -437,9 +437,9 @@
     <string name="playlist_add_to_end">Add to End</string>
     <string name="playlist_search_hint">Search songs in playlist</string>
     <string name="playlist_favorite_hint">Tap favorite button in playlist details, or long press recommended playlists on home page</string>
-    <string name="playlist_play_count_format" formatted="false">%1$s plays 路 %2$d tracks</string>
+    <string name="playlist_play_count_format" formatted="false">%1$s plays · %2$d tracks</string>
     <string name="collection_track_count_format" formatted="false">%d tracks</string>
-    <string name="playlist_loading_content">Loading playlist content鈥?/string>
+    <string name="playlist_loading_content">Loading playlist content…</string>
     <string name="youtube_music_playlist_partial_loaded">Some playlist items are still missing. Showing the tracks loaded so far.</string>
     <string name="youtube_music_playlist_wait_full_load">The playlist is not fully loaded yet. Try again later or tap refresh.</string>
     <string name="youtube_music_playlist_tracks_unavailable">Unable to load the playlist tracks. Please refresh and try again.</string>
@@ -452,7 +452,7 @@
     <string name="library_favorite_tab_hot">Hot</string>
     <string name="library_hot_playlist_week">Weekly highlights</string>
     <string name="library_hot_playlist_month">Monthly highlights</string>
-    <string name="library_hot_playlist_summary" formatted="false">%1$d songs 路 %2$s plays</string>
+    <string name="library_hot_playlist_summary" formatted="false">%1$d songs · %2$s plays</string>
     <string name="library_hot_empty">No matching hot songs yet</string>
     <string name="library_hot_empty_hint">Start listening and hot songs will appear here</string>
     <string name="library_no_favorite_artist">No followed artists</string>
@@ -492,7 +492,7 @@
     <string name="ftp_save_and_connect">Save &amp; Connect</string>
     <string name="ftp_save_hint">Saves the config and connects to list the directory</string>
     <string name="ftp_config_required">Server address is required</string>
-    <string name="ftp_connecting">Connecting to server鈥?/string>
+    <string name="ftp_connecting">Connecting to server…</string>
     <string name="ftp_refresh">Refresh</string>
     <string name="ftp_go_up">Go to parent directory</string>
     <string name="ftp_edit_config">Edit server settings</string>
@@ -514,6 +514,10 @@
     <string name="library_qqmusic_hint">Pull to refresh, tap a playlist to open it</string>
     <string name="library_qqmusic_plays">%1$s plays</string>
     <string name="library_netease_tab_playlists">Playlists</string>
+    <string name="netease_recent_title">NetEase Listening History</string>
+    <string name="netease_recent_entry">Cloud Listening History</string>
+    <string name="netease_recent_entry_desc">View recent plays from your NetEase account</string>
+    <string name="netease_recent_need_login">Please sign in to NetEase first</string>
     <string name="library_netease_tab_albums">Albums</string>
     <string name="library_netease_search_hint">Search playlists / albums</string>
     <string name="library_netease_search_empty">No matching playlists or albums found</string>
@@ -534,7 +538,7 @@
     <string name="library_youtube_music_open_playlist">Open Playlist</string>
     <string name="library_youtube_music_copy_browse_id">Copy Browse ID</string>
     <string name="library_youtube_music_copy_playlist_id">Copy Playlist ID</string>
-    <string name="library_favorite_source_format" formatted="false">%d songs 路 %s</string>
+    <string name="library_favorite_source_format" formatted="false">%d songs · %s</string>
     <string name="library_favorite_sort_mode_title">Favorite Playlist Order</string>
     <string name="library_favorite_sort_mode_desc">Long press a playlist to enter sorting mode, then drag the handle</string>
     <string name="library_title">Library</string>
@@ -632,9 +636,9 @@
     <string name="local_playlist_sync_empty">No songs available to sync.</string>
     <string name="local_playlist_export_to">Export to Playlist</string>
     <string name="local_playlist_import_audio">Import Local Audio</string>
-    <string name="local_playlist_total_duration" formatted="false">%1$s 路 %2$d songs 路 %3$s plays</string>
-    <string name="local_artist_total_duration" formatted="false">%1$s 路 %2$d songs</string>
-    <string name="local_playlist_play_next">Play Next鈥?/string>
+    <string name="local_playlist_total_duration" formatted="false">%1$s · %2$d songs · %3$s plays</string>
+    <string name="local_artist_total_duration" formatted="false">%1$s · %2$d songs</string>
+    <string name="local_playlist_play_next">Play Next…</string>
     <string name="local_artist_detail_empty">This artist has no playable local songs</string>
 
     <plurals name="local_files_delete_downloaded_success">
@@ -673,7 +677,7 @@
     <string name="download_waiting_queue_summary">The remaining tasks are queued and waiting for a free download slot</string>
     <string name="download_finalizing">Audio has been written; lyrics, covers, and metadata are being sorted</string>
     <string name="download_waiting_network_recovery">Network is switching, download will resume automatically</string>
-    <string name="download_search_hint">Search downloaded songs鈥?/string>
+    <string name="download_search_hint">Search downloaded songs…</string>
     <string name="download_delete_confirm">Are you sure you want to delete song "%s"? This action cannot be undone.</string>
     <string name="download_starting">Starting download: %s</string>
     <string name="download_file_exists">File exists, skipping download: %s</string>
@@ -686,7 +690,7 @@
     <string name="download_manager_title">Download Manager</string>
     <string name="download_manager_subtitle">Manage downloads</string>
     <string name="download_scan_local">Scan Local Music</string>
-    <string name="download_scanning">Scanning local audio鈥?/string>
+    <string name="download_scanning">Scanning local audio…</string>
     <string name="download_scan_empty">No local audio files found</string>
     <string name="download_scan_add_selected">Add selected (%1$d)</string>
     <string name="download_scan_add_to_playlist">Add to another playlist</string>
@@ -713,7 +717,7 @@
     <string name="bili_qr_login">Bilibili QR Login</string>
     <string name="bili_qr_login_title">Connect your Bilibili account</string>
     <string name="bili_qr_login_subtitle">Scan and confirm with the Bilibili app on your phone, then return to NeriPlayer immediately.</string>
-    <string name="bili_qr_login_loading">Creating QR code鈥?/string>
+    <string name="bili_qr_login_loading">Creating QR code…</string>
     <string name="bili_qr_login_waiting">Scan with the Bilibili app</string>
     <string name="bili_qr_login_scanned">Scanned. Confirm sign-in on your phone</string>
     <string name="bili_qr_login_expired">QR code expired. Refresh it</string>
@@ -729,7 +733,7 @@
     <string name="qq_qr_login_web_fallback">Web Login</string>
     <string name="qq_qr_login_title">Sign in to QQ Music</string>
     <string name="qq_qr_login_subtitle">Sign in on the page below (QR, QQ quick login or SMS code all work). The app saves your session and returns automatically.</string>
-    <string name="qq_qr_login_loading">Creating QR code鈥?/string>
+    <string name="qq_qr_login_loading">Creating QR code…</string>
     <string name="qq_qr_login_waiting">Scan with the QQ app</string>
     <string name="qq_qr_login_scanned">Scanned. Confirm sign-in on your phone</string>
     <string name="qq_qr_login_expired">QR code expired. Refresh it</string>
@@ -737,7 +741,7 @@
     <string name="qq_qr_login_retry">Refresh QR code</string>
     <string name="qq_qr_login_cookie_incomplete">Sign-in was confirmed, but the Cookie was incomplete. Try again</string>
     <string name="qq_qr_login_hint">Tap Log In on the page and sign in. Cookies are saved automatically when done; you can also tap Read Cookie in the menu.</string>
-    <string name="bili_loading_favorites">Loading favorites鈥?/string>
+    <string name="bili_loading_favorites">Loading favorites…</string>
     <string name="bili_load_failed">Load failed: %s</string>
     <string name="bili_get_parts_failed">Failed to get parts</string>
     <string name="bili_download_progress_format" formatted="false">Download progress: %d/%d</string>
@@ -817,14 +821,14 @@
     <string name="home_ytmusic_more_recommendations">More Recommendations</string>
     <string name="home_search_hot">Hot Songs</string>
     <string name="home_search_radar">Personal Radar</string>
-    <string name="home_loading">Loading recommendations for you鈥?/string>
+    <string name="home_loading">Loading recommendations for you…</string>
     <string name="home_load_failed">Load failed: %s</string>
     <string name="home_error_network">Network or server error: %s</string>
     <string name="home_error_unknown">Parse or unknown error: %s</string>
     <string name="home_login_required">Sign in to enable</string>
     <string name="home_login_required_hint">Will auto-enable after sign-in</string>
     <string name="home_retry_hint">Tap refresh in the upper right to retry~</string>
-    <string name="home_play_count_format" formatted="false">%s 路 %d songs</string>
+    <string name="home_play_count_format" formatted="false">%s · %d songs</string>
     <string name="home_unfavorite_playlist">Unfavorite</string>
     <string name="home_favorite_playlist">Favorite Playlist</string>
     <string name="home_unfavorited">Unfavorited</string>
@@ -926,10 +930,10 @@
     <string name="login_confirm_send_code">Confirm send verification code?</string>
     <string name="login_send_code_to">Will send code to &gt;%s&lt;</string>
     <string name="login_paste_cookie">Cookie Import</string>
-    <string name="login_paste_cookie_hint">Paste Cookie (e.g.: MUSIC_U=鈥? __csrf=鈥?</string>
+    <string name="login_paste_cookie_hint">Paste Cookie (e.g.: MUSIC_U=…; __csrf=…)</string>
     <string name="login_save_cookie">Import Cookie and Sign In</string>
-    <string name="login_sending">Sending鈥?/string>
-    <string name="login_logging_in">Logging in鈥?/string>
+    <string name="login_sending">Sending…</string>
+    <string name="login_logging_in">Logging in…</string>
     <string name="settings_cookie_cancelled">Cookie read cancelled</string>
     <string name="settings_bili_login_success">Bilibili login successful</string>
     <string name="settings_qq_login_success">QQ Music login successful</string>
@@ -946,7 +950,7 @@
     <string name="settings_netease_status_missing">No usable Cookie detected. Tap to sign in again or import one</string>
     <string name="settings_youtube_login_methods">Browser/Cookie Import</string>
     <string name="settings_youtube_auth_missing">No usable YouTube / YouTube Music auth information was captured</string>
-    <string name="settings_youtube_auth_verifying">Verifying sign-in state, please wait鈥?/string>
+    <string name="settings_youtube_auth_verifying">Verifying sign-in state, please wait…</string>
     <string name="settings_youtube_status_valid">Saved and last refreshed %1$s</string>
     <string name="settings_youtube_status_saved_invalid">Saved YouTube auth information was found, but it may be invalid. Tap to refresh it or sign out</string>
     <string name="settings_youtube_status_missing">No usable YouTube sign-in state detected. Tap to sign in again or import one</string>
@@ -974,7 +978,9 @@
     <string name="settings_netease_local_source_fallback_desc">Prefer a local audio file matched to the same song when a NetEase song is unavailable or only returns a preview clip</string>
     <string name="settings_netease_scrobble">Sync Listening History to NetEase</string>
     <string name="settings_netease_scrobble_desc">Applies only to songs with a NetEase Cloud Music ID. Automatically reports plays to your NetEase account\'s listening history once a song has played long enough</string>
-    <string name="qq_playlist_meta">%1$d songs 路 %2$s plays</string>
+    <string name="settings_netease_auto_sync_like">Auto-sync local favorites to NetEase</string>
+    <string name="settings_netease_auto_sync_like_desc">When you heart a song in the app it is added to NetEase "Liked Songs"; unhearting removes it (requires NetEase sign-in)</string>
+    <string name="qq_playlist_meta">%1$d songs · %2$s plays</string>
     <string name="qq_playlist_empty">Playlist is empty or could not be loaded</string>
     <string name="qq_playlist_offline_unavailable">QQ Music playlists are unavailable in offline mode</string>
     <string name="explore_link_qq_playlist_fallback">QQ Music playlist %1$d</string>
@@ -1002,7 +1008,7 @@
     <string name="netease_qr_login">NetEase QR Login</string>
     <string name="netease_qr_login_title">Connect your account</string>
     <string name="netease_qr_login_subtitle">Scan and confirm with NetEase Cloud Music on your phone, then return to NeriPlayer immediately.</string>
-    <string name="netease_qr_login_loading">Creating QR code鈥?/string>
+    <string name="netease_qr_login_loading">Creating QR code…</string>
     <string name="netease_qr_login_waiting">Scan with NetEase Cloud Music</string>
     <string name="netease_qr_login_scanned">Scanned. Confirm sign-in on your phone</string>
     <string name="netease_qr_login_expired">QR code expired. Refresh it</string>
@@ -1025,14 +1031,13 @@
     <string name="settings_youtube_saved_cookie_title">Saved YouTube sign-in detected</string>
     <string name="settings_youtube_saved_cookie_message">Local YouTube auth information is already saved. You can sign out to clear it, or continue signing in to refresh auth.</string>
     <string name="settings_youtube_login_browser_warning">Google may show \"This browser may not be secure\" or block sign-in entirely. If that happens, switch to the \"Cookie Import\" tab above.</string>
-    <string name="login_paste_bili_cookie_hint">Paste Cookie (e.g.: SESSDATA=鈥? bili_jct=鈥?</string>
-    <string name="login_paste_qq_cookie_hint">Paste Cookie (e.g.: uin=鈥? qm_keyst=鈥? p_skey=鈥?</string>
-    <string name="login_paste_youtube_cookie_hint">Paste Cookie or browser request headers (must include Cookie)</string>
+    <string name="login_paste_bili_cookie_hint">Paste Cookie (e.g.: SESSDATA=…; bili_jct=…)</string>
+    <string name="login_paste_qq_cookie_hint">Paste Cookie (e.g.: uin=…; qm_keyst=…; p_skey=…)</string>
     <string name="login_paste_youtube_cookie_hint">Paste Cookie or browser request headers (must include Cookie)</string>
     <string name="login_open_kugou">Open Kugou website to login</string>
     <string name="login_open_kuwo">Open Kuwo website to login</string>
-    <string name="login_paste_kugou_cookie_hint">Paste Cookie (e.g. openid=...; userid=...)</string>
-    <string name="login_paste_kuwo_cookie_hint">Paste Cookie (e.g. kw_token=...; csrf=...)</string>
+    <string name="login_paste_kugou_cookie_hint">Paste Cookie (e.g. openid=…; userid=…)</string>
+    <string name="login_paste_kuwo_cookie_hint">Paste Cookie (e.g. kw_token=…; csrf=…)</string>
     <string name="settings_kugou_login_success">Kugou Music login success</string>
     <string name="settings_kuwo_login_success">Kuwo Music login success</string>
     <string name="settings_kugou_status_valid">Saved, last updated %1$s</string>
@@ -1047,6 +1052,8 @@
     <string name="settings_kuwo_saved_cookie_message">Saved Kuwo Music Cookie found. You can log out to clear it, or login again to refresh.</string>
     <string name="settings_kugou_login_hint">Login on the Kugou website, then copy and paste the browser Cookie</string>
     <string name="settings_kuwo_login_hint">Login on the Kuwo website, then copy and paste the browser Cookie</string>
+    <string name="kugou_web_login">Kugou Web Login</string>
+    <string name="kuwo_web_login">Kuwo Web Login</string>
     <string name="platform_kugou">Kugou Music</string>
     <string name="platform_kuwo">Kuwo Music</string>
     <string name="library_tab_kugou">Kugou</string>
@@ -1064,7 +1071,7 @@
     <string name="settings_search_title">Search Settings</string>
     <string name="settings_search_hint">Search settings</string>
     <string name="settings_search_empty">No matching settings</string>
-    <string name="settings_search_result_context">%1$s 路 %2$s</string>
+    <string name="settings_search_result_context">%1$s · %2$s</string>
     <string name="settings_general">General</string>
     <string name="settings_general_desc">Language, haptics, and global behavior</string>
     <string name="settings_accounts_desc">Manage NetEase, Bilibili, and YouTube sign-in states</string>
@@ -1307,7 +1314,7 @@
     <string name="settings_lyrics_page_lyric_font_size">Lyrics page font</string>
     <string name="settings_lyrics_page_translation_font_size">Lyrics page translation font</string>
     <string name="settings_lyrics_font_scale_value">Current: %1$d%%</string>
-    <string name="settings_lyrics_font_scale_pair_value">Lyrics %1$d%% 路 Translation %2$d%%</string>
+    <string name="settings_lyrics_font_scale_pair_value">Lyrics %1$d%% · Translation %2$d%%</string>
     <string name="settings_lyrics_font_scale_hint">Adjust lyric and translation size independently for each page</string>
     <string name="settings_lyrics_cover_page_section">Cover Page Lyrics Settings</string>
     <string name="settings_lyrics_cover_page_section_desc">Adjust lyric and translation sizes on the playback cover</string>
@@ -1403,20 +1410,20 @@
     <string name="language_simplified_chinese">Simplified Chinese</string>
     <string name="language_english">English</string>
     <string name="language_follow_system">Follow System</string>
-    <string name="language_display_chinese">Chinese / 绠€浣撲腑鏂?/string>
-    <string name="language_display_english">English / 鑻辫</string>
-    <string name="language_display_system">Follow system / 璺熼殢绯荤粺</string>
+    <string name="language_display_chinese">Chinese / 简体中文</string>
+    <string name="language_display_english">English / 英语</string>
+    <string name="language_display_system">Follow system / 跟随系统</string>
     <string name="language_setting_title">Language</string>
     <string name="language_select_title">Select Language</string>
     <string name="language_restart_title">Restart App</string>
     <string name="language_restart_message">Language changed. App restart required for full effect.</string>
     <string name="language_restart_now">Restart Now</string>
     <string name="language_restart_later">Later</string>
-    <string name="language_restart_title_bilingual">Restart app / 閲嶅惎搴旂敤</string>
-    <string name="language_restart_message_bilingual">Language changed. Restart the app to apply it completely.\n璇█宸叉洿鏀癸紝闇€瑕侀噸鍚簲鐢ㄤ互瀹屽叏鐢熸晥銆?/string>
-    <string name="language_restart_now_bilingual">Restart now / 绔嬪嵆閲嶅惎</string>
-    <string name="language_restart_later_bilingual">Later / 绋嶅悗</string>
-    <string name="settings_color_picker_hint">Long press color or tap 脳 to delete custom color</string>
+    <string name="language_restart_title_bilingual">Restart app / 重启应用</string>
+    <string name="language_restart_message_bilingual">Language changed. Restart the app to apply it completely.\n语言已更改，需要重启应用以完全生效。</string>
+    <string name="language_restart_now_bilingual">Restart now / 立即重启</string>
+    <string name="language_restart_later_bilingual">Later / 稍后</string>
+    <string name="settings_color_picker_hint">Long press color or tap × to delete custom color</string>
     <string name="settings_phone_number_hint">+86 Phone Number</string>
     <string name="settings_resend_code_countdown">Resend (%ds)</string>
     <string name="settings_empty_placeholder">(Empty)</string>
@@ -1663,9 +1670,9 @@
     <string name="settings_image_cache_desc">Covers, avatars, etc.</string>
     <string name="storage_details_title">Storage Details</string>
     <string name="storage_details_subtitle">Actual space used by directories:</string>
-    <string name="storage_details_loading">Calculating directory usage, please wait鈥?/string>
+    <string name="storage_details_loading">Calculating directory usage, please wait…</string>
     <string name="storage_details_total">Total</string>
-    <string name="storage_details_warning_title">鈿狅笍 System Settings Inaccurate?</string>
+    <string name="storage_details_warning_title">⚠️ System Settings Inaccurate?</string>
     <string name="storage_details_warning_message">If system shows much more than here, it\'s an Android cache issue.\n\nSolutions:\n1. Restart device\n2. Wait for system update\n3. Open system settings</string>
     <string name="storage_open_system_settings">Open System Settings</string>
     <string name="storage_clear_type_size">%1$s, currently about %2$s</string>
@@ -1722,8 +1729,8 @@
     <string name="settings_import_config_desc">Restore settings, sign-in state, and sync config from a file</string>
     <string name="settings_config_export_progress">Config Export Progress</string>
     <string name="settings_config_import_progress">Config Import Progress</string>
-    <string name="settings_config_exporting">Exporting config file鈥?/string>
-    <string name="settings_config_importing">Importing config file鈥?/string>
+    <string name="settings_config_exporting">Exporting config file…</string>
+    <string name="settings_config_importing">Importing config file…</string>
     <string name="settings_config_export_success">Config export successful</string>
     <string name="settings_config_export_failed">Config export failed</string>
     <string name="settings_config_export_warning_title">Before exporting config</string>
@@ -1738,7 +1745,7 @@
     <string name="config_import_warning_download_directory">Download directory access is unavailable and was skipped</string>
     <string name="config_import_warning_invalid_setting_values">Some settings were unknown or invalid and were skipped or restored to a safe range</string>
     <string name="playlist_backup_date">Backup date: %s</string>
-    <string name="playlist_analyzing">Analyzing differences鈥?/string>
+    <string name="playlist_analyzing">Analyzing differences…</string>
     <string name="playlist_analysis_failed">Analysis failed: %s</string>
     <string name="sync_title">Sync</string>
     <string name="sync_auto">Auto Sync</string>
@@ -2045,7 +2052,7 @@
     <string name="traffic_risk_network_mobile">mobile data</string>
     <string name="traffic_risk_network_roaming">roaming network</string>
     <string name="traffic_risk_download_title">Confirm download</string>
-    <string name="traffic_risk_download_single_message">You are using %1$s. Downloading 鈥?2$s鈥?may use a lot of data.</string>
+    <string name="traffic_risk_download_single_message">You are using %1$s. Downloading “%2$s” may use a lot of data.</string>
     <string name="traffic_risk_download_confirm">Continue download</string>
     <string name="mobile_data_download_interruption_title">Wi-Fi disconnected</string>
     <string name="mobile_data_download_wait_wifi">Wait for Wi-Fi</string>
@@ -2086,9 +2093,9 @@
     <string name="safe_mode_data_export_desc">Reads local config and playlist files without loading the full app. Export failures only show an error and keep safe mode open.</string>
     <string name="safe_mode_export_config">Export config</string>
     <string name="safe_mode_export_playlists">Export playlists</string>
-    <string name="safe_mode_exporting">Exporting鈥?/string>
-    <string name="safe_mode_exporting_config">Exporting config鈥?/string>
-    <string name="safe_mode_exporting_playlists">Exporting playlists鈥?/string>
+    <string name="safe_mode_exporting">Exporting…</string>
+    <string name="safe_mode_exporting_config">Exporting config…</string>
+    <string name="safe_mode_exporting_playlists">Exporting playlists…</string>
     <string name="safe_mode_export_config_done">Config exported: %1$s</string>
     <string name="safe_mode_export_playlists_done">Playlists exported: %1$s</string>
     <string name="safe_mode_export_failed">Export failed: %1$s</string>
@@ -2168,12 +2175,12 @@
     <string name="debug_youtube_probe_action_lyrics">Test Lyrics</string>
     <string name="debug_youtube_probe_action_clear_auth">Clear Auth</string>
     <string name="debug_youtube_probe_status_idle">Waiting for action</string>
-    <string name="debug_youtube_probe_status_loading_generic">Running probe: %1$s鈥?/string>
+    <string name="debug_youtube_probe_status_loading_generic">Running probe: %1$s…</string>
     <string name="debug_youtube_probe_status_success_generic">%1$s succeeded: %2$s</string>
     <string name="debug_youtube_probe_status_failed_generic">%1$s failed: %2$s</string>
     <string name="debug_youtube_probe_status_copied_raw">Raw JSON copied to clipboard</string>
-    <string name="debug_youtube_probe_status_loading_home">Requesting YouTube Music Home Feed鈥?/string>
-    <string name="debug_youtube_probe_status_loading_library">Requesting YouTube Music library鈥?/string>
+    <string name="debug_youtube_probe_status_loading_home">Requesting YouTube Music Home Feed…</string>
+    <string name="debug_youtube_probe_status_loading_library">Requesting YouTube Music library…</string>
     <string name="debug_youtube_probe_status_home_failed">Home Feed request failed: %1$s</string>
     <string name="debug_youtube_probe_status_library_failed">Library request failed: %1$s</string>
     <string name="debug_youtube_probe_status_auth_cleared">YouTube auth cleared. Subsequent requests will use anonymous mode</string>
@@ -2213,7 +2220,7 @@
     <string name="debug_hide_hint">After hiding, \"Debug\" will be removed from bottom bar. Tap version 7 times in settings to re-enable</string>
     <string name="debug_search_keyword">Search Keyword</string>
     <string name="debug_search_copy_json">Search (Copy JSON)</string>
-    <string name="debug_bvid_hint">BV ID (e.g.: BV1xx鈥?</string>
+    <string name="debug_bvid_hint">BV ID (e.g.: BV1xx…)</string>
     <string name="debug_get_info_copy">Get Info/Cover/Stats (Copy JSON)</string>
     <string name="debug_page_setting">Page Setting (Choose One)</string>
     <string name="debug_page_hint">Page (Default 1)</string>
@@ -2268,22 +2275,22 @@
     <string name="debug_search_qq">Search QQ</string>
     <string name="debug_search_preview_hint">(No preview, enter keyword and click button above~)</string>
     <string name="debug_error_keyword_empty">Error: Keyword cannot be empty</string>
-    <string name="debug_searching">Searching [%1$s]: %2$s 鈥?/string>
+    <string name="debug_searching">Searching [%1$s]: %2$s …</string>
     <string name="debug_search_ok">OK, [%s] search complete and copied to clipboard</string>
     <string name="debug_call_failed">Call/Parse failed: %s</string>
-    <string name="debug_calling">Calling: %s 鈥?/string>
+    <string name="debug_calling">Calling: %s …</string>
     <string name="debug_copied_label">Copied to clipboard: %s</string>
     <string name="debug_network_error">Network/Server error: %s</string>
-    <string name="debug_all_api_calling">Calling all APIs鈥?/string>
+    <string name="debug_all_api_calling">Calling all APIs…</string>
     <string name="debug_all_api_ok">OK, all APIs called and copied to clipboard</string>
     <string name="probe_keyword_empty">Error: Keyword cannot be empty</string>
-    <string name="probe_searching" formatted="false">Searching [%s]: %s 鈥?/string>
+    <string name="probe_searching" formatted="false">Searching [%s]: %s …</string>
     <string name="probe_search_complete">OK, [%s] search complete and copied</string>
     <string name="probe_call_failed">Call/parse failed: %s</string>
-    <string name="probe_calling">Calling: %s 鈥?/string>
+    <string name="probe_calling">Calling: %s …</string>
     <string name="probe_copied">Copied to clipboard: %s</string>
     <string name="probe_network_error">Network/server error: %s</string>
-    <string name="probe_all_calling">Calling all APIs鈥?/string>
+    <string name="probe_all_calling">Calling all APIs…</string>
     <string name="probe_all_complete">OK, all APIs called and copied</string>
     <string name="probe_invalid_avid">Please enter valid avid (number) in BV field</string>
     <string name="probe_page_not_found">Cannot find page %d</string>
@@ -2454,7 +2461,7 @@
     <string name="background_clear_preview">Clear</string>
 
     <!-- About -->
-    <string name="about_app_footer">NeriPlayer 鈥?GPLv3 鈥?Powered by You</string>
+    <string name="about_app_footer">NeriPlayer • GPLv3 • Powered by You</string>
 
     <!-- Custom Source -->
     <string name="custom_source_title">Custom Source</string>
@@ -2475,4 +2482,11 @@
     <string name="custom_source_validate_warn">No lx.on / musicUrl markers detected. Please check the content</string>
     <string name="custom_source_ok">OK</string>
     <string name="custom_source_view_all">View all</string>
+    <string name="custom_source_rename">Rename</string>
+    <string name="custom_source_rename_hint">Enter a new name</string>
+    <string name="custom_source_move_up">Move up (higher priority)</string>
+    <string name="custom_source_move_down">Move down</string>
+    <string name="custom_source_test_source">Test this source</string>
+    <string name="custom_source_importing">Downloading and importing…</string>
+    <string name="custom_source_priority_order">Multiple sources are tried in list order; use move up/down to adjust priority</string>
 </resources>

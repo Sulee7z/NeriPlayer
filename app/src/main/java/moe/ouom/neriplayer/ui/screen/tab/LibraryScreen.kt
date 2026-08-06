@@ -60,6 +60,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Refresh
@@ -324,6 +325,7 @@ fun LibraryScreen(
     onNeteasePlaylistClick: (PlaylistSummary) -> Unit = {},
     onNeteaseAlbumClick: (AlbumSummary) -> Unit = {},
     onNeteaseArtistClick: (NeteaseArtistSummary) -> Unit = {},
+    onOpenNeteaseRecent: () -> Unit = {},
     onYouTubeMusicPlaylistClick: (YouTubeMusicPlaylist) -> Unit = {},
     onBiliPlaylistClick: (BiliPlaylist) -> Unit = {},
     onQqMusicPlaylistClick: (PlaylistSummary) -> Unit = {},
@@ -492,6 +494,7 @@ fun LibraryScreen(
                             albumListState = neteaseAlbumState,
                             onPlaylistClick = onNeteasePlaylistClick,
                             onAlbumClick = onNeteaseAlbumClick,
+                            onOpenRecentRecords = onOpenNeteaseRecent,
                             offlineMode = offlineMode
                         )
 
@@ -1809,161 +1812,13 @@ private fun LocalPlaylistList(
                                         modifier = Modifier.size(56.dp)
                                     )
                                 }
-                        }
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ThirdPartyPlaylistList(
-    playlists: List<PlaylistSummary>,
-    error: String?,
-    loggedIn: Boolean,
-    mineHint: String,
-    hotHint: String,
-    emptyText: String,
-    listState: LazyListState,
-    onClick: (PlaylistSummary) -> Unit,
-    onRetry: () -> Unit,
-    offlineMode: Boolean
-) {
-    val context = LocalContext.current
-    val miniPlayerHeight = LocalMiniPlayerHeight.current
-    val cardShape = RoundedCornerShape(12.dp)
-
-    LazyColumn(
-        state = listState,
-        contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp + miniPlayerHeight),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = Modifier.fillMaxSize()
-    ) {
-        item(key = "third_party_music_header") {
-            Text(
-                text = if (loggedIn) mineHint else hotHint,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-            )
-        }
-        if (playlists.isEmpty()) {
-            item {
-                Card(
-                    shape = cardShape,
-                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                    modifier = Modifier
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                        .clip(cardShape)
-                ) {
-                    ListItem(
-                        headlineContent = {
-                            Text(
-                                text = error ?: emptyText,
-                                color = if (error != null) {
-                                    MaterialTheme.colorScheme.error
-                                } else {
-                                    Color.Unspecified
-                                }
-                            )
-                        },
-                        supportingContent = {
-                            Text(
-                                text = stringResource(R.string.library_qqmusic_hint),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        leadingContent = {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(56.dp)
-                            )
-                        },
-                        trailingContent = {
-                            IconButton(onClick = onRetry) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Refresh,
-                                    contentDescription = stringResource(R.string.action_retry)
-                                )
                             }
                         }
                     )
                 }
             }
         }
-        items(
-            items = playlists,
-            key = { "tp:${it.id}" }
-        ) { pl ->
-            Card(
-                shape = cardShape,
-                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-                modifier = Modifier
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                    .animateItem()
-                    .clip(cardShape)
-                    .clickable { onClick(pl) }
-            ) {
-                ListItem(
-                    headlineContent = { Text(pl.name) },
-                    supportingContent = {
-                        val countText = if (pl.trackCount > 0) {
-                            pluralStringResource(R.plurals.library_song_count, pl.trackCount, pl.trackCount)
-                        } else {
-                            ""
-                        }
-                        val playsText = if (pl.playCount > 0) {
-                            stringResource(
-                                R.string.library_qqmusic_plays,
-                                formatPlayCount(context, pl.playCount)
-                            )
-                        } else {
-                            ""
-                        }
-                        Text(
-                            listOf(playsText, countText)
-                                .filter { it.isNotBlank() }
-                                .joinToString(" · "),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = {
-                        if (pl.picUrl.isNotEmpty()) {
-                            AsyncImage(
-                                model = offlineCachedImageRequest(
-                                    context = context,
-                                    data = pl.picUrl,
-                                    sizePx = 192,
-                                    allowHardware = false,
-                                    offlineMode = offlineMode
-                                ),
-                                contentDescription = null,
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(56.dp)
-                                    .clip(RoundedCornerShape(8.dp))
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(56.dp)
-                            )
-                        }
-                    }
-                )
-            }
-        }
     }
-}
     }
 }
 
@@ -2347,6 +2202,7 @@ private fun NeteaseLibraryList(
     albumListState: LazyListState,
     onPlaylistClick: (PlaylistSummary) -> Unit,
     onAlbumClick: (AlbumSummary) -> Unit,
+    onOpenRecentRecords: () -> Unit,
     offlineMode: Boolean
 ) {
     var selectedCategory by rememberSaveable {
@@ -2402,6 +2258,48 @@ private fun NeteaseLibraryList(
                 },
                 placeholderResId = R.string.library_netease_search_hint
             )
+        }
+
+        if (!isAlbumCategory) {
+            item(key = "netease_recent_entry") {
+                Card(
+                    shape = cardShape,
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                        .clip(cardShape)
+                        .clickable(onClick = onOpenRecentRecords)
+                ) {
+                    ListItem(
+                        headlineContent = {
+                            Text(stringResource(R.string.netease_recent_entry))
+                        },
+                        supportingContent = {
+                            Text(
+                                text = stringResource(R.string.netease_recent_entry_desc),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                imageVector = Icons.Outlined.History,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        },
+                        trailingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
+                }
+            }
         }
 
         if (isAlbumCategory) {
@@ -3713,6 +3611,153 @@ private fun QqMusicPlaylistList(
                     colors = ListItemDefaults.colors(
                         containerColor = Color.Transparent
                     ),
+                    leadingContent = {
+                        if (pl.picUrl.isNotEmpty()) {
+                            AsyncImage(
+                                model = offlineCachedImageRequest(
+                                    context = context,
+                                    data = pl.picUrl,
+                                    sizePx = 192,
+                                    allowHardware = false,
+                                    offlineMode = offlineMode
+                                ),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(56.dp)
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+@Composable
+private fun ThirdPartyPlaylistList(
+    playlists: List<PlaylistSummary>,
+    error: String?,
+    loggedIn: Boolean,
+    mineHint: String,
+    hotHint: String,
+    emptyText: String,
+    listState: LazyListState,
+    onClick: (PlaylistSummary) -> Unit,
+    onRetry: () -> Unit,
+    offlineMode: Boolean
+) {
+    val context = LocalContext.current
+    val miniPlayerHeight = LocalMiniPlayerHeight.current
+    val cardShape = RoundedCornerShape(12.dp)
+
+    LazyColumn(
+        state = listState,
+        contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp + miniPlayerHeight),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item(key = "third_party_music_header") {
+            Text(
+                text = if (loggedIn) mineHint else hotHint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+        }
+        if (playlists.isEmpty()) {
+            item {
+                Card(
+                    shape = cardShape,
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .clip(cardShape)
+                ) {
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                text = error ?: emptyText,
+                                color = if (error != null) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    Color.Unspecified
+                                }
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                text = stringResource(R.string.library_qqmusic_hint),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        leadingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(56.dp)
+                            )
+                        },
+                        trailingContent = {
+                            IconButton(onClick = onRetry) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Refresh,
+                                    contentDescription = stringResource(R.string.action_retry)
+                                )
+                            }
+                        }
+                    )
+                }
+            }
+        }
+        items(
+            items = playlists,
+            key = { "tp:${it.id}" }
+        ) { pl ->
+            Card(
+                shape = cardShape,
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                modifier = Modifier
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .animateItem()
+                    .clip(cardShape)
+                    .clickable { onClick(pl) }
+            ) {
+                ListItem(
+                    headlineContent = { Text(pl.name) },
+                    supportingContent = {
+                        val countText = if (pl.trackCount > 0) {
+                            pluralStringResource(R.plurals.library_song_count, pl.trackCount, pl.trackCount)
+                        } else {
+                            ""
+                        }
+                        val playsText = if (pl.playCount > 0) {
+                            stringResource(
+                                R.string.library_qqmusic_plays,
+                                formatPlayCount(context, pl.playCount)
+                            )
+                        } else {
+                            ""
+                        }
+                        Text(
+                            listOf(playsText, countText)
+                                .filter { it.isNotBlank() }
+                                .joinToString("\u00B7"),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     leadingContent = {
                         if (pl.picUrl.isNotEmpty()) {
                             AsyncImage(

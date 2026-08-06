@@ -143,8 +143,9 @@ class KuwoApi(
                 val responseJson = execute(url.toString())
                 val root = JSONObject(responseJson)
                 if (root.optInt("code") != 200) return@withContext emptyList()
-                val list = root.optJSONObject("data")
-                    ?.optJSONObject("list")
+                val dataObj = root.optJSONObject("data") ?: return@withContext emptyList()
+                val list = dataObj.optJSONArray("list")
+                    ?: dataObj.optJSONObject("list")?.optJSONArray("data")
                     ?: return@withContext emptyList()
                 buildList {
                     for (i in 0 until list.length()) {

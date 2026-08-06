@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.data.auth.common.PlatformCookieRepository
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
 import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import org.json.JSONObject
@@ -44,15 +45,15 @@ private const val KEY_KUGOU_AUTH_BUNDLE = "kugou_auth_bundle"
  * 在 www.kugou.com 登录后复制 Cookie 导入即可; openid/userid 等 cookie
  * 用于用户歌单接口, 没有登录态时媒体库展示热门歌单。
  */
-class KugouCookieRepository(private val context: Context) {
+class KugouCookieRepository(private val context: Context) : PlatformCookieRepository {
     private var encryptedPrefs: SharedPreferences
     private val _cookieFlow: MutableStateFlow<Map<String, String>>
     private val _authHealthFlow: MutableStateFlow<SavedCookieAuthHealth>
 
-    val cookieFlow: StateFlow<Map<String, String>>
+    override val cookieFlow: StateFlow<Map<String, String>>
         get() = _cookieFlow.asStateFlow()
 
-    val authHealthFlow: StateFlow<SavedCookieAuthHealth>
+    override val authHealthFlow: StateFlow<SavedCookieAuthHealth>
         get() = _authHealthFlow.asStateFlow()
 
     init {
@@ -62,11 +63,11 @@ class KugouCookieRepository(private val context: Context) {
         _authHealthFlow = MutableStateFlow(evaluateHealth(cookies))
     }
 
-    fun getCookiesOnce(): Map<String, String> = _cookieFlow.value
+    override fun getCookiesOnce(): Map<String, String> = _cookieFlow.value
 
-    fun getAuthHealthOnce(): SavedCookieAuthHealth = _authHealthFlow.value
+    override fun getAuthHealthOnce(): SavedCookieAuthHealth = _authHealthFlow.value
 
-    fun saveCookies(cookies: Map<String, String>) {
+    override fun saveCookies(cookies: Map<String, String>) {
         val normalized = cookies.filterKeys { it.isNotBlank() }
         encryptedPrefs.edit {
             putString(KEY_KUGOU_AUTH_BUNDLE, encode(normalized))
@@ -76,13 +77,13 @@ class KugouCookieRepository(private val context: Context) {
         NPLogger.d("NERI-KugouCookieRepo", "Saved Kugou cookies: keys=${normalized.keys.joinToString()}")
     }
 
-    fun clear() {
+    override fun clear() {
         encryptedPrefs.edit { remove(KEY_KUGOU_AUTH_BUNDLE) }
         _cookieFlow.value = emptyMap()
         _authHealthFlow.value = evaluateHealth(emptyMap())
     }
 
-    fun refreshHealth() {
+    override fun refreshHealth() {
         _authHealthFlow.value = evaluateHealth(_cookieFlow.value)
     }
 

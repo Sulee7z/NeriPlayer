@@ -1729,6 +1729,15 @@ object AutoSettingsSchema {
             iconRes = R.drawable.ic_netease_cloud_music
         )
 
+        @AutoSetting(order = 141)
+        val neteaseAutoSyncLikeEnabled = autoSwitchSetting(
+            key = "netease_auto_sync_like_enabled",
+            defaultValue = false,
+            titleRes = R.string.settings_netease_auto_sync_like,
+            descriptionRes = R.string.settings_netease_auto_sync_like_desc,
+            iconRes = R.drawable.ic_netease_cloud_music
+        )
+
         @AutoSetting(
             key = "keep_playback_mode_state",
             type = SettingValueType.Boolean,

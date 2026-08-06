@@ -36,6 +36,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -65,6 +66,10 @@ import moe.ouom.neriplayer.data.sync.model.normalizedSyncCausalTokens
 import moe.ouom.neriplayer.data.sync.webdav.WebDavSyncWorker
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.data.settings.AutoSettingsSchema
+import moe.ouom.neriplayer.data.netease.resolveNeteaseSongIdOrNull
+import moe.ouom.neriplayer.data.netease.resolveNeteaseSongIdWithSearch
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -966,6 +971,7 @@ class LocalPlaylistRepository private constructor(
                 )
                 publishLocked(list, syncMutation = syncMutation)
             }
+            autoSyncFavoriteToNetease(hydratedSong, like = true)
         }
     }
 
@@ -993,6 +999,31 @@ class LocalPlaylistRepository private constructor(
                     songOrderVersion = DISPLAY_ORDER_SONG_ORDER_VERSION
                 )
                 publishLocked(list, syncMutation = syncMutation)
+            }
+            autoSyncFavoriteToNetease(song, like = false)
+        }
+    }
+
+    /**
+     * "本地红心自动同步到网易云": 设置开启且已登录时, 收藏/取消收藏后
+     * 后台把该歌的网易云 ID(原生或搜索转换)同步到网易云"我喜欢的音乐"。
+     * fire-and-forget, 失败只记日志。
+     */
+    private fun autoSyncFavoriteToNetease(song: SongItem, like: Boolean) {
+        AppContainer.launchBackgroundIo {
+            runCatching {
+                val enabled = AppContainer.settingsRepo
+                    .settingFlow(AutoSettingsSchema.playback.neteaseAutoSyncLikeEnabled)
+                    .first()
+                if (!enabled) return@launchBackgroundIo
+                val client = AppContainer.neteaseClient
+                if (!client.hasLogin()) return@launchBackgroundIo
+                val neteaseId = resolveNeteaseSongIdOrNull(song)
+                    ?: resolveNeteaseSongIdWithSearch(song)
+                if (neteaseId == null) return@launchBackgroundIo
+                client.likeSong(neteaseId, like)
+            }.onFailure { error ->
+                NPLogger.e("LocalPlaylistRepo", "红心同步失败: ${error.message}", error)
             }
         }
     }

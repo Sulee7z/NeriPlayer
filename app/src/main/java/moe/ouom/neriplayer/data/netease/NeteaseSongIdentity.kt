@@ -23,9 +23,14 @@ package moe.ouom.neriplayer.data.netease
  */
 
 import moe.ouom.neriplayer.core.api.search.MusicPlatform
+import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.core.logging.NPLogger
 import moe.ouom.neriplayer.data.model.SongItem
+import org.json.JSONObject
+import java.util.concurrent.ConcurrentHashMap
 
 private const val NETEASE_ALBUM_PREFIX = "Netease"
+private const val TAG = "NeteaseSongIdentity"
 
 /**
  * 判断一首 [SongItem] 是否可以确定地映射到一个网易云音乐曲目 ID, 并返回该 ID
@@ -51,6 +56,74 @@ fun resolveNeteaseSongIdOrNull(song: SongItem): Long? {
         return songId
     }
     return null
+}
+
+/**
+ * 第三方音源(QQ/酷狗/酷我/B站等)歌曲的网易云 ID 转换:
+ * 用歌名+歌手在网易云搜索, 匹配到真实曲目 ID 后用于听歌记录上报。
+ *
+ * 结果按 "歌名|歌手" 做内存缓存, 避免每次播放都重新搜索。
+ */
+private val searchIdCache = ConcurrentHashMap<String, Long?>()
+
+suspend fun resolveNeteaseSongIdWithSearch(song: SongItem): Long? {
+    val name = song.name.trim().takeIf { it.isNotBlank() } ?: return null
+    val artist = song.artist.trim()
+    val cacheKey = "$name|$artist"
+    searchIdCache[cacheKey]?.let { return it }
+    val resolved = runCatching {
+        val raw = AppContainer.neteaseClient.searchSongsCancellable(
+            keyword = if (artist.isNotBlank()) "$name $artist" else name,
+            limit = 10,
+            type = 1,
+            usePersistedCookies = true
+        )
+        parseSearchSongId(raw, name, artist)
+    }.getOrElse { error ->
+        NPLogger.d(TAG, "搜索转换网易云 ID 失败($name - $artist): ${error.message}")
+        null
+    }
+    if (searchIdCache.size >= 512) {
+        searchIdCache.clear()
+    }
+    searchIdCache[cacheKey] = resolved
+    return resolved
+}
+
+private fun parseSearchSongId(raw: String, name: String, artist: String): Long? {
+    val root = JSONObject(raw)
+    if (root.optInt("code") != 200) return null
+    val songs = root.optJSONObject("result")?.optJSONArray("songs") ?: return null
+    val normName = normalizeForMatch(name)
+    val normArtist = normalizeForMatch(artist)
+    var firstWithName: Long? = null
+    for (i in 0 until songs.length()) {
+        val song = songs.optJSONObject(i) ?: continue
+        val id = song.optLong("id").takeIf { it > 0L } ?: continue
+        val songName = normalizeForMatch(song.optString("name"))
+        val artistNames = buildSet {
+            song.optJSONArray("ar")?.let { ar ->
+                for (j in 0 until ar.length()) {
+                    ar.optJSONObject(j)?.optString("name")?.let { add(normalizeForMatch(it)) }
+                }
+            }
+        }
+        if (songName != normName) continue
+        if (firstWithName == null) firstWithName = id
+        if (normArtist.isBlank() || artistNames.isEmpty() ||
+            artistNames.any { it == normArtist } ||
+            artistNames.any { it.isNotBlank() && normArtist.isNotBlank() && (it.contains(normArtist) || normArtist.contains(it)) }
+        ) {
+            return id
+        }
+    }
+    return firstWithName
+}
+
+private fun normalizeForMatch(value: String): String {
+    return value.trim()
+        .lowercase()
+        .replace(Regex("[\\s·•\\-—_()（）【】\\[\\]\"'`~!@#$%^&*+=.,;:、，。！？/\\\\]"), "")
 }
 
 private fun String?.isNeteaseCoverUrlForIdentity(): Boolean {

@@ -409,6 +409,12 @@ class CustomSourceManager(
 
     suspend fun diagnoseActiveNetease(): String {
         val active = repository.activeSource ?: return "请先启用一个音源"
+        return diagnoseNetease(active)
+    }
+
+    /** 对指定音源做端到端测试(多音源时可在列表里逐个测试)。 */
+    suspend fun diagnoseNetease(source: CustomAudioSource): String {
+        val active = source
 
         // 复用已缓存的引擎(不再每次测试都重建 WebView);失败时才建一次性引擎拿错误详情
         val eng = ensureEngine(active)

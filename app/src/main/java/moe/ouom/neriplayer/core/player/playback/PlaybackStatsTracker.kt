@@ -14,7 +14,9 @@ internal data class PlaybackStatsSnapshot(
     val listenedMs: Long,
     val playCountIncrement: Int,
     val scheduleSync: Boolean,
-    val localPlaylistId: Long? = null
+    val localPlaylistId: Long? = null,
+    /** 本次播放累计已听时长(跨 flush 累计), 用于网易云听歌记录上报的 time 字段 */
+    val playListenedMs: Long = 0L
 )
 
 internal class PlaybackStatsTracker(
@@ -80,7 +82,9 @@ internal class PlaybackStatsTracker(
 
     fun flushPeriodic(): PlaybackStatsSnapshot? {
         collectActiveSegmentLocked()
-        return flushLocked(countPlay = shouldCountCurrentPlay(), scheduleSync = false)
+        // 周期性 flush 只用于本地收听时长统计, 不计播放次数,
+        // 避免用 15 秒窗口的零碎时长触发网易云听歌记录上报(会被云端忽略导致漏记)
+        return flushLocked(countPlay = false, scheduleSync = false)
     }
 
     fun onPlaybackProgress(positionMs: Long): PlaybackStatsSnapshot? {
@@ -174,7 +178,8 @@ internal class PlaybackStatsTracker(
             listenedMs = listenedMs,
             playCountIncrement = playCountIncrement,
             scheduleSync = scheduleSync,
-            localPlaylistId = trackingLocalPlaylistId
+            localPlaylistId = trackingLocalPlaylistId,
+            playListenedMs = currentPlayListenedMs.coerceAtLeast(0L)
         )
     }
 

@@ -67,6 +67,7 @@ import moe.ouom.neriplayer.ui.screen.playlist.BiliPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlatform
+import moe.ouom.neriplayer.ui.screen.playlist.NeteaseRecentScreen
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.tab.LibraryTab
 import moe.ouom.neriplayer.ui.screen.tab.LibraryScreen
@@ -127,6 +128,8 @@ sealed class LibrarySelectedItem : Parcelable {
     data class Kugou(val playlist: PlaylistSummary) : LibrarySelectedItem()
     @Parcelize
     data class Kuwo(val playlist: PlaylistSummary) : LibrarySelectedItem()
+    @Parcelize
+    data object NeteaseRecent : LibrarySelectedItem()
 }
 
 private val LibrarySelectedItem?.navigationDepth: Int
@@ -531,6 +534,10 @@ fun LibraryHostScreen(
                                 captureLibraryScrollPosition(LibraryScrollSource.Favorite)
                                 openNeteaseArtist(artist)
                             },
+                            onOpenNeteaseRecent = {
+                                skipDetailCloseAnimation = false
+                                openLibrarySelectedItem(LibrarySelectedItem.NeteaseRecent)
+                            },
                             onYouTubeMusicPlaylistClick = { playlist ->
                                 skipDetailCloseAnimation = false
                                 captureLibraryScrollPosition(
@@ -788,6 +795,16 @@ fun LibraryHostScreen(
                                 offlineMode = offlineMode
                             )
                         }
+
+                        is LibrarySelectedItem.NeteaseRecent -> {
+                            NeteaseRecentScreen(
+                                onBack = { selected = null },
+                                onSongClick = { songs, index ->
+                                    onSongClick(songs, index)
+                                },
+                                offlineMode = offlineMode
+                            )
+                        }
                         }
                     }
                 }
@@ -851,6 +868,9 @@ private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
                 "type" to "kuwo",
                 "playlist" to item.playlist.toSaveMap()
             )
+            is LibrarySelectedItem.NeteaseRecent -> hashMapOf(
+                "type" to "neteaseRecent"
+            )
         }
     },
     restore = { saved ->
@@ -884,6 +904,7 @@ private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
             "qqmusic" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.QQMusic(it) }
             "kugou" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Kugou(it) }
             "kuwo" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Kuwo(it) }
+            "neteaseRecent" -> LibrarySelectedItem.NeteaseRecent
             else -> null
         }
     }

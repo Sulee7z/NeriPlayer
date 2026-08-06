@@ -514,7 +514,10 @@
     <string name="library_qqmusic_hint">下拉可刷新，点击歌单进入详情</string>
     <string name="library_qqmusic_plays">%1$s 次播放</string>
     <string name="library_netease_tab_playlists">歌单</string>
-    <string name="library_netease_tab_albums">专辑</string>
+    <string name="netease_recent_title">网易云听歌记录</string>
+    <string name="netease_recent_entry">云端听歌记录</string>
+    <string name="netease_recent_entry_desc">查看网易云账号的最近播放记录</string>
+    <string name="netease_recent_need_login">请先登录网易云音乐</string>    <string name="library_netease_tab_albums">专辑</string>
     <string name="library_netease_search_hint">搜索歌单 / 专辑</string>
     <string name="library_netease_search_empty">没有找到匹配的歌单或专辑</string>
     <string name="library_netease_search_empty_hint">试试输入名称、ID、播放数或曲目数</string>
@@ -974,6 +977,8 @@
     <string name="settings_netease_local_source_fallback_desc">网易云歌曲无权限或仅返回试听片段时，优先播放已匹配相同歌曲信息的本地音频</string>
     <string name="settings_netease_scrobble">同步听歌记录到网易云</string>
     <string name="settings_netease_scrobble_desc">仅对拥有网易云音乐 ID 的歌曲生效，播放达到一定时长后自动上报到网易云账号的听歌记录</string>
+    <string name="settings_netease_auto_sync_like">本地红心自动同步到网易云</string>
+    <string name="settings_netease_auto_sync_like_desc">在 App 内点红心收藏时自动同步到网易云"我喜欢的音乐"，取消收藏时同步取消（需已登录网易云）</string>
     <string name="qq_playlist_meta">%1$d 首歌曲 · %2$s 次播放</string>
     <string name="qq_playlist_empty">歌单为空或歌曲列表获取失败</string>
     <string name="qq_playlist_offline_unavailable">离线模式无法加载 QQ 音乐歌单</string>
@@ -1046,6 +1051,8 @@
     <string name="settings_kuwo_saved_cookie_message">检测到本地已保存酷我音乐 Cookie。你可以退出登录清空旧信息，或继续登录以刷新。</string>
     <string name="settings_kugou_login_hint">在酷狗音乐官网登录后，复制浏览器中的 Cookie 粘贴导入</string>
     <string name="settings_kuwo_login_hint">在酷我音乐官网登录后，复制浏览器中的 Cookie 粘贴导入</string>
+    <string name="kugou_web_login">酷狗网页登录</string>
+    <string name="kuwo_web_login">酷我网页登录</string>
     <string name="platform_kugou">酷狗音乐</string>
     <string name="platform_kuwo">酷我音乐</string>
     <string name="library_tab_kugou">酷狗</string>
@@ -2474,4 +2481,11 @@
     <string name="custom_source_validate_warn">未检测到 lx.on / musicUrl 等脚本标记,请确认内容正确</string>
     <string name="custom_source_ok">确定</string>
     <string name="custom_source_view_all">查看全部</string>
+    <string name="custom_source_rename">重命名</string>
+    <string name="custom_source_rename_hint">输入新的名称</string>
+    <string name="custom_source_move_up">上移(优先级更高)</string>
+    <string name="custom_source_move_down">下移</string>
+    <string name="custom_source_test_source">测试此音源</string>
+    <string name="custom_source_importing">正在下载并导入…</string>
+    <string name="custom_source_priority_order">多个音源按列表顺序依次尝试，上移/下移可调整优先级</string>
 </resources>

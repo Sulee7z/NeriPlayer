@@ -862,7 +862,32 @@ class NeteaseClient {
     }
 
     /**
-     * 上报一首歌的听歌记录 (weapi/feedback/weblog)
+     * 获取当前登录用户的"最近播放"云端听歌记录。
+     *
+     * 真实接口为 weapi /play-record/song/list(旧路径 /record/recent/song 已失效)。
+     * 返回 raw JSON: data.list[] = { playTime: 毫秒时间戳, data: { id, name, ar[], al{} } }。
+     */
+    @Throws(IOException::class)
+    fun getRecentPlayRecords(limit: Int = 100): String {
+        val params = mapOf("limit" to limit.toString())
+        return callWeApi("/play-record/song/list", params, usePersistedCookies = true)
+    }
+
+    /**
+     * 获取完整听歌记录(需 uid)。type=0 一周, type=1 全部。
+     * 返回 raw JSON: data[] = { playCount, song: { id, name, ar[], al{} } }。
+     */
+    @Throws(IOException::class)
+    fun getPlayRecords(uid: Long, type: Int = 1): String {
+        val params = mapOf(
+            "uid" to uid.toString(),
+            "type" to type.toString()
+        )
+        return callWeApi("/v1/play/record", params, usePersistedCookies = true)
+    }
+
+    /**
+     * 上报一首歌的听歌记录 (eapi/feedback/weblog)
      *
      * 网易云网页端/客户端的听歌记录都是通过这个接口上报的, 参数含义:
      * - id: 网易云歌曲 ID
@@ -877,14 +902,19 @@ class NeteaseClient {
         sourceId: Long? = null,
         endType: String = "playend"
     ): String {
+        // 载荷对齐官方网页端 / pyncm: time 固定为 0, source/mainsite/content 字段
+        // 缺失或 time 传实际秒数时网易云可能静默忽略上报, 导致听歌记录不出现
         val logJson = JSONObject().apply {
             put("download", 0)
             put("end", endType)
             put("id", songId)
-            put("sourceId", sourceId?.toString().orEmpty())
-            put("time", playedTimeSeconds.coerceAtLeast(0))
+            put("sourceId", sourceId?.toString() ?: "0")
+            put("time", 0)
             put("type", "song")
             put("wifi", 0)
+            put("source", "list")
+            put("mainsite", 1)
+            put("content", "")
         }
         val logEntry = JSONObject().apply {
             put("action", "play")
@@ -892,7 +922,13 @@ class NeteaseClient {
         }
         val logs = JSONArray().apply { put(logEntry) }.toString()
         val params = mapOf("logs" to logs)
-        return callWeApi("/feedback/weblog", params, usePersistedCookies = true)
+        // 先走 eapi(官方客户端通道, 网页 weapi 通道的上报可能不写入最近播放);
+        // eapi 失败时回退 weapi
+        return try {
+            callEApi("/feedback/weblog", params, usePersistedCookies = true)
+        } catch (e: IOException) {
+            callWeApi("/feedback/weblog", params, usePersistedCookies = true)
+        }
     }
 
     /**

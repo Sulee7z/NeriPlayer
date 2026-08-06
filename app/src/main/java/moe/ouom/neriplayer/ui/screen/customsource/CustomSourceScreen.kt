@@ -37,16 +37,20 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.outlined.ArrowDownward
+import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -55,6 +59,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -76,6 +81,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.customsource.CustomAudioSource
 import moe.ouom.neriplayer.core.customsource.CustomSourceMetadataParser
+import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.viewmodel.customsource.CustomSourceViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -144,7 +150,12 @@ fun CustomSourceScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
-            contentPadding = PaddingValues(16.dp),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = 16.dp,
+                bottom = 16.dp + LocalMiniPlayerHeight.current
+            ),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             item {
@@ -173,10 +184,18 @@ fun CustomSourceScreen(
                         onClick = { showUrlDialog = true },
                         enabled = !ui.busy
                     ) { Text(stringResource(R.string.custom_source_import_url)) }
-                    OutlinedButton(
-                        onClick = { vm.testActiveSource() },
-                        enabled = !ui.busy
-                    ) { Text(stringResource(R.string.custom_source_test)) }
+                }
+            }
+            if (ui.busy) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = stringResource(R.string.custom_source_importing),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
@@ -204,6 +223,11 @@ fun CustomSourceScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Text(
+                                stringResource(R.string.custom_source_priority_order),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                         Switch(
                             checked = ui.priorityMode,
@@ -223,11 +247,18 @@ fun CustomSourceScreen(
                     )
                 }
             } else {
-                items(ui.sources, key = { it.id }) { source ->
+                itemsIndexed(ui.sources, key = { _, it -> it.id }) { index, source ->
                     SourceCard(
                         source = source,
+                        canMoveUp = index > 0,
+                        canMoveDown = index < ui.sources.lastIndex,
                         onEnabledChange = { enabled -> vm.setEnabled(source.id, enabled) },
-                        onDelete = { vm.delete(source.id) }
+                        onRename = { name -> vm.rename(source.id, name) },
+                        onMoveUp = { vm.moveUp(source.id) },
+                        onMoveDown = { vm.moveDown(source.id) },
+                        onTest = { vm.testSource(source.id) },
+                        onDelete = { vm.delete(source.id) },
+                        busy = ui.busy
                     )
                 }
             }
@@ -246,6 +277,7 @@ fun CustomSourceScreen(
 
     if (showUrlDialog) {
         UrlImportDialog(
+            busy = ui.busy,
             onDismiss = { showUrlDialog = false },
             onConfirm = { url ->
                 showUrlDialog = false
@@ -258,45 +290,122 @@ fun CustomSourceScreen(
 @Composable
 private fun SourceCard(
     source: CustomAudioSource,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
     onEnabledChange: (Boolean) -> Unit,
-    onDelete: () -> Unit
+    onRename: (String) -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onTest: () -> Unit,
+    onDelete: () -> Unit,
+    busy: Boolean
 ) {
+    var showRenameDialog by remember { mutableStateOf(false) }
     Card(shape = RoundedCornerShape(12.dp)) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    source.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                val meta = buildString {
-                    append("v${source.version}")
-                    if (source.author.isNotBlank()) append(" · ${source.author}")
-                    val platforms = source.supportedSources.keys.joinToString(", ")
-                    if (platforms.isNotBlank()) append(" · $platforms")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        source.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val meta = buildString {
+                        append("v${source.version}")
+                        if (source.author.isNotBlank()) append(" · ${source.author}")
+                        val platforms = source.supportedSources.keys.joinToString(", ")
+                        if (platforms.isNotBlank()) append(" · $platforms")
+                    }
+                    Text(
+                        meta,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
-                Text(
-                    meta,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                IconButton(
+                    onClick = { showRenameDialog = true },
+                    enabled = !busy
+                ) {
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = stringResource(R.string.custom_source_rename)
+                    )
+                }
+                Switch(
+                    checked = source.enabled,
+                    onCheckedChange = { onEnabledChange(it) }
                 )
+                IconButton(onClick = onDelete, enabled = !busy) {
+                    Icon(Icons.Outlined.Delete, contentDescription = null)
+                }
             }
-            Switch(
-                checked = source.enabled,
-                onCheckedChange = { onEnabledChange(it) }
-            )
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Outlined.Delete, contentDescription = null)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onMoveUp, enabled = canMoveUp && !busy) {
+                    Icon(
+                        Icons.Outlined.ArrowUpward,
+                        contentDescription = stringResource(R.string.custom_source_move_up)
+                    )
+                }
+                IconButton(onClick = onMoveDown, enabled = canMoveDown && !busy) {
+                    Icon(
+                        Icons.Outlined.ArrowDownward,
+                        contentDescription = stringResource(R.string.custom_source_move_down)
+                    )
+                }
+                TextButton(
+                    onClick = onTest,
+                    enabled = !busy
+                ) {
+                    Text(stringResource(R.string.custom_source_test_source))
+                }
             }
         }
+    }
+
+    if (showRenameDialog) {
+        var name by remember { mutableStateOf(source.name) }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text(stringResource(R.string.custom_source_rename)) },
+            text = {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text(stringResource(R.string.custom_source_rename_hint)) }
+                )
+            },
+            confirmButton = {
+                OutlinedButton(
+                    onClick = {
+                        showRenameDialog = false
+                        onRename(name)
+                    },
+                    enabled = name.trim().isNotBlank()
+                ) { Text(stringResource(R.string.custom_source_import_confirm)) }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showRenameDialog = false }) {
+                    Text(stringResource(R.string.custom_source_cancel))
+                }
+            }
+        )
     }
 }
 
@@ -373,12 +482,14 @@ private fun PasteScriptDialog(
 
 @Composable
 private fun UrlImportDialog(
+    busy: Boolean,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
     var url by remember { mutableStateOf("") }
+    val urlValid = url.trim().startsWith("http://") || url.trim().startsWith("https://")
     androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.custom_source_import_url)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -387,6 +498,7 @@ private fun UrlImportDialog(
                     onValueChange = { url = it },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
+                    enabled = !busy,
                     placeholder = { Text("https://example.com/source.js") }
                 )
                 Text(
@@ -394,18 +506,27 @@ private fun UrlImportDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                if (busy) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        text = stringResource(R.string.custom_source_importing),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         },
         confirmButton = {
             OutlinedButton(
                 onClick = { onConfirm(url) },
-                enabled = url.trim().startsWith("http://") || url.trim().startsWith("https://")
+                enabled = urlValid && !busy
             ) { Text(stringResource(R.string.custom_source_import_confirm)) }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
-                Text(stringResource(R.string.custom_source_cancel))
-            }
+            OutlinedButton(
+                onClick = onDismiss,
+                enabled = !busy
+            ) { Text(stringResource(R.string.custom_source_cancel)) }
         }
     )
 }

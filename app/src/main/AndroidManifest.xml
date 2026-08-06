@@ -125,6 +125,11 @@
             android:theme="@style/Theme.Material3.DayNight.NoActionBar"
             />
         <activity
+            android:name=".activity.auth.KugouKuwoWebLoginActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Material3.DayNight.NoActionBar"
+            />
+        <activity
             android:name=".activity.auth.YouTubeWebLoginActivity"
             android:exported="false"
             android:process=":youtube_web_login"
