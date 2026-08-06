@@ -54,6 +54,7 @@ private const val TAG = "QQMusicApi"
 
 private const val QQ_REFERER_PLAYLIST = "https://y.qq.com/portal/playlist.html"
 private const val QQ_REFERER_PORTAL = "https://y.qq.com"
+private const val QQ_LIKE_COVER = "https://y.gtimg.cn/mediastyle/y/img/cover_love_300.jpg"
 private const val QQ_USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
@@ -141,9 +142,10 @@ class QQMusicApi(
     /**
      * 登录用户的"我的歌单"(我创建的歌单 + 我收藏的歌单)。
      *
-     * 需要 QQ 登录态 cookie (musicu.fcg 的 music.mysrfDissInfo.queryDissInfo,
-     * 未登录返回 500003)。通过 type 参数分别拉取创建(1)与收藏(2)的歌单并合并,
-     * 分页拉取全部; 响应字段兼容 dissinfo / disslist / diss。
+     * 对齐 listen1 实现:
+     * - 创建的歌单: c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss (uin/hostuin, 分页 sin/size)
+     * - 收藏的歌单: c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset (userid, reqtype=3, sin/ein)
+     * uin 需保留 cookie 中的原值 (通常带 o 前缀, 如 o123456789), 去掉前缀会导致 500003 未登录。
      */
     suspend fun getUserPlaylists(
         uin: String,
@@ -151,85 +153,138 @@ class QQMusicApi(
         num: Int = 30,
         maxPages: Int = 10
     ): List<QQPlaylistSummary> {
-        val resolvedUin = uin.trim().trimStart('o')
+        val resolvedUin = uin.trim()
         if (resolvedUin.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
             val out = ArrayList<QQPlaylistSummary>()
             val seen = HashSet<Long>()
             var rejectedCode = 0
-            // type: 1=我创建的歌单, 2=我收藏的歌单
-            for (type in listOf(1, 2)) {
+            // 1) 我创建的歌单 (fcg_user_created_diss, listen1 验证)
+            run {
                 var offset = begin
                 var page = 0
                 while (page < maxPages) {
-                    val req = JSONObject().put(
-                        "comm", JSONObject().put("ct", 24).put("cv", 0)
-                    ).put(
-                        "req_1", JSONObject()
-                            .put("module", "music.mysrfDissInfo")
-                            .put("method", "queryDissInfo")
-                            .put("param", JSONObject().apply {
-                                put("uin", resolvedUin)
-                                put("begin", offset)
-                                put("num", num)
-                                put("onlyNormal", 0)
-                                put("type", type)
-                            })
-                    ).toString()
-
-                    val requestUrl = "https://u.y.qq.com/cgi-bin/musicu.fcg".toHttpUrl().newBuilder()
+                    val url = "https://c.y.qq.com/rsc/fcgi-bin/fcg_user_created_diss"
+                        .toHttpUrl()
+                        .newBuilder()
+                        .addQueryParameter("cv", "4747474")
+                        .addQueryParameter("ct", "24")
                         .addQueryParameter("format", "json")
-                        .addQueryParameter("data", req)
+                        .addQueryParameter("inCharset", "utf-8")
+                        .addQueryParameter("outCharset", "utf-8")
+                        .addQueryParameter("notice", "0")
+                        .addQueryParameter("platform", "yqq.json")
+                        .addQueryParameter("needNewCode", "1")
+                        .addQueryParameter("uin", resolvedUin)
+                        .addQueryParameter("hostuin", resolvedUin)
+                        .addQueryParameter("sin", offset.toString())
+                        .addQueryParameter("size", num.toString())
                         .build()
-                    val request = Request.Builder().url(requestUrl)
+                    val request = Request.Builder().url(url)
                         .header("Referer", QQ_REFERER_PORTAL)
                         .header("User-Agent", QQ_USER_AGENT)
                         .build()
                     val responseJson = execute(request)
-                    NPLogger.d(
-                        TAG,
-                        "我的歌单响应(type=$type, offset=$offset): ${responseJson.take(400)}"
-                    )
+                    NPLogger.d(TAG, "我的歌单(created, sin=$offset): ${responseJson.take(400)}")
                     val root = JSONObject(responseJson)
-                    val envelope = root.optJSONObject("req_1") ?: break
-                    if (envelope.optInt("code") != 0) {
-                        rejectedCode = envelope.optInt("code")
-                        NPLogger.w(TAG, "我的歌单(type=$type)被拒: code=${envelope.optInt("code")} subcode=${envelope.optInt("subcode")}")
+                    if (root.optInt("code") != 0) {
+                        rejectedCode = root.optInt("code")
+                        NPLogger.w(TAG, "我的歌单(created)被拒: code=${root.optInt("code")} subcode=${root.optInt("subcode")}")
                         break
                     }
-                    val data = envelope.optJSONObject("data") ?: break
-                    val list = data.optJSONArray("dissinfo")
-                        ?: data.optJSONArray("disslist")
-                        ?: data.optJSONArray("diss")
+                    val list = root.optJSONObject("data")
+                        ?.optJSONArray("disslist")
                         ?: break
                     var addedInPage = 0
                     for (i in 0 until list.length()) {
                         val item = list.optJSONObject(i) ?: continue
-                        val id = item.optString("disstid")
-                            .ifBlank { item.optString("dissid") }
-                            .toLongOrNull() ?: continue
-                        val title = item.optString("dissname").takeIf { it.isNotBlank() }
-                            ?: item.optString("name").takeIf { it.isNotBlank() }
-                            ?: item.optString("title").takeIf { it.isNotBlank() }
+                        if (item.optInt("dir_show") == 0 && item.optLong("tid") == 0L) continue
+                        val id = item.optString("tid").ifBlank { item.optString("dissid") }.toLongOrNull() ?: continue
+                        val title = item.optString("diss_name")
+                            .takeIf { it.isNotBlank() }
+                            ?: item.optString("dissname").takeIf { it.isNotBlank() }
+                            ?: continue
+                        if (!seen.add(id)) continue
+                        val isLikeFolder = title == "我喜欢" && item.optInt("dir_show") == 0
+                        val rawPic = item.optString("diss_cover")
+                            .ifBlank { item.optString("logo") }
+                            .ifBlank { item.optString("imgurl") }
+                        out.add(
+                            QQPlaylistSummary(
+                                dissId = id,
+                                title = title,
+                                picUrl = (if (isLikeFolder && rawPic.isBlank()) QQ_LIKE_COVER else rawPic)
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it },
+                                listenCount = item.optLong("listen_num"),
+                                songCount = item.optInt("song_count")
+                            )
+                        )
+                        addedInPage += 1
+                    }
+                    NPLogger.d(TAG, "我的歌单(created, sin=$offset): +$addedInPage (total=${out.size})")
+                    if (addedInPage < num) break
+                    offset += num
+                    page += 1
+                }
+            }
+            // 2) 我收藏的歌单 (fcg_get_profile_order_asset, listen1 验证)
+            run {
+                var offset = begin
+                var page = 0
+                while (page < maxPages) {
+                    val url = "https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg"
+                        .toHttpUrl()
+                        .newBuilder()
+                        .addQueryParameter("ct", "20")
+                        .addQueryParameter("cid", "205360956")
+                        .addQueryParameter("userid", resolvedUin)
+                        .addQueryParameter("reqtype", "3")
+                        .addQueryParameter("sin", offset.toString())
+                        .addQueryParameter("ein", (offset + num - 1).toString())
+                        .addQueryParameter("format", "json")
+                        .build()
+                    val request = Request.Builder().url(url)
+                        .header("Referer", QQ_REFERER_PORTAL)
+                        .header("User-Agent", QQ_USER_AGENT)
+                        .build()
+                    val responseJson = execute(request)
+                    NPLogger.d(TAG, "我的歌单(favorite, sin=$offset): ${responseJson.take(400)}")
+                    val root = JSONObject(responseJson)
+                    if (root.optInt("code") != 0) {
+                        rejectedCode = root.optInt("code")
+                        NPLogger.w(TAG, "我的歌单(favorite)被拒: code=${root.optInt("code")} subcode=${root.optInt("subcode")}")
+                        break
+                    }
+                    val list = root.optJSONObject("data")
+                        ?.optJSONArray("cdlist")
+                        ?: break
+                    var addedInPage = 0
+                    for (i in 0 until list.length()) {
+                        val item = list.optJSONObject(i) ?: continue
+                        if (item.optInt("dir_show") == 0) continue
+                        val id = item.optString("dissid").ifBlank { item.optString("tid") }.toLongOrNull() ?: continue
+                        val title = item.optString("dissname")
+                            .takeIf { it.isNotBlank() }
+                            ?: item.optString("diss_name").takeIf { it.isNotBlank() }
                             ?: continue
                         if (!seen.add(id)) continue
                         out.add(
                             QQPlaylistSummary(
                                 dissId = id,
                                 title = title,
-                                picUrl = item.optString("imgurl")
-                                    .ifBlank { item.optString("pic_url") }
-                                    .ifBlank { item.optString("coverUrl") }
+                                picUrl = item.optString("logo")
+                                    .ifBlank { item.optString("diss_cover") }
+                                    .ifBlank { item.optString("imgurl") }
                                     .takeIf { it.isNotBlank() }
                                     ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it },
                                 listenCount = item.optLong("listennum"),
-                                songCount = item.optInt("songnum"),
-                                creator = null
+                                songCount = item.optInt("songnum")
                             )
                         )
                         addedInPage += 1
                     }
-                    NPLogger.d(TAG, "我的歌单(type=$type, offset=$offset): +$addedInPage (total=${out.size})")
+                    NPLogger.d(TAG, "我的歌单(favorite, sin=$offset): +$addedInPage (total=${out.size})")
                     if (addedInPage < num) break
                     offset += num
                     page += 1
@@ -611,15 +666,17 @@ object QQMusicSongBuilder {
  */
 @SuppressLint("DefaultLocale")
 fun QQPlaylistSong.toSongItem(albumTag: String = QQMusicSongBuilder.QQ_SOURCE_TAG): SongItem {
+    val mid = songMid.trim()
     return SongItem(
-        id = songMid.hashCode().toLong() and 0x7fffffffL,
+        id = (if (mid.isNotBlank()) mid.hashCode() else songName.trim().hashCode().coerceAtLeast(1))
+            .toLong() and 0x7fffffffL,
         name = songName,
         artist = singer.joinToString("/") { it.name },
         album = if (albumName.isNullOrBlank()) albumTag else "$albumTag$albumName",
         albumId = 0L,
         durationMs = interval * 1000L,
         coverUrl = albumMid?.let { "https://y.qq.com/music/photo_new/T002R800x800M000$it.jpg" },
-        audioId = songMid,
-        sourceStableKey = "qq:$songMid"
+        audioId = mid.takeIf { it.isNotBlank() },
+        sourceStableKey = mid.takeIf { it.isNotBlank() }?.let { "qq:$it" }
     )
 }

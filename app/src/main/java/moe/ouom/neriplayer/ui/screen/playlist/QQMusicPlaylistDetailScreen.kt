@@ -214,7 +214,7 @@ fun QQMusicPlaylistDetailScreen(
                             }
                         }
                     } else {
-                        itemsIndexed(songs, key = { _, song -> song.stableKey() }) { index, song ->
+                        itemsIndexed(songs, key = { index, song -> "$index|${song.stableKey()}" }) { index, song ->
                             QQPlaylistSongRow(
                                 song = song,
                                 rank = index + 1,

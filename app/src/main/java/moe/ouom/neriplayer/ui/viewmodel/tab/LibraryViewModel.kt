@@ -334,7 +334,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             try {
                 val qqCookies = AppContainer.qqCookieRepo.getCookiesOnce()
-                val qqUin = qqCookies["uin"]?.trim()?.trimStart('o').orEmpty()
+                val qqUin = qqCookies["uin"]?.trim().orEmpty()
                 val loggedIn = AppContainer.qqCookieRepo.getAuthHealthOnce().state ==
                     SavedCookieAuthState.Valid && qqUin.isNotBlank()
                 val playlists = withContext(Dispatchers.IO) {
