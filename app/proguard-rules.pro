@@ -93,3 +93,7 @@
 # 给 R8 更多操作空间，让真正的 shrink 生效
 -allowaccessmodification
 -repackageclasses ''
+
+# Apache Commons Net (FTP) - 反射/枚举使用, 保留全部
+-keep class org.apache.commons.net.** { *; }
+-dontwarn org.apache.commons.net.**

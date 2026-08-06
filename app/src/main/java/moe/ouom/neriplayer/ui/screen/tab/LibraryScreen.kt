@@ -150,6 +150,7 @@ import moe.ouom.neriplayer.ui.viewmodel.tab.LibraryViewModel
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeMusicPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.tab.favoriteId
+import moe.ouom.neriplayer.ui.screen.ftp.FtpLibraryPage
 import moe.ouom.neriplayer.ui.util.rememberPlaylistDisplayCoverUrl
 import moe.ouom.neriplayer.util.media.fastScrollableImageRequest
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
@@ -175,7 +176,8 @@ enum class LibraryTab(val labelResId: Int) {
     NETEASE(R.string.library_tab_netease),
     NETEASEALBUM(R.string.library_tab_netease_album),
     BILI(R.string.library_tab_bilibili),
-    QQMUSIC(R.string.library_tab_qqmusic)
+    QQMUSIC(R.string.library_tab_qqmusic),
+    FTP(R.string.library_tab_ftp)
 }
 
 private const val NETEASE_CATEGORY_PLAYLIST = 0
@@ -264,7 +266,8 @@ internal fun libraryTabDisplayOrder(
             LibraryTab.YTMUSIC,
             LibraryTab.NETEASE,
             LibraryTab.BILI,
-            LibraryTab.QQMUSIC
+            LibraryTab.QQMUSIC,
+            LibraryTab.FTP
         )
     } else {
         listOf(
@@ -273,7 +276,8 @@ internal fun libraryTabDisplayOrder(
             LibraryTab.NETEASE,
             LibraryTab.YTMUSIC,
             LibraryTab.BILI,
-            LibraryTab.QQMUSIC
+            LibraryTab.QQMUSIC,
+            LibraryTab.FTP
         )
     }
     return if (youtubeEnabled) orderedTabs else orderedTabs - LibraryTab.YTMUSIC
@@ -507,6 +511,8 @@ fun LibraryScreen(
                             onRetry = { vm.refreshQqMusicPlaylists() },
                             offlineMode = offlineMode
                         )
+
+                        LibraryTab.FTP -> FtpLibraryPage(offlineMode = offlineMode)
                     }
                 }
             }
