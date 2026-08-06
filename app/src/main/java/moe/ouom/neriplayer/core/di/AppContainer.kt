@@ -555,7 +555,13 @@ object AppContainer {
             }
             .launchIn(scope)
 
-        // 自定义音源(洛雪脚本)是否绕过代理
+        // 自定义音源(洛雪脚本)代理策略: 始终走代理 > 绕过代理
+        settingsRepo.customSourceAlwaysProxyFlow
+            .onEach { enabled ->
+                CustomSourceProxySelector.alwaysProxy = enabled
+            }
+            .launchIn(scope)
+
         settingsRepo.customSourceBypassProxyFlow
             .onEach { enabled ->
                 CustomSourceProxySelector.forceBypass = enabled

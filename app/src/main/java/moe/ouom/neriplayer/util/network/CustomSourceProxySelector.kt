@@ -37,12 +37,23 @@ object CustomSourceProxySelector : ProxySelector() {
     @Volatile
     var forceBypass: Boolean = true
 
+    /** true = 自定义音源始终走系统代理(忽略全局绕过设置); false = 按 [forceBypass] 逻辑 */
+    @Volatile
+    var alwaysProxy: Boolean = false
+
+    private fun systemDefault(): ProxySelector? {
+        val current = getDefault()
+        return if (current === this) null else current
+    }
+
     override fun select(uri: URI?): List<Proxy> {
         if (uri == null) return listOf(Proxy.NO_PROXY)
-        return if (forceBypass) {
-            listOf(Proxy.NO_PROXY)
-        } else {
-            DynamicProxySelector.select(uri)
+        return when {
+            alwaysProxy -> systemDefault()?.select(uri)
+                .takeUnless { it.isNullOrEmpty() }
+                ?: listOf(Proxy.NO_PROXY)
+            forceBypass -> listOf(Proxy.NO_PROXY)
+            else -> DynamicProxySelector.select(uri)
         }
     }
 

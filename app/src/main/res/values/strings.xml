@@ -1020,6 +1020,8 @@
     <string name="settings_bypass_proxy_desc">应用内网络请求不走系统代理</string>
     <string name="settings_custom_source_bypass_proxy">自定义音源绕过代理</string>
     <string name="settings_custom_source_bypass_proxy_desc">开启后自定义音源(洛雪脚本)的请求始终直连；关闭则跟随上方绕过设置</string>
+    <string name="settings_custom_source_always_proxy">自定义音源始终走代理</string>
+    <string name="settings_custom_source_always_proxy_desc">开启后自定义音源的请求始终走系统代理(优先于绕过设置)，用于音源脚本需经代理访问的场景</string>
     <string name="settings_restart_hint">修改后可能需要重启应用以获得最佳效果</string>
     <string name="settings_expand_network">网络连接与代理选项</string>
     <string name="settings_about_desc">版本信息、项目主页和开发者模式</string>

@@ -66,6 +66,7 @@ import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.FormatSize
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Radar
@@ -484,6 +485,8 @@ fun SettingsScreen(
     onBypassProxyChange: (Boolean) -> Unit,
     customSourceBypassProxy: Boolean,
     onCustomSourceBypassProxyChange: (Boolean) -> Unit,
+    customSourceAlwaysProxy: Boolean,
+    onCustomSourceAlwaysProxyChange: (Boolean) -> Unit,
     backgroundImageUri: String?,
     onBackgroundImageChange: (Uri?) -> Unit,
     downloadDirectoryUri: String?,
@@ -1708,6 +1711,27 @@ fun SettingsScreen(
                             highlightPulse = settingsHighlightPulse,
                             onHighlightFinished = onSettingsHighlightFinished,
                             onClick = { onCustomSourceBypassProxyChange(!customSourceBypassProxy) }
+                        )
+                        AutoSettingsListItem(
+                            setting = AutoSettingsMetadata.requireSetting(AutoSettingsKeys.CUSTOM_SOURCE_ALWAYS_PROXY),
+                            leadingContent = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Language,
+                                    contentDescription = stringResource(R.string.settings_custom_source_always_proxy),
+                                    modifier = Modifier.size(24.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            },
+                            trailingContent = {
+                                MiuixSettingsSwitch(
+                                    checked = customSourceAlwaysProxy,
+                                    onCheckedChange = onCustomSourceAlwaysProxyChange
+                                )
+                            },
+                            highlightTargetId = settingsHighlightTargetId,
+                            highlightPulse = settingsHighlightPulse,
+                            onHighlightFinished = onSettingsHighlightFinished,
+                            onClick = { onCustomSourceAlwaysProxyChange(!customSourceAlwaysProxy) }
                         )
                     }
                 }

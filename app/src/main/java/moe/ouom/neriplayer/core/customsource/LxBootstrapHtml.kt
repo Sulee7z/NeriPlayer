@@ -48,11 +48,31 @@ private val LX_RUNTIME_JS = """
 (function () {
   'use strict';
 
+  // 严格参考 lx-music-mobile 官方实现 (android/app/src/main/assets/script/user-api-preload.js)
   var EVENT_NAMES = { request: 'request', inited: 'inited', updateAlert: 'updateAlert' };
-  var requestHandler = null;
-  var httpSeq = 0;
-  var httpCalls = {};
-  var isInited = false;
+  var eventNames = [EVENT_NAMES.request, EVENT_NAMES.inited, EVENT_NAMES.updateAlert];
+  var events = { request: null };
+  var isInitedApi = false;
+  var isShowedUpdateAlert = false;
+
+  var allSources = ['kw', 'kg', 'tx', 'wy', 'mg', 'local'];
+  var supportQualitys = {
+    kw: ['128k', '320k', 'flac', 'flac24bit'],
+    kg: ['128k', '320k', 'flac', 'flac24bit'],
+    tx: ['128k', '320k', 'flac', 'flac24bit'],
+    wy: ['128k', '320k', 'flac', 'flac24bit'],
+    mg: ['128k', '320k', 'flac', 'flac24bit'],
+    local: []
+  };
+  var supportActions = {
+    kw: ['musicUrl'],
+    kg: ['musicUrl'],
+    tx: ['musicUrl'],
+    wy: ['musicUrl'],
+    mg: ['musicUrl'],
+    xm: ['musicUrl'],
+    local: ['musicUrl', 'lyric', 'pic']
+  };
 
   function nativeLog(msg) { try { NeriBridge.log(String(msg)); } catch (e) {} }
   function nativeErr(msg) { try { NeriBridge.onScriptError(String(msg)); } catch (e) {} }
@@ -73,22 +93,45 @@ private val LX_RUNTIME_JS = """
     nativeErr('unhandledrejection: ' + (r && r.message ? r.message : r));
   });
 
-  function isUrlSafe(str) {
-    return typeof str === 'string' && str.length <= 2048 && /^https?:\/\//i.test(str);
-  }
+  // ---- setTimeout / clearTimeout (桥到原生 Handler) ----
+  var timeoutSeq = 0;
+  var timeoutCallbacks = {};
+  globalThis.setTimeout = function (callback, timeout) {
+    if (typeof callback !== 'function') throw new Error('callback required a function');
+    if (typeof timeout !== 'number' || timeout < 0) throw new Error('timeout required a number');
+    var id = ++timeoutSeq;
+    timeoutCallbacks[id] = callback;
+    try { NeriBridge.setTimeout(id, Math.min(Math.floor(timeout), 60000)); } catch (e) {}
+    return id;
+  };
+  globalThis.clearTimeout = function (id) {
+    var target = timeoutCallbacks[id];
+    if (!target) return;
+    delete timeoutCallbacks[id];
+    try { NeriBridge.clearTimeout(id); } catch (e) {}
+  };
+  window.__neri_timeout = function (id) {
+    var target = timeoutCallbacks[id];
+    if (!target) return;
+    delete timeoutCallbacks[id];
+    target();
+  };
 
-  // ---- HTTP bridge (like LX Mobile's handleNativeResponse) ----
+  // ---- HTTP 桥 (对齐官方 sendNativeRequest: 返回 abort 函数) ----
+  var httpSeq = 0;
+  var requestQueue = {};
   function lxRequest(url, options, callback) {
     options = options || {};
-    var id = 'h' + (++httpSeq);
-    httpCalls[id] = { cb: callback, done: false, url: url };
+    var requestKey = 'h' + (++httpSeq);
+    var req = { aborted: false };
+    requestQueue[requestKey] = { callback: callback, req: req, url: url };
 
     var opt = {
-      method: (options.method || 'GET').toUpperCase(),
+      method: (options.method || 'get').toUpperCase(),
       headers: options.headers || {},
+      binary: options.binary === true,
       body: undefined
     };
-
     if (options.form) {
       opt.body = Object.keys(options.form).map(function (k) {
         return encodeURIComponent(k) + '=' + encodeURIComponent(options.form[k]);
@@ -102,11 +145,9 @@ private val LX_RUNTIME_JS = """
         opt.body = String(options.body);
       }
     }
-
-    if (options.timeout && typeof options.timeout === 'number' && options.timeout > 0) {
+    if (typeof options.timeout === 'number' && options.timeout > 0) {
       opt.timeout = Math.min(options.timeout, 60000);
     }
-
     if (options.formData) {
       opt.formData = true;
       opt.body = options.formData;
@@ -114,37 +155,36 @@ private val LX_RUNTIME_JS = """
     }
 
     try {
-      NeriBridge.httpRequest(id, url, JSON.stringify(opt));
+      NeriBridge.httpRequest(requestKey, url, JSON.stringify(opt));
     } catch (e) {
-      var entry = httpCalls[id];
-      if (entry && !entry.done) { entry.done = true; delete httpCalls[id]; }
-      if (callback) callback(e.message || 'bridge error', null, null);
+      var entry = requestQueue[requestKey];
+      if (entry) { delete requestQueue[requestKey]; entry.req.aborted = true; }
+      if (callback) callback(new Error(e.message || 'bridge error'), null, null);
     }
 
-    return {
-      abort: function () {
-        try { NeriBridge.httpAbort(id); } catch (e) {}
-        var entry = httpCalls[id];
-        if (entry) { entry.done = true; delete httpCalls[id]; }
-      }
+    return function () {
+      var entry = requestQueue[requestKey];
+      if (!entry || entry.req.aborted) return;
+      entry.req.aborted = true;
+      delete requestQueue[requestKey];
+      try { NeriBridge.httpAbort(requestKey); } catch (e) {}
     };
   }
 
   window.__neri_httpCallback = function (payloadStr) {
     var payload;
     try { payload = JSON.parse(payloadStr); } catch (e) { return; }
-    var entry = httpCalls[payload.requestId];
-    if (!entry || entry.done) return;
-    entry.done = true;
-    delete httpCalls[payload.requestId];
+    var entry = requestQueue[payload.requestId];
+    if (!entry || entry.req.aborted) return;
+    delete requestQueue[payload.requestId];
+    entry.req.aborted = true;
 
     if (payload.error) {
-      if (entry.cb) entry.cb(payload.error, null, null);
+      if (entry.callback) entry.callback(new Error(payload.error), null, null);
       return;
     }
     var resp = payload.response || {};
     var body = resp.body;
-
     if (typeof body === 'string') {
       try {
         var ct = (resp.headers && (resp.headers['content-type'] || resp.headers['Content-Type'])) || '';
@@ -153,7 +193,6 @@ private val LX_RUNTIME_JS = """
         }
       } catch (e) {}
     }
-
     var lxResp = {
       statusCode: resp.statusCode,
       statusMessage: resp.statusMessage || 'OK',
@@ -162,81 +201,59 @@ private val LX_RUNTIME_JS = """
       url: entry.url,
       ok: resp.statusCode >= 200 && resp.statusCode < 300
     };
-    if (entry.cb) entry.cb(null, lxResp, body);
+    if (entry.callback) entry.callback(null, lxResp, body);
   };
 
-  // ---- Crypto / buffer helpers ----
+  // ---- utils (对齐官方: md5 先 encodeURIComponent) ----
+  function bytesToString(bytes) {
+    var result = '';
+    var i = 0;
+    while (i < bytes.length) {
+      var byte = bytes[i];
+      if (byte < 128) { result += String.fromCharCode(byte); i++; }
+      else if (byte >= 192 && byte < 224) { result += String.fromCharCode(((byte & 31) << 6) | (bytes[i + 1] & 63)); i += 2; }
+      else { result += String.fromCharCode(((byte & 15) << 12) | ((bytes[i + 1] & 63) << 6) | (bytes[i + 2] & 63)); i += 3; }
+    }
+    return result;
+  }
+  function stringToBytes(inputString) {
+    var bytes = [];
+    for (var i = 0; i < inputString.length; i++) {
+      var charCode = inputString.charCodeAt(i);
+      if (charCode < 128) bytes.push(charCode);
+      else if (charCode < 2048) { bytes.push((charCode >> 6) | 192); bytes.push((charCode & 63) | 128); }
+      else { bytes.push((charCode >> 12) | 224); bytes.push(((charCode >> 6) & 63) | 128); bytes.push((charCode & 63) | 128); }
+    }
+    return bytes;
+  }
   function strToB64(str) {
     try { return btoa(unescape(encodeURIComponent(str))); } catch (e) { return btoa(str); }
   }
-
-  // bytesToB64: Uint8Array -> base64 string (binary-safe)
   function bytesToB64(bytes) {
     var arr = new Uint8Array(bytes);
     var binary = '';
-    for (var i = 0; i < arr.length; i++) {
-      binary += String.fromCharCode(arr[i]);
-    }
+    for (var i = 0; i < arr.length; i++) binary += String.fromCharCode(arr[i]);
     return btoa(binary);
   }
-
-  // b64ToBytes: base64 string -> Uint8Array
   function b64ToBytes(b64) {
     var binary = atob(b64);
     var bytes = new Uint8Array(binary.length);
-    for (var i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
     return bytes;
   }
-
-  // hexToBytes: hex string -> Uint8Array
   function hexToBytes(hex) {
     var bytes = new Uint8Array(hex.length / 2);
-    for (var i = 0; i < hex.length; i += 2) {
-      bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-    }
+    for (var i = 0; i < hex.length; i += 2) bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
     return bytes;
   }
-
-  // bytesToHex: Uint8Array -> hex string
   function bytesToHex(bytes) {
     var arr = new Uint8Array(bytes);
     var hex = '';
-    for (var i = 0; i < arr.length; i++) {
-      hex += (arr[i] < 16 ? '0' : '') + arr[i].toString(16);
-    }
+    for (var i = 0; i < arr.length; i++) hex += (arr[i] < 16 ? '0' : '') + arr[i].toString(16);
     return hex;
   }
 
-  // stringToBytes: JS string -> UTF-8 Uint8Array
-  function stringToBytes(str) {
-    var encoded = unescape(encodeURIComponent(str));
-    var bytes = new Uint8Array(encoded.length);
-    for (var i = 0; i < encoded.length; i++) {
-      bytes[i] = encoded.charCodeAt(i);
-    }
-    return bytes;
-  }
-
-  // bytesToString: UTF-8 Uint8Array -> JS string
-  function bytesToString(bytes) {
-    var arr = new Uint8Array(bytes);
-    var binary = '';
-    for (var i = 0; i < arr.length; i++) {
-      binary += String.fromCharCode(arr[i]);
-    }
-    try { return decodeURIComponent(escape(binary)); } catch (e) { return binary; }
-  }
-
-  // dataToB64: string or buffer -> base64 (matches official LX dataToB64)
-  function dataToB64(data) {
-    if (typeof data === 'string') return strToB64(data);
-    if (Array.isArray(data) || ArrayBuffer.isView(data)) return bytesToB64(data);
-    throw new Error('data type error: ' + typeof data);
-  }
-
-  // MD5
+  // MD5 (对齐官方 native md5 语义: 先 encodeURIComponent)
   function __md5(s) {
     function rl(n, c) { return (n << c) | (n >>> (32 - c)); }
     function au(x, y) { var l = (x & 0xFFFF) + (y & 0xFFFF); var m = (x >> 16) + (y >> 16) + (l >> 16); return (m << 16) | (l & 0xFFFF); }
@@ -297,12 +314,12 @@ private val LX_RUNTIME_JS = """
         if (typeof data === 'string') {
           if (encoding === 'base64') return b64ToBytes(data);
           if (encoding === 'hex') return hexToBytes(data);
-          return stringToBytes(data);
+          return new Uint8Array(stringToBytes(data));
         }
         if (Array.isArray(data)) return new Uint8Array(data);
         if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-        if (data && typeof data === 'object' && data.__raw !== undefined) return stringToBytes(data.__raw);
-        return stringToBytes(String(data));
+        if (data && typeof data === 'object' && data.__raw !== undefined) return new Uint8Array(stringToBytes(String(data.__raw)));
+        return new Uint8Array(stringToBytes(String(data)));
       },
       bufToString: function (buf, enc) {
         if (Array.isArray(buf) || ArrayBuffer.isView(buf)) {
@@ -311,12 +328,12 @@ private val LX_RUNTIME_JS = """
           return bytesToString(new Uint8Array(buf));
         }
         if (buf && typeof buf.toString === 'function') return buf.toString(enc);
-        if (Array.isArray(buf)) return this.bufToString(new Uint8Array(buf), enc);
         return String(buf);
       }
     },
     crypto: {
-      md5: function (s) { return __md5(String(s)); },
+      // 对齐官方: md5(encodeURIComponent(str))
+      md5: function (str) { return __md5(encodeURIComponent(String(str))); },
       randomBytes: function (n) {
         var arr = new Uint8Array(n);
         for (var i = 0; i < n; i++) arr[i] = Math.floor(Math.random() * 256);
@@ -344,9 +361,13 @@ private val LX_RUNTIME_JS = """
       }
     }
   };
+  function dataToB64(data) {
+    if (typeof data === 'string') return strToB64(data);
+    if (Array.isArray(data) || ArrayBuffer.isView(data)) return bytesToB64(data);
+    throw new Error('data type error: ' + typeof data);
+  }
 
-  // ---- lx object (matches LX Mobile's globalThis.lx) ----
-  var supportedEventNames = [EVENT_NAMES.request, EVENT_NAMES.inited, EVENT_NAMES.updateAlert];
+  // ---- lx 对象 ----
   var lx = {
     EVENT_NAMES: EVENT_NAMES,
     version: '2.0.0',
@@ -363,29 +384,53 @@ private val LX_RUNTIME_JS = """
       };
     })(),
     on: function (name, handler) {
-      if (name === EVENT_NAMES.request) {
-        requestHandler = handler;
-        return Promise.resolve();
+      if (eventNames.indexOf(name) === -1) return Promise.reject(new Error('The event is not supported: ' + name));
+      switch (name) {
+        case EVENT_NAMES.request:
+          events.request = handler;
+          break;
+        default:
+          return Promise.reject(new Error('The event is not supported: ' + name));
       }
-      return Promise.reject(new Error('The event is not supported: ' + name));
+      return Promise.resolve();
     },
-    send: function (name, payload) {
-      return new Promise(function(resolve, reject) {
-        if (supportedEventNames.indexOf(name) === -1) {
-          return reject(new Error('The event is not supported: ' + name));
-        }
-        if (name === EVENT_NAMES.inited) {
-          if (isInited) return reject(new Error('Script is inited'));
-          isInited = true;
-          try {
-            var sources = (payload && payload.sources) || {};
-            NeriBridge.onInited(JSON.stringify(sources));
+    send: function (name, data) {
+      return new Promise(function (resolve, reject) {
+        if (eventNames.indexOf(name) === -1) return reject(new Error('The event is not supported: ' + name));
+        switch (name) {
+          case EVENT_NAMES.inited:
+            if (isInitedApi) return reject(new Error('Script is inited'));
+            isInitedApi = true;
+            try {
+              // 对齐官方 handleInit: 只上报 type=music 且 actions/qualitys 与内置集合的交集
+              var sources = {};
+              if (data && data.sources && typeof data.sources === 'object') {
+                for (var si = 0; si < allSources.length; si++) {
+                  var source = allSources[si];
+                  var userSource = data.sources[source];
+                  if (!userSource || userSource.type !== 'music') continue;
+                  var qualitys = supportQualitys[source];
+                  var actions = supportActions[source];
+                  sources[source] = {
+                    type: 'music',
+                    actions: actions.filter(function (a) { return userSource.actions && userSource.actions.indexOf(a) >= 0; }),
+                    qualitys: qualitys.filter(function (q) { return userSource.qualitys && userSource.qualitys.indexOf(q) >= 0; })
+                  };
+                }
+              }
+              NeriBridge.onInited(JSON.stringify(sources));
+              resolve();
+            } catch (e) {
+              reject(e);
+            }
+            break;
+          case EVENT_NAMES.updateAlert:
+            if (isShowedUpdateAlert) return reject(new Error('The update alert can only be called once.'));
+            isShowedUpdateAlert = true;
             resolve();
-          } catch (e) {
-            reject(e);
-          }
-        } else {
-          reject(new Error('Unknown event name: ' + name));
+            break;
+          default:
+            reject(new Error('Unknown event name: ' + name));
         }
       });
     },
@@ -396,31 +441,31 @@ private val LX_RUNTIME_JS = """
   globalThis.lx = lx;
   window.lx = lx;
 
-  // ---- Java -> JS: invoke request handler (matches LX Mobile's handleRequest) ----
+  // ---- Java -> JS: 调用 request handler ----
   window.__neri_invoke = function (payloadStr) {
     var payload;
     try { payload = JSON.parse(payloadStr); } catch (e) { return; }
     var callId = payload.callId;
 
-    if (!requestHandler) {
+    if (!events.request) {
       NeriBridge.onRequestResult(callId, JSON.stringify({ ok: false, error: '脚本未注册 request 处理器' }));
       return;
     }
 
     var settled = false;
-    function resolveUrl(rawResult) {
+    function resolveResult(rawResult) {
       if (settled) return; settled = true;
-      // LX Mobile handler returns a string URL directly for musicUrl action
-      if (typeof rawResult === 'string' && /^https?:\/\//i.test(rawResult)) {
+      // 对齐官方: musicUrl 结果必须是字符串 http(s) URL, 长度 <= 2048
+      if (typeof rawResult === 'string' && rawResult.length <= 2048 && /^https?:/.test(rawResult)) {
         NeriBridge.onRequestResult(callId, JSON.stringify({ ok: true, url: rawResult }));
         return;
       }
-      // Object response: { url, type } or { data: { url } }
+      // 兼容部分脚本返回 { url } 对象
       if (rawResult && typeof rawResult === 'object') {
         var url = rawResult.url || '';
         if (!url && rawResult.data && typeof rawResult.data === 'object') url = rawResult.data.url || '';
         if (!url && rawResult.result && typeof rawResult.result === 'string') url = rawResult.result;
-        if (url && typeof url === 'string' && /^https?:\/\//i.test(url)) {
+        if (url && typeof url === 'string' && url.length <= 2048 && /^https?:/.test(url)) {
           NeriBridge.onRequestResult(callId, JSON.stringify({ ok: true, url: url }));
           return;
         }
@@ -435,11 +480,11 @@ private val LX_RUNTIME_JS = """
 
     try {
       var arg = { source: payload.source, action: payload.action, info: payload.info };
-      var ret = requestHandler(arg);
+      var ret = events.request.call(globalThis.lx, arg);
       if (ret && typeof ret.then === 'function') {
-        ret.then(resolveUrl, reject);
+        ret.then(resolveResult, reject);
       } else {
-        resolveUrl(ret);
+        resolveResult(ret);
       }
     } catch (e) {
       reject(e);

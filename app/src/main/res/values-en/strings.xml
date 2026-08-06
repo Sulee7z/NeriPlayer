@@ -1020,6 +1020,8 @@
     <string name="settings_bypass_proxy_desc">Ignore system proxy</string>
     <string name="settings_custom_source_bypass_proxy">Custom Source Bypass Proxy</string>
     <string name="settings_custom_source_bypass_proxy_desc">When on, custom source (LX script) requests always connect directly; when off, they follow the bypass setting above</string>
+    <string name="settings_custom_source_always_proxy">Custom Source Always Use Proxy</string>
+    <string name="settings_custom_source_always_proxy_desc">When on, custom source requests always go through the system proxy (takes priority over the bypass setting), for scripts that need a proxy</string>
     <string name="settings_restart_hint">May need to restart app for best effect</string>
     <string name="settings_expand_network">Network and proxy options</string>
     <string name="settings_about_desc">Version, project home, and developer mode</string>

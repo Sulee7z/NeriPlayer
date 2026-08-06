@@ -76,6 +76,7 @@ class QqQrLoginActivity : ComponentActivity() {
         const val RESULT_COOKIE = "qq_cookie_result"
         private const val LOG_TAG = "NERI-QqQrLogin"
         private const val POLL_INTERVAL_MS = 2_000L
+        private const val POLL_MAX_CONSECUTIVE_FAILURES = 5
         private const val QR_SIZE_DP = 216
         private const val QQ_BLUE = 0xFF31C27C.toInt()
     }
@@ -339,16 +340,24 @@ class QqQrLoginActivity : ComponentActivity() {
     }
 
     private suspend fun pollQrLogin(session: QqQrLoginSession) {
+        var consecutiveFailures = 0
         while (lifecycleScope.isActive && !hasReturned) {
             pollRound += 1
             NPLogger.d(LOG_TAG, "Poll round=$pollRound")
             val check = runCatching {
                 withContext(Dispatchers.IO) { qrClient.checkLogin(session) }
             }.getOrElse { error ->
-                setErrorStatus(getString(R.string.qq_qr_login_failed, error.readableMessage()))
-                NPLogger.w(LOG_TAG, "Check QR login failed", error)
-                return
+                // 单次网络抖动不退出, 连续失败才报错(腾讯接口偶发空响应/限流)
+                consecutiveFailures += 1
+                NPLogger.w(LOG_TAG, "Check QR login failed #$consecutiveFailures: ${error.message}")
+                if (consecutiveFailures >= POLL_MAX_CONSECUTIVE_FAILURES) {
+                    setErrorStatus(getString(R.string.qq_qr_login_failed, error.readableMessage()))
+                    return
+                }
+                delay(POLL_INTERVAL_MS)
+                continue
             }
+            consecutiveFailures = 0
             NPLogger.d(
                 LOG_TAG,
                 "Poll round=$pollRound code=${check.code} message=${check.message} cookieKeys=${check.cookies.keys}"

@@ -96,6 +96,8 @@ class LxScriptEngine(
     private val pendingRequests = ConcurrentHashMap<String, CompletableDeferred<String>>()
     private val httpCalls = ConcurrentHashMap<String, Call>()
     private val httpLog = java.util.Collections.synchronizedList(ArrayList<String>())
+    /** JS setTimeout 桥: id -> Runnable, 供 clearTimeout/destroy 精确清理 */
+    private val timeoutTasks = ConcurrentHashMap<Int, Runnable>()
 
     /** 返回最近的 HTTP 请求结果(脚本通过 lx.request 发起的),用于诊断网络是否可达。 */
     fun recentHttpLog(): List<String> = synchronized(httpLog) { httpLog.toList() }
@@ -247,6 +249,8 @@ class LxScriptEngine(
 
     fun destroy() {
         mainHandler.post {
+            timeoutTasks.values.forEach { task -> mainHandler.removeCallbacks(task) }
+            timeoutTasks.clear()
             httpCalls.values.forEach { runCatching { it.cancel() } }
             httpCalls.clear()
             pendingRequests.values.forEach { it.cancel() }
@@ -302,6 +306,22 @@ class LxScriptEngine(
         fun onScriptError(message: String) {
             lastScriptError = message
             NPLogger.w(TAG, "[script-error] $message")
+        }
+
+        /** JS setTimeout 桥(对齐 LX Mobile: 脚本大量使用 setTimeout 轮询/延迟) */
+        @JavascriptInterface
+        fun setTimeout(id: Int, delayMs: Long) {
+            val task = Runnable {
+                timeoutTasks.remove(id)
+                runJs("window.__neri_timeout($id);")
+            }
+            timeoutTasks[id] = task
+            mainHandler.postDelayed(task, delayMs.coerceAtLeast(0L))
+        }
+
+        @JavascriptInterface
+        fun clearTimeout(id: Int) {
+            timeoutTasks.remove(id)?.let { task -> mainHandler.removeCallbacks(task) }
         }
 
         /** 由脚本发起 HTTP 请求;完成后回调 JS __neri_httpCallback。 */

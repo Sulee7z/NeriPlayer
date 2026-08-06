@@ -194,10 +194,10 @@ class QqQrLoginClient {
         val text = executeGetText(url.toString())
         val (code, jumpUrl, message, uin) = parsePtuiCallback(text)
         if (code == 0) {
-            // 跟随登录跳转链接, 拿齐 skey / p_skey / pt4_token 等登录票据
+            // 跟随登录跳转链接逐跳收割 skey / p_skey / pt4_token 等登录票据
             if (!jumpUrl.isNullOrBlank() && jumpUrl.startsWith("http")) {
                 runCatching {
-                    executeGetText(jumpUrl)
+                    executeFollowRedirectsCollectingCookies(jumpUrl)
                 }.onFailure { error ->
                     NPLogger.w(QQ_QR_LOG_TAG, "follow login redirect failed: ${error.message}")
                 }
@@ -326,12 +326,64 @@ class QqQrLoginClient {
 
         http.newCall(requestBuilder.build()).execute().use { response ->
             storeSetCookieHeaders(response.headers("Set-Cookie"))
+            if (!response.isSuccessful) {
+                val bodyPreview = runCatching { response.body.string().take(200) }.getOrDefault("")
+                throw IOException("HTTP ${response.code}: $bodyPreview")
+            }
             val bytes = response.body.bytes()
             if (bytes.isEmpty()) {
                 throw IOException("Empty QQ QR response")
             }
             return bytes
         }
+    }
+
+    /**
+     * 手动逐跳跟随重定向并收集每一跳的 Set-Cookie。
+     *
+     * 关键: OkHttp 自动跟随重定向时会丢弃中间响应的 Set-Cookie 头,
+     * 而 QQ 登录成功后的跳转链 (qlogin -> s_url) 正是 skey/p_skey/pt4_token
+     * 等登录票据的来源, 必须逐跳收割才能凑齐登录态。
+     */
+    private fun executeFollowRedirectsCollectingCookies(
+        url: String,
+        maxHops: Int = 8
+    ): ByteArray {
+        val redirectClient = http.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+        var currentUrl = url
+        repeat(maxHops) {
+            val requestBuilder = Request.Builder()
+                .url(currentUrl)
+                .header("Accept", "*/*")
+                .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
+                .header("Referer", QQ_QR_REFERER)
+                .header("User-Agent", QQ_QR_UA)
+                .get()
+            currentCookieHeader().takeIf { it.isNotBlank() }?.let { cookieHeader ->
+                requestBuilder.header("Cookie", cookieHeader)
+            }
+            redirectClient.newCall(requestBuilder.build()).execute().use { response ->
+                storeSetCookieHeaders(response.headers("Set-Cookie"))
+                val code = response.code
+                if (code in 300..399) {
+                    val location = response.header("Location")
+                    if (location.isNullOrBlank()) {
+                        throw IOException("Redirect without Location: $code")
+                    }
+                    currentUrl = java.net.URI(currentUrl).resolve(location).toString()
+                    NPLogger.d(
+                        QQ_QR_LOG_TAG,
+                        "follow redirect hop -> $currentUrl (cookies=${cookieStore.keys})"
+                    )
+                } else {
+                    return response.body.bytes()
+                }
+            }
+        }
+        throw IOException("Too many redirects")
     }
 
     private fun currentCookieHeader(): String {

@@ -1500,6 +1500,7 @@ private fun NeriAppContent(
     val uiDensityScale by repo.uiDensityScaleFlow.collectAsStateWithLifecycle(initialValue = 1.0f)
     val bypassProxy by repo.bypassProxyFlow.collectAsStateWithLifecycle(initialValue = true)
     val customSourceBypassProxy by repo.customSourceBypassProxyFlow.collectAsStateWithLifecycle(initialValue = true)
+    val customSourceAlwaysProxy by repo.customSourceAlwaysProxyFlow.collectAsStateWithLifecycle(initialValue = false)
     val backgroundImageUri by repo.backgroundImageUriFlow.collectAsStateWithLifecycle(initialValue = null)
     val downloadDirectoryUri by repo.downloadDirectoryUriFlow.collectAsStateWithLifecycle(initialValue = null)
     val downloadFileNameTemplate by repo.downloadFileNameTemplateFlow.collectAsStateWithLifecycle(initialValue = null)
@@ -3012,6 +3013,10 @@ private fun NeriAppContent(
                         customSourceBypassProxy = customSourceBypassProxy,
                         onCustomSourceBypassProxyChange = { enabled ->
                             scope.launch { repo.setCustomSourceBypassProxy(enabled) }
+                        },
+                        customSourceAlwaysProxy = customSourceAlwaysProxy,
+                        onCustomSourceAlwaysProxyChange = { enabled ->
+                            scope.launch { repo.setCustomSourceAlwaysProxy(enabled) }
                         },
                         backgroundImageUri = backgroundImageUri,
                         onBackgroundImageChange = { uri ->

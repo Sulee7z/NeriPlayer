@@ -1241,6 +1241,19 @@ object AutoSettingsSchema {
             titleRes = R.string.settings_custom_source_bypass_proxy,
             descriptionRes = R.string.settings_custom_source_bypass_proxy_desc
         )
+
+        @AutoSetting(
+            key = "custom_source_always_proxy",
+            type = SettingValueType.Boolean,
+            defaultBoolean = false,
+            order = 12,
+            ui = SettingUiType.Custom,
+            access = SettingAccessMode.KeyOnly
+        )
+        val customSourceAlwaysProxy = autoSetting(
+            titleRes = R.string.settings_custom_source_always_proxy,
+            descriptionRes = R.string.settings_custom_source_always_proxy_desc
+        )
     }
 
     /*

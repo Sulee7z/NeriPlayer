@@ -115,10 +115,13 @@ private fun mergeDuplicateUsageEntries(entries: List<UsageEntry>): UsageEntry {
         entry.counterBaseOpenCount <= 0L && entry.counterShards.orEmpty().isEmpty()
     }
     if (!allLegacyCounters) {
+        // 非旧版计数(带 shard)的合并会重建条目, 必须把置顶状态补回去
         return SyncPlaylistUsageStatsMergePolicy.mergePlaylistUsageStats(
             local = entries.map(UsageEntry::toSyncPlaylistUsageStat),
             remote = emptyList()
-        ).single().toUsageEntry()
+        ).single().toUsageEntry().copy(
+            pinnedAt = entries.mapNotNull(UsageEntry::pinnedAt).maxOrNull()
+        )
     }
     val mergedOpenCount = entries.sumOf(UsageEntry::openCount)
         .coerceAtLeast(latest.openCount)

@@ -474,13 +474,22 @@ class CustomSourceManager(
     }
 
     /**
-     * 构建符合 LX Music toOldMusicInfo 格式的 musicInfo。
-     * 完全匹配 LX Mobile 传递给脚本 handler 的数据结构。
+     * 构建符合 LX Mobile toOldMusicInfo 格式的 musicInfo。
+     * 严格对齐 lx-music-mobile 源码 (src/utils/index.ts toOldMusicInfo + src/types/music.d.ts):
+     * - types:  [{type: '128k'}, {type: '320k'}, ...]   (MusicQualityType 对象数组)
+     * - _types: { '128k': {...}, '320k': {...}, ... }    (统一音质 map)
+     * - 音质 key 使用 LX 统一音质(128k/320k/flac/flac24bit), 与脚本声明的一致
      */
     private fun buildMusicInfo(song: SongItem): JSONObject {
         val interval = formatDurationToLxInterval(song.durationMs)
-        val types = JSONArray()
-        val qualityTypes = JSONObject()
+        // 与 lx-music-mobile supportQualitys.wy 一致
+        val lxQualities = listOf("128k", "320k", "flac", "flac24bit")
+        val types = JSONArray().apply {
+            lxQualities.forEach { q -> put(JSONObject().put("type", q)) }
+        }
+        val qualityTypes = JSONObject().apply {
+            lxQualities.forEach { q -> put(q, JSONObject()) }
+        }
         return JSONObject().apply {
             put("songmid", song.id.toString())
             put("id", song.id.toString())
