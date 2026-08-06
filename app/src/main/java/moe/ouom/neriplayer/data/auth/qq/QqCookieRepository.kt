@@ -65,7 +65,8 @@ data class QqAuthBundle(
     fun hasLoginCookies(): Boolean {
         return !cookies["uin"].isNullOrBlank() && (
             !cookies["qm_keyst"].isNullOrBlank() ||
-                !cookies["p_skey"].isNullOrBlank()
+                !cookies["p_skey"].isNullOrBlank() ||
+                !cookies["skey"].isNullOrBlank()
             )
     }
 

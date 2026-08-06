@@ -142,60 +142,69 @@ class QQMusicApi(
      * 登录用户的"我的歌单"(我创建的歌单)。
      *
      * 需要 QQ 登录态 cookie (musicu.fcg 的 music.mysrfDissInfo.queryDissInfo,
-     * 未登录返回 500003)。响应结构: req_1.data.dissinfo[] (或 diss[]):
-     * { disstid, dissname, imgurl, songnum, listennum }
+     * 未登录返回 500003)。分页拉取全部; 响应字段兼容 dissinfo / disslist / diss。
      */
     suspend fun getUserPlaylists(
         uin: String,
         begin: Int = 0,
-        num: Int = 30
+        num: Int = 30,
+        maxPages: Int = 10
     ): List<QQPlaylistSummary> {
         val resolvedUin = uin.trim().trimStart('o')
         if (resolvedUin.isBlank()) return emptyList()
         return withContext(Dispatchers.IO) {
+            val out = ArrayList<QQPlaylistSummary>()
             try {
-                val req = JSONObject().put(
-                    "comm", JSONObject().put("ct", 24).put("cv", 0)
-                ).put(
-                    "req_1", JSONObject()
-                        .put("module", "music.mysrfDissInfo")
-                        .put("method", "queryDissInfo")
-                        .put("param", JSONObject().apply {
-                            put("uin", resolvedUin)
-                            put("begin", begin)
-                            put("num", num)
-                            put("onlyNormal", 0)
-                        })
-                ).toString()
+                var offset = begin
+                var page = 0
+                while (page < maxPages) {
+                    val req = JSONObject().put(
+                        "comm", JSONObject().put("ct", 24).put("cv", 0)
+                    ).put(
+                        "req_1", JSONObject()
+                            .put("module", "music.mysrfDissInfo")
+                            .put("method", "queryDissInfo")
+                            .put("param", JSONObject().apply {
+                                put("uin", resolvedUin)
+                                put("begin", offset)
+                                put("num", num)
+                                put("onlyNormal", 0)
+                            })
+                    ).toString()
 
-                val requestUrl = "https://u.y.qq.com/cgi-bin/musicu.fcg".toHttpUrl().newBuilder()
-                    .addQueryParameter("format", "json")
-                    .addQueryParameter("data", req)
-                    .build()
-                val request = Request.Builder().url(requestUrl)
-                    .header("Referer", QQ_REFERER_PORTAL)
-                    .header("User-Agent", QQ_USER_AGENT)
-                    .build()
-                val responseJson = execute(request)
-                val root = JSONObject(responseJson)
-                val envelope = root.optJSONObject("req_1") ?: return@withContext emptyList()
-                if (envelope.optInt("code") != 0) {
-                    NPLogger.d(TAG, "我的歌单被拒: code=${envelope.optInt("code")}")
-                    return@withContext emptyList()
-                }
-                val data = envelope.optJSONObject("data") ?: return@withContext emptyList()
-                val list = data.optJSONArray("dissinfo")
-                    ?: data.optJSONArray("diss")
-                    ?: return@withContext emptyList()
-                buildList {
+                    val requestUrl = "https://u.y.qq.com/cgi-bin/musicu.fcg".toHttpUrl().newBuilder()
+                        .addQueryParameter("format", "json")
+                        .addQueryParameter("data", req)
+                        .build()
+                    val request = Request.Builder().url(requestUrl)
+                        .header("Referer", QQ_REFERER_PORTAL)
+                        .header("User-Agent", QQ_USER_AGENT)
+                        .build()
+                    val responseJson = execute(request)
+                    val root = JSONObject(responseJson)
+                    val envelope = root.optJSONObject("req_1") ?: break
+                    if (envelope.optInt("code") != 0) {
+                        NPLogger.w(TAG, "我的歌单被拒: code=${envelope.optInt("code")} subcode=${envelope.optInt("subcode")} uin=$resolvedUin")
+                        break
+                    }
+                    val data = envelope.optJSONObject("data") ?: break
+                    val list = data.optJSONArray("dissinfo")
+                        ?: data.optJSONArray("disslist")
+                        ?: data.optJSONArray("diss")
+                        ?: break
+                    var addedInPage = 0
                     for (i in 0 until list.length()) {
                         val item = list.optJSONObject(i) ?: continue
                         val id = item.optString("disstid").toLongOrNull() ?: continue
-                        add(
+                        val title = item.optString("dissname").takeIf { it.isNotBlank() }
+                            ?: item.optString("name").takeIf { it.isNotBlank() }
+                            ?: continue
+                        out.add(
                             QQPlaylistSummary(
                                 dissId = id,
-                                title = item.optString("dissname"),
+                                title = title,
                                 picUrl = item.optString("imgurl")
+                                    .ifBlank { item.optString("pic_url") }
                                     .takeIf { it.isNotBlank() }
                                     ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it },
                                 listenCount = item.optLong("listennum"),
@@ -203,14 +212,19 @@ class QQMusicApi(
                                 creator = null
                             )
                         )
+                        addedInPage += 1
                     }
+                    NPLogger.d(TAG, "我的歌单页 $offset: +$addedInPage (total=${out.size})")
+                    if (addedInPage < num) break
+                    offset += num
+                    page += 1
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                NPLogger.d(TAG, "我的歌单加载失败: ${e.message}")
-                emptyList()
+                NPLogger.w(TAG, "我的歌单加载失败: ${e.message}")
             }
+            out
         }
     }
 

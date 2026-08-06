@@ -41,6 +41,7 @@ import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.bili.BiliClient
 import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicLibraryPlaylist
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
 import moe.ouom.neriplayer.data.auth.youtube.buildRefreshObserverFingerprint
 import moe.ouom.neriplayer.data.platform.youtube.YouTubeFeatureGate
 import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
@@ -334,11 +335,12 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             try {
                 val qqCookies = AppContainer.qqCookieRepo.getCookiesOnce()
                 val qqUin = qqCookies["uin"]?.trim()?.trimStart('o').orEmpty()
+                val loggedIn = AppContainer.qqCookieRepo.getAuthHealthOnce().state ==
+                    SavedCookieAuthState.Valid && qqUin.isNotBlank()
                 val playlists = withContext(Dispatchers.IO) {
-                    if (qqUin.isNotBlank()) {
-                        // 已登录: 显示"我的歌单"(失败时回退热门歌单)
-                        AppContainer.qqMusicApi.getUserPlaylists(qqUin, num = 50)
-                            .ifEmpty { AppContainer.qqMusicApi.getHotPlaylists(count = 50) }
+                    if (loggedIn) {
+                        // 已登录: 显示"我的歌单"(分页拉取全部)
+                        AppContainer.qqMusicApi.getUserPlaylists(qqUin, num = 30)
                     } else {
                         AppContainer.qqMusicApi.getHotPlaylists(count = 50)
                     }
@@ -354,7 +356,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                             source = "qq"
                         )
                     },
-                    qqMusicLoggedIn = qqUin.isNotBlank(),
+                    qqMusicLoggedIn = loggedIn,
                     qqMusicError = null
                 )
             } catch (e: CancellationException) {
