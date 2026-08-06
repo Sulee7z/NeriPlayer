@@ -138,7 +138,7 @@ internal suspend fun PlayerManager.resolveSongUrl(
                     }
                 }
 
-                !isBiliTrack(song) && !isQQMusicTrack(song) -> {
+                !isBiliTrack(song) && !isQQMusicTrack(song) && !isKugouTrack(song) && !isKuWoTrack(song) -> {
                     buildNeteaseOfflineCacheAudioInfo(effectiveNeteaseQuality()) {
                         getLocalizedString(it)
                     }
@@ -189,6 +189,16 @@ internal suspend fun PlayerManager.resolveSongUrl(
                 sideEffects = resolverSideEffects
             )
             isQQMusicTrack(song) -> getQQMusicAudioUrl(
+                song = song,
+                suppressError = suppressError,
+                sideEffects = resolverSideEffects
+            )
+            isKugouTrack(song) -> getKugouAudioUrl(
+                song = song,
+                suppressError = suppressError,
+                sideEffects = resolverSideEffects
+            )
+            isKuWoTrack(song) -> getKuwoAudioUrl(
                 song = song,
                 suppressError = suppressError,
                 sideEffects = resolverSideEffects
@@ -289,6 +299,16 @@ internal suspend fun PlayerManager.resolveShareableListenTogetherStreamUrl(
                 suppressError = true,
                 sideEffects = sideEffects
             )
+            isKugouTrack(song) -> getKugouAudioUrl(
+                song = song,
+                suppressError = true,
+                sideEffects = sideEffects
+            )
+            isKuWoTrack(song) -> getKuwoAudioUrl(
+                song = song,
+                suppressError = true,
+                sideEffects = sideEffects
+            )
             else -> getNeteaseSongUrl(
                 song = song,
                 suppressError = true,
@@ -320,7 +340,7 @@ internal suspend fun PlayerManager.resolveShareableListenTogetherStreamUrls(
 
     addResult(resolveShareableListenTogetherStreamUrl(song))
     when {
-        isBiliTrack(song) || isQQMusicTrack(song) -> Unit
+        isBiliTrack(song) || isQQMusicTrack(song) || isKugouTrack(song) || isKuWoTrack(song) -> Unit
         isYouTubeMusicTrack(song) && urls.size < MAX_LISTEN_TOGETHER_STREAM_URL_CANDIDATES -> {
             addResult(
                 getYouTubeMusicAudioUrl(
@@ -354,7 +374,7 @@ private suspend fun PlayerManager.resolveAdditionalNeteaseShareableUrls(
     song: SongItem,
     maxCount: Int
 ): List<String> = withContext(Dispatchers.IO) {
-    if (maxCount <= 0 || isLocalSong(song) || isBiliTrack(song) || isYouTubeMusicTrack(song) || isQQMusicTrack(song)) {
+    if (maxCount <= 0 || isLocalSong(song) || isBiliTrack(song) || isYouTubeMusicTrack(song) || isQQMusicTrack(song) || isKugouTrack(song) || isKuWoTrack(song)) {
         return@withContext emptyList()
     }
     val urls = linkedSetOf<String>()
@@ -1276,6 +1296,98 @@ private suspend fun PlayerManager.getQQMusicAudioUrl(
     } catch (e: Exception) {
         if (e is CancellationException) throw e
         NPLogger.e("NERI-PlayerManager", "QQ音乐解析失败", e)
+        if (!suppressError) {
+            sideEffects.emitError {
+                postPlayerEvent(
+                    PlayerEvent.ShowError(
+                        getLocalizedString(
+                            R.string.player_playback_url_error_detail,
+                            e.message.orEmpty()
+                        )
+                    )
+                )
+            }
+        }
+        SongUrlResult.Failure
+    }
+}
+
+/**
+ * 酷狗音乐歌曲播放地址解析(hash → getSongInfo 直链)。
+ */
+private suspend fun PlayerManager.getKugouAudioUrl(
+    song: SongItem,
+    suppressError: Boolean = false,
+    sideEffects: RefreshResolverSideEffects = RefreshResolverSideEffects()
+): SongUrlResult = withContext(Dispatchers.IO) {
+    try {
+        val hash = song.audioId?.takeIf { it.isNotBlank() } ?: return@withContext SongUrlResult.Failure
+        val url = AppContainer.kugouApi.resolvePlayUrl(hash)
+        if (!url.isNullOrBlank()) {
+            return@withContext SongUrlResult.Success(
+                url = url,
+                durationMs = song.durationMs.takeIf { it > 0L }
+            )
+        }
+        if (!suppressError) {
+            sideEffects.emitError {
+                postPlayerEvent(
+                    PlayerEvent.ShowError(
+                        getLocalizedString(R.string.player_qq_music_no_play_url)
+                    )
+                )
+            }
+        }
+        SongUrlResult.Failure
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
+        NPLogger.e("NERI-PlayerManager", "酷狗音乐解析失败", e)
+        if (!suppressError) {
+            sideEffects.emitError {
+                postPlayerEvent(
+                    PlayerEvent.ShowError(
+                        getLocalizedString(
+                            R.string.player_playback_url_error_detail,
+                            e.message.orEmpty()
+                        )
+                    )
+                )
+            }
+        }
+        SongUrlResult.Failure
+    }
+}
+
+/**
+ * 酷我音乐歌曲播放地址解析(mid → antiserver 直链)。
+ */
+private suspend fun PlayerManager.getKuwoAudioUrl(
+    song: SongItem,
+    suppressError: Boolean = false,
+    sideEffects: RefreshResolverSideEffects = RefreshResolverSideEffects()
+): SongUrlResult = withContext(Dispatchers.IO) {
+    try {
+        val mid = song.audioId?.takeIf { it.isNotBlank() } ?: return@withContext SongUrlResult.Failure
+        val url = AppContainer.kuwoApi.resolvePlayUrl(mid)
+        if (!url.isNullOrBlank()) {
+            return@withContext SongUrlResult.Success(
+                url = url,
+                durationMs = song.durationMs.takeIf { it > 0L }
+            )
+        }
+        if (!suppressError) {
+            sideEffects.emitError {
+                postPlayerEvent(
+                    PlayerEvent.ShowError(
+                        getLocalizedString(R.string.player_qq_music_no_play_url)
+                    )
+                )
+            }
+        }
+        SongUrlResult.Failure
+    } catch (e: Exception) {
+        if (e is CancellationException) throw e
+        NPLogger.e("NERI-PlayerManager", "酷我音乐解析失败", e)
         if (!suppressError) {
             sideEffects.emitError {
                 postPlayerEvent(

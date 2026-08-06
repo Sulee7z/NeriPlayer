@@ -177,6 +177,8 @@ enum class LibraryTab(val labelResId: Int) {
     NETEASEALBUM(R.string.library_tab_netease_album),
     BILI(R.string.library_tab_bilibili),
     QQMUSIC(R.string.library_tab_qqmusic),
+    KUGOU(R.string.library_tab_kugou),
+    KUWO(R.string.library_tab_kuwo),
     FTP(R.string.library_tab_ftp)
 }
 
@@ -267,6 +269,8 @@ internal fun libraryTabDisplayOrder(
             LibraryTab.NETEASE,
             LibraryTab.BILI,
             LibraryTab.QQMUSIC,
+            LibraryTab.KUGOU,
+            LibraryTab.KUWO,
             LibraryTab.FTP
         )
     } else {
@@ -277,6 +281,8 @@ internal fun libraryTabDisplayOrder(
             LibraryTab.YTMUSIC,
             LibraryTab.BILI,
             LibraryTab.QQMUSIC,
+            LibraryTab.KUGOU,
+            LibraryTab.KUWO,
             LibraryTab.FTP
         )
     }
@@ -309,6 +315,8 @@ fun LibraryScreen(
     youtubeMusicListState: LazyListState,
     biliListState: LazyListState,
     qqMusicListState: LazyListState,
+    kugouListState: LazyListState,
+    kuwoListState: LazyListState,
     topAppBarState: TopAppBarState,
     onLocalPlaylistClick: (LocalPlaylist) -> Unit = {},
     onLocalArtistClick: (LocalArtistSummary) -> Unit = {},
@@ -319,6 +327,8 @@ fun LibraryScreen(
     onYouTubeMusicPlaylistClick: (YouTubeMusicPlaylist) -> Unit = {},
     onBiliPlaylistClick: (BiliPlaylist) -> Unit = {},
     onQqMusicPlaylistClick: (PlaylistSummary) -> Unit = {},
+    onKugouPlaylistClick: (PlaylistSummary) -> Unit = {},
+    onKuwoPlaylistClick: (PlaylistSummary) -> Unit = {},
     onOpenRecent: () -> Unit = {},
     onOpenStats: () -> Unit = {},
     offlineMode: Boolean = false
@@ -509,6 +519,32 @@ fun LibraryScreen(
                             listState = qqMusicListState,
                             onClick = onQqMusicPlaylistClick,
                             onRetry = { vm.refreshQqMusicPlaylists() },
+                            offlineMode = offlineMode
+                        )
+
+                        LibraryTab.KUGOU -> ThirdPartyPlaylistList(
+                            playlists = ui.kugouPlaylists,
+                            error = ui.kugouError,
+                            loggedIn = ui.kugouLoggedIn,
+                            mineHint = stringResource(R.string.library_kugou_mine),
+                            hotHint = stringResource(R.string.library_kugou_hot_hint),
+                            emptyText = stringResource(R.string.library_kugou_empty),
+                            listState = kugouListState,
+                            onClick = onKugouPlaylistClick,
+                            onRetry = { vm.refreshKugouPlaylists() },
+                            offlineMode = offlineMode
+                        )
+
+                        LibraryTab.KUWO -> ThirdPartyPlaylistList(
+                            playlists = ui.kuwoPlaylists,
+                            error = ui.kuwoError,
+                            loggedIn = ui.kuwoLoggedIn,
+                            mineHint = stringResource(R.string.library_kuwo_mine),
+                            hotHint = stringResource(R.string.library_kuwo_hot_hint),
+                            emptyText = stringResource(R.string.library_kuwo_empty),
+                            listState = kuwoListState,
+                            onClick = onKuwoPlaylistClick,
+                            onRetry = { vm.refreshKuwoPlaylists() },
                             offlineMode = offlineMode
                         )
 
@@ -1773,13 +1809,161 @@ private fun LocalPlaylistList(
                                         modifier = Modifier.size(56.dp)
                                     )
                                 }
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ThirdPartyPlaylistList(
+    playlists: List<PlaylistSummary>,
+    error: String?,
+    loggedIn: Boolean,
+    mineHint: String,
+    hotHint: String,
+    emptyText: String,
+    listState: LazyListState,
+    onClick: (PlaylistSummary) -> Unit,
+    onRetry: () -> Unit,
+    offlineMode: Boolean
+) {
+    val context = LocalContext.current
+    val miniPlayerHeight = LocalMiniPlayerHeight.current
+    val cardShape = RoundedCornerShape(12.dp)
+
+    LazyColumn(
+        state = listState,
+        contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 8.dp + miniPlayerHeight),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item(key = "third_party_music_header") {
+            Text(
+                text = if (loggedIn) mineHint else hotHint,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+            )
+        }
+        if (playlists.isEmpty()) {
+            item {
+                Card(
+                    shape = cardShape,
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .clip(cardShape)
+                ) {
+                    ListItem(
+                        headlineContent = {
+                            Text(
+                                text = error ?: emptyText,
+                                color = if (error != null) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    Color.Unspecified
+                                }
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                text = stringResource(R.string.library_qqmusic_hint),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        leadingContent = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(56.dp)
+                            )
+                        },
+                        trailingContent = {
+                            IconButton(onClick = onRetry) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Refresh,
+                                    contentDescription = stringResource(R.string.action_retry)
+                                )
                             }
                         }
                     )
                 }
             }
         }
+        items(
+            items = playlists,
+            key = { "tp:${it.id}" }
+        ) { pl ->
+            Card(
+                shape = cardShape,
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                modifier = Modifier
+                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .animateItem()
+                    .clip(cardShape)
+                    .clickable { onClick(pl) }
+            ) {
+                ListItem(
+                    headlineContent = { Text(pl.name) },
+                    supportingContent = {
+                        val countText = if (pl.trackCount > 0) {
+                            pluralStringResource(R.plurals.library_song_count, pl.trackCount, pl.trackCount)
+                        } else {
+                            ""
+                        }
+                        val playsText = if (pl.playCount > 0) {
+                            stringResource(
+                                R.string.library_qqmusic_plays,
+                                formatPlayCount(context, pl.playCount)
+                            )
+                        } else {
+                            ""
+                        }
+                        Text(
+                            listOf(playsText, countText)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" · "),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    leadingContent = {
+                        if (pl.picUrl.isNotEmpty()) {
+                            AsyncImage(
+                                model = offlineCachedImageRequest(
+                                    context = context,
+                                    data = pl.picUrl,
+                                    sizePx = 192,
+                                    allowHardware = false,
+                                    offlineMode = offlineMode
+                                ),
+                                contentDescription = null,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(56.dp)
+                            )
+                        }
+                    }
+                )
+            }
+        }
     }
+}
     }
 }
 

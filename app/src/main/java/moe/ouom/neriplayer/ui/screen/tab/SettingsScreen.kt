@@ -68,6 +68,7 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.RestartAlt
@@ -174,6 +175,8 @@ import moe.ouom.neriplayer.ui.screen.tab.settings.about.SettingsAboutContent
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.LoginSuccessDialog
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsBiliAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsQqAuthDialogs
+import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsKugouAuthDialogs
+import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsKuwoAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsNeteaseAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.auth.SettingsYouTubeAuthDialogs
 import moe.ouom.neriplayer.ui.screen.tab.settings.component.LazyAnimatedVisibility
@@ -228,6 +231,9 @@ import moe.ouom.neriplayer.ui.viewmodel.auth.BiliAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.BiliAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.QqAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.QqAuthViewModel
+import moe.ouom.neriplayer.ui.viewmodel.auth.KugouAuthViewModel
+import moe.ouom.neriplayer.ui.viewmodel.auth.KuwoAuthViewModel
+import moe.ouom.neriplayer.ui.viewmodel.auth.KugouKuwoAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.YouTubeAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.YouTubeAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.debug.NeteaseAuthEvent
@@ -665,6 +671,12 @@ fun SettingsScreen(
     var biliSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
     val qqVm: QqAuthViewModel = viewModel()
     var qqSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
+    val kugouVm: KugouAuthViewModel = viewModel()
+    var showKugouSheet by remember { mutableStateOf(false) }
+    var showKugouSavedCookieDialog by remember { mutableStateOf(false) }
+    val kuwoVm: KuwoAuthViewModel = viewModel()
+    var showKuwoSheet by remember { mutableStateOf(false) }
+    var showKuwoSavedCookieDialog by remember { mutableStateOf(false) }
     var neteaseSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
     val youtubeVm: YouTubeAuthViewModel = viewModel()
     var youtubeSheetInitialTab by rememberSaveable { mutableIntStateOf(0) }
@@ -1114,6 +1126,40 @@ fun SettingsScreen(
         }
     }
 
+    LaunchedEffect(kugouVm) {
+        kugouVm.events.collect { e ->
+            when (e) {
+                is KugouKuwoAuthEvent.ShowSnack -> inlineMsg = e.message
+                KugouKuwoAuthEvent.LoginSuccess -> {
+                    showKugouSavedCookieDialog = false
+                    inlineMsg = null
+                    showKugouSheet = false
+                    loginSuccessTitle = composeResources.getString(
+                        R.string.settings_kugou_login_success
+                    )
+                    kugouVm.refreshAuthHealth()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(kuwoVm) {
+        kuwoVm.events.collect { e ->
+            when (e) {
+                is KugouKuwoAuthEvent.ShowSnack -> inlineMsg = e.message
+                KugouKuwoAuthEvent.LoginSuccess -> {
+                    showKuwoSavedCookieDialog = false
+                    inlineMsg = null
+                    showKuwoSheet = false
+                    loginSuccessTitle = composeResources.getString(
+                        R.string.settings_kuwo_login_success
+                    )
+                    kuwoVm.refreshAuthHealth()
+                }
+            }
+        }
+    }
+
     val isSettingsSplitLayout = currentWindowWidthDp() >= 840.dp
     var activeSettingsPage by rememberSaveable {
         mutableStateOf(if (isSettingsSplitLayout) SettingsPage.General else null)
@@ -1491,6 +1537,8 @@ fun SettingsScreen(
                             qqVm = qqVm,
                             youtubeVm = youtubeVm,
                             neteaseVm = neteaseVm,
+                            kugouVm = kugouVm,
+                            kuwoVm = kuwoVm,
                             onOpenBiliSheet = { tab ->
                                 inlineMsg = null
                                 biliSheetInitialTab = tab
@@ -1501,6 +1549,14 @@ fun SettingsScreen(
                                 qqSheetInitialTab = tab
                                 showQqSheet = true
                             },
+                            onOpenKugouSheet = {
+                                inlineMsg = null
+                                showKugouSheet = true
+                            },
+                            onOpenKuwoSheet = {
+                                inlineMsg = null
+                                showKuwoSheet = true
+                            },
                             onOpenBiliSavedCookieDialog = {
                                 inlineMsg = null
                                 showBiliSavedCookieDialog = true
@@ -1508,6 +1564,14 @@ fun SettingsScreen(
                             onOpenQqSavedCookieDialog = {
                                 inlineMsg = null
                                 showQqSavedCookieDialog = true
+                            },
+                            onOpenKugouSavedCookieDialog = {
+                                inlineMsg = null
+                                showKugouSavedCookieDialog = true
+                            },
+                            onOpenKuwoSavedCookieDialog = {
+                                inlineMsg = null
+                                showKuwoSavedCookieDialog = true
                             },
                             onOpenYouTubeSavedCookieDialog = {
                                 inlineMsg = null
@@ -2278,6 +2342,42 @@ fun SettingsScreen(
             qqVm.clearCookies()
         },
         onBrowserLogin = null
+    )
+
+    SettingsKugouAuthDialogs(
+        showSheet = showKugouSheet,
+        onDismissSheet = { showKugouSheet = false },
+        inlineMsg = inlineMsg,
+        onInlineMsgChange = { inlineMsg = it },
+        vm = kugouVm,
+        showSavedCookieDialog = showKugouSavedCookieDialog,
+        onDismissSavedCookieDialog = { showKugouSavedCookieDialog = false },
+        onOpenSheet = {
+            inlineMsg = null
+            showKugouSheet = true
+        },
+        onLogout = {
+            showKugouSavedCookieDialog = false
+            kugouVm.clearCookies()
+        }
+    )
+
+    SettingsKuwoAuthDialogs(
+        showSheet = showKuwoSheet,
+        onDismissSheet = { showKuwoSheet = false },
+        inlineMsg = inlineMsg,
+        onInlineMsgChange = { inlineMsg = it },
+        vm = kuwoVm,
+        showSavedCookieDialog = showKuwoSavedCookieDialog,
+        onDismissSavedCookieDialog = { showKuwoSavedCookieDialog = false },
+        onOpenSheet = {
+            inlineMsg = null
+            showKuwoSheet = true
+        },
+        onLogout = {
+            showKuwoSavedCookieDialog = false
+            kuwoVm.clearCookies()
+        }
     )
 
     SettingsYouTubeAuthDialogs(
@@ -4022,10 +4122,16 @@ private fun SettingsLoginExpandedContent(
     qqVm: QqAuthViewModel,
     youtubeVm: YouTubeAuthViewModel,
     neteaseVm: NeteaseAuthViewModel,
+    kugouVm: KugouAuthViewModel,
+    kuwoVm: KuwoAuthViewModel,
     onOpenBiliSheet: (Int) -> Unit,
     onOpenQqSheet: (Int) -> Unit,
+    onOpenKugouSheet: () -> Unit,
+    onOpenKuwoSheet: () -> Unit,
     onOpenBiliSavedCookieDialog: () -> Unit,
     onOpenQqSavedCookieDialog: () -> Unit,
+    onOpenKugouSavedCookieDialog: () -> Unit,
+    onOpenKuwoSavedCookieDialog: () -> Unit,
     onOpenYouTubeSavedCookieDialog: () -> Unit,
     onOpenNeteaseSavedCookieDialog: () -> Unit,
     onOpenYouTubeSheet: () -> Unit,
@@ -4035,12 +4141,16 @@ private fun SettingsLoginExpandedContent(
     val qqAuthUiState by qqVm.uiState.collectAsStateWithLifecycleCompat()
     val youtubeAuthUiState by youtubeVm.uiState.collectAsStateWithLifecycleCompat()
     val neteaseAuthUiState by neteaseVm.uiState.collectAsStateWithLifecycleCompat()
+    val kugouAuthUiState by kugouVm.uiState.collectAsStateWithLifecycleCompat()
+    val kuwoAuthUiState by kuwoVm.uiState.collectAsStateWithLifecycleCompat()
 
-    LaunchedEffect(biliVm, qqVm, youtubeVm, neteaseVm) {
+    LaunchedEffect(biliVm, qqVm, youtubeVm, neteaseVm, kugouVm, kuwoVm) {
         biliVm.refreshAuthHealth()
         qqVm.refreshAuthHealth()
         neteaseVm.refreshAuthHealth()
         youtubeVm.refreshAuthHealth()
+        kugouVm.refreshAuthHealth()
+        kuwoVm.refreshAuthHealth()
     }
 
     val biliStatusText = when (biliAuthUiState.health.state) {
@@ -4119,6 +4229,40 @@ private fun SettingsLoginExpandedContent(
                 stringResource(R.string.settings_qq_status_saved_invalid)
             } else {
                 stringResource(R.string.settings_qq_status_missing)
+            }
+        }
+    }
+    val kugouStatusText = when (kugouAuthUiState.health.state) {
+        SavedCookieAuthState.Valid -> {
+            val relativeTime = kugouAuthUiState.health.savedAt
+                .takeIf { it > 0L }
+                ?.let { formatSyncTime(it) }
+                ?: stringResource(R.string.time_just_now)
+            stringResource(R.string.settings_kugou_status_valid, relativeTime)
+        }
+        SavedCookieAuthState.Checking,
+        SavedCookieAuthState.Missing -> {
+            if (kugouAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_kugou_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_kugou_status_missing)
+            }
+        }
+    }
+    val kuwoStatusText = when (kuwoAuthUiState.health.state) {
+        SavedCookieAuthState.Valid -> {
+            val relativeTime = kuwoAuthUiState.health.savedAt
+                .takeIf { it > 0L }
+                ?.let { formatSyncTime(it) }
+                ?: stringResource(R.string.time_just_now)
+            stringResource(R.string.settings_kuwo_status_valid, relativeTime)
+        }
+        SavedCookieAuthState.Checking,
+        SavedCookieAuthState.Missing -> {
+            if (kuwoAuthUiState.hasSavedCookies) {
+                stringResource(R.string.settings_kuwo_status_saved_invalid)
+            } else {
+                stringResource(R.string.settings_kuwo_status_missing)
             }
         }
     }
@@ -4215,6 +4359,52 @@ private fun SettingsLoginExpandedContent(
                         onOpenQqSavedCookieDialog()
                     } else {
                         onOpenQqSheet(0)
+                    }
+                }
+            ),
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+        )
+
+        ListItem(
+            leadingContent = {
+                Icon(
+                    imageVector = Icons.Outlined.MusicNote,
+                    contentDescription = stringResource(R.string.platform_kugou),
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            headlineContent = { Text(stringResource(R.string.platform_kugou)) },
+            supportingContent = { Text(kugouStatusText) },
+            modifier = Modifier.settingsItemClickable(
+                onClick = {
+                    if (kugouAuthUiState.hasSavedCookies) {
+                        onOpenKugouSavedCookieDialog()
+                    } else {
+                        onOpenKugouSheet()
+                    }
+                }
+            ),
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+        )
+
+        ListItem(
+            leadingContent = {
+                Icon(
+                    imageVector = Icons.Outlined.MusicNote,
+                    contentDescription = stringResource(R.string.platform_kuwo),
+                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            },
+            headlineContent = { Text(stringResource(R.string.platform_kuwo)) },
+            supportingContent = { Text(kuwoStatusText) },
+            modifier = Modifier.settingsItemClickable(
+                onClick = {
+                    if (kuwoAuthUiState.hasSavedCookies) {
+                        onOpenKuwoSavedCookieDialog()
+                    } else {
+                        onOpenKuwoSheet()
                     }
                 }
             ),

@@ -65,6 +65,8 @@ import moe.ouom.neriplayer.ui.screen.playlist.NeteaseAlbumDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteasePlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.BiliPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen
+import moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlaylistDetailScreen
+import moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlatform
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.tab.LibraryTab
 import moe.ouom.neriplayer.ui.screen.tab.LibraryScreen
@@ -121,6 +123,10 @@ sealed class LibrarySelectedItem : Parcelable {
     data class YouTubeMusic(val playlist: YouTubeMusicPlaylist) : LibrarySelectedItem()
     @Parcelize
     data class QQMusic(val playlist: PlaylistSummary) : LibrarySelectedItem()
+    @Parcelize
+    data class Kugou(val playlist: PlaylistSummary) : LibrarySelectedItem()
+    @Parcelize
+    data class Kuwo(val playlist: PlaylistSummary) : LibrarySelectedItem()
 }
 
 private val LibrarySelectedItem?.navigationDepth: Int
@@ -284,6 +290,8 @@ fun LibraryHostScreen(
     val youtubeMusicListSaver: Saver<LazyListState, *> = LazyListState.Saver
     val biliListSaver: Saver<LazyListState, *> = LazyListState.Saver
     val qqMusicListSaver: Saver<LazyListState, *> = LazyListState.Saver
+    val kugouListSaver: Saver<LazyListState, *> = LazyListState.Saver
+    val kuwoListSaver: Saver<LazyListState, *> = LazyListState.Saver
 
     val localListState = rememberSaveable(saver = localListSaver) {
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
@@ -304,6 +312,12 @@ fun LibraryHostScreen(
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
     }
     val qqMusicListState = rememberSaveable(saver = qqMusicListSaver) {
+        LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
+    }
+    val kugouListState = rememberSaveable(saver = kugouListSaver) {
+        LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
+    }
+    val kuwoListState = rememberSaveable(saver = kuwoListSaver) {
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
     }
     val topAppBarState = rememberTopAppBarState()
@@ -436,6 +450,8 @@ fun LibraryHostScreen(
                             youtubeMusicListState = youtubeMusicListState,
                             biliListState = biliListState,
                             qqMusicListState = qqMusicListState,
+                            kugouListState = kugouListState,
+                            kuwoListState = kuwoListState,
                             topAppBarState = topAppBarState,
                             offlineMode = offlineMode,
                             onLocalPlaylistClick = { playlist ->
@@ -568,6 +584,32 @@ fun LibraryHostScreen(
                                         picUrl = playlist.picUrl,
                                         trackCount = playlist.trackCount,
                                         source = "qq"
+                                    )
+                                }
+                            },
+                            onKugouPlaylistClick = { playlist ->
+                                skipDetailCloseAnimation = false
+                                openLibrarySelectedItem(LibrarySelectedItem.Kugou(playlist))
+                                AppContainer.launchBackgroundIo {
+                                    AppContainer.playlistUsageRepo.recordOpen(
+                                        id = playlist.id,
+                                        name = playlist.name,
+                                        picUrl = playlist.picUrl,
+                                        trackCount = playlist.trackCount,
+                                        source = "kugou"
+                                    )
+                                }
+                            },
+                            onKuwoPlaylistClick = { playlist ->
+                                skipDetailCloseAnimation = false
+                                openLibrarySelectedItem(LibrarySelectedItem.Kuwo(playlist))
+                                AppContainer.launchBackgroundIo {
+                                    AppContainer.playlistUsageRepo.recordOpen(
+                                        id = playlist.id,
+                                        name = playlist.name,
+                                        picUrl = playlist.picUrl,
+                                        trackCount = playlist.trackCount,
+                                        source = "kuwo"
                                     )
                                 }
                             },
@@ -722,6 +764,30 @@ fun LibraryHostScreen(
                                 offlineMode = offlineMode
                             )
                         }
+
+                        is LibrarySelectedItem.Kugou -> {
+                            KugouKuwoPlaylistDetailScreen(
+                                platform = KugouKuwoPlatform.KUGOU,
+                                playlist = current.playlist,
+                                onBack = { selected = null },
+                                onSongClick = { songs, index ->
+                                    onSongClick(songs, index)
+                                },
+                                offlineMode = offlineMode
+                            )
+                        }
+
+                        is LibrarySelectedItem.Kuwo -> {
+                            KugouKuwoPlaylistDetailScreen(
+                                platform = KugouKuwoPlatform.KUWO,
+                                playlist = current.playlist,
+                                onBack = { selected = null },
+                                onSongClick = { songs, index ->
+                                    onSongClick(songs, index)
+                                },
+                                offlineMode = offlineMode
+                            )
+                        }
                         }
                     }
                 }
@@ -777,6 +843,14 @@ private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
                 "type" to "qqmusic",
                 "playlist" to item.playlist.toSaveMap()
             )
+            is LibrarySelectedItem.Kugou -> hashMapOf(
+                "type" to "kugou",
+                "playlist" to item.playlist.toSaveMap()
+            )
+            is LibrarySelectedItem.Kuwo -> hashMapOf(
+                "type" to "kuwo",
+                "playlist" to item.playlist.toSaveMap()
+            )
         }
     },
     restore = { saved ->
@@ -808,6 +882,8 @@ private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
             "bili" -> restoreBiliPlaylist(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Bili(it) }
             "ytmusic" -> restoreYouTubeMusicPlaylist(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.YouTubeMusic(it) }
             "qqmusic" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.QQMusic(it) }
+            "kugou" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Kugou(it) }
+            "kuwo" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Kuwo(it) }
             else -> null
         }
     }

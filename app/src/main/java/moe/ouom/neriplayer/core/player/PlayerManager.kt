@@ -255,6 +255,8 @@ object PlayerManager {
     const val BILI_SOURCE_TAG = "Bilibili"
     const val NETEASE_SOURCE_TAG = "Netease"
     const val QQ_SOURCE_TAG = "QQMusic"
+    const val KUGOU_SOURCE_TAG = "Kugou"
+    const val KUWO_SOURCE_TAG = "Kuwo"
 
     internal data class UsbExclusiveLoudPlaybackConfirmation(
         val id: Long,
@@ -1418,6 +1420,14 @@ object PlayerManager {
 
     internal fun isQQMusicTrack(song: SongItem): Boolean {
         return song.album.startsWith(QQ_SOURCE_TAG)
+    }
+
+    internal fun isKugouTrack(song: SongItem): Boolean {
+        return song.album.startsWith(KUGOU_SOURCE_TAG)
+    }
+
+    internal fun isKuWoTrack(song: SongItem): Boolean {
+        return song.album.startsWith(KUWO_SOURCE_TAG)
     }
     internal fun shouldPersistEmbeddedLyrics(song: SongItem): Boolean {
         return song.matchedLyric != null ||

@@ -1028,6 +1028,34 @@
     <string name="login_paste_bili_cookie_hint">粘贴 Cookie（例如：SESSDATA=…; bili_jct=…）</string>
     <string name="login_paste_qq_cookie_hint">粘贴 Cookie（例如：uin=…; qm_keyst=…; p_skey=…）</string>
     <string name="login_paste_youtube_cookie_hint">粘贴 Cookie 或浏览器请求头（需包含 Cookie）</string>
+    <string name="login_open_kugou">打开酷狗音乐官网登录</string>
+    <string name="login_open_kuwo">打开酷我音乐官网登录</string>
+    <string name="login_paste_kugou_cookie_hint">粘贴 Cookie（例如：openid=…; userid=…）</string>
+    <string name="login_paste_kuwo_cookie_hint">粘贴 Cookie（例如：kw_token=…; csrf=…）</string>
+    <string name="settings_kugou_login_success">酷狗音乐登录成功</string>
+    <string name="settings_kuwo_login_success">酷我音乐登录成功</string>
+    <string name="settings_kugou_status_valid">已保存，最近更新于 %1$s</string>
+    <string name="settings_kugou_status_saved_invalid">检测到已保存的 Cookie，但当前可能无效，点击可刷新或退出登录</string>
+    <string name="settings_kugou_status_missing">未检测到可用 Cookie，点击重新登录或导入</string>
+    <string name="settings_kuwo_status_valid">已保存，最近更新于 %1$s</string>
+    <string name="settings_kuwo_status_saved_invalid">检测到已保存的 Cookie，但当前可能无效，点击可刷新或退出登录</string>
+    <string name="settings_kuwo_status_missing">未检测到可用 Cookie，点击重新登录或导入</string>
+    <string name="settings_kugou_saved_cookie_title">检测到已保存的酷狗音乐登录态</string>
+    <string name="settings_kugou_saved_cookie_message">检测到本地已保存酷狗音乐 Cookie。你可以退出登录清空旧信息，或继续登录以刷新。</string>
+    <string name="settings_kuwo_saved_cookie_title">检测到已保存的酷我音乐登录态</string>
+    <string name="settings_kuwo_saved_cookie_message">检测到本地已保存酷我音乐 Cookie。你可以退出登录清空旧信息，或继续登录以刷新。</string>
+    <string name="settings_kugou_login_hint">在酷狗音乐官网登录后，复制浏览器中的 Cookie 粘贴导入</string>
+    <string name="settings_kuwo_login_hint">在酷我音乐官网登录后，复制浏览器中的 Cookie 粘贴导入</string>
+    <string name="platform_kugou">酷狗音乐</string>
+    <string name="platform_kuwo">酷我音乐</string>
+    <string name="library_tab_kugou">酷狗</string>
+    <string name="library_tab_kuwo">酷我</string>
+    <string name="library_kugou_mine">我的酷狗音乐歌单</string>
+    <string name="library_kugou_hot_hint">热门酷狗音乐歌单</string>
+    <string name="library_kugou_empty">暂时没有可展示的酷狗音乐歌单</string>
+    <string name="library_kuwo_mine">我的酷我音乐歌单</string>
+    <string name="library_kuwo_hot_hint">热门酷我音乐歌单</string>
+    <string name="library_kuwo_empty">暂时没有可展示的酷我音乐歌单</string>
     <string name="settings_cookie_input_hint">请输入 Cookie</string>
 
     <!-- Settings / General -->

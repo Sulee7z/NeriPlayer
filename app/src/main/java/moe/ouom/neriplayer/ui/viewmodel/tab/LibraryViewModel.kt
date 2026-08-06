@@ -68,7 +68,13 @@ data class LibraryUiState(
     val biliError: String? = null,
     val qqMusicPlaylists: List<PlaylistSummary> = emptyList(),
     val qqMusicError: String? = null,
-    val qqMusicLoggedIn: Boolean = false
+    val qqMusicLoggedIn: Boolean = false,
+    val kugouPlaylists: List<PlaylistSummary> = emptyList(),
+    val kugouError: String? = null,
+    val kugouLoggedIn: Boolean = false,
+    val kuwoPlaylists: List<PlaylistSummary> = emptyList(),
+    val kuwoError: String? = null,
+    val kuwoLoggedIn: Boolean = false
 )
 
 @Suppress("unused")
@@ -182,6 +188,20 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             AppContainer.qqCookieRepo.authHealthFlow.collect { health ->
                 refreshQqMusicPlaylists()
+            }
+        }
+
+        // 酷狗音乐
+        viewModelScope.launch {
+            AppContainer.kugouCookieRepo.cookieFlow.collect { cookies ->
+                refreshKugouPlaylists()
+            }
+        }
+
+        // 酷我音乐
+        viewModelScope.launch {
+            AppContainer.kuwoCookieRepo.cookieFlow.collect { cookies ->
+                refreshKuwoPlaylists()
             }
         }
     }
@@ -376,6 +396,100 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.value = _uiState.value.copy(
                     qqMusicError = e.message
                 )
+            }
+        }
+    }
+
+    fun refreshKugouPlaylists() {
+        viewModelScope.launch {
+            try {
+                val cookies = AppContainer.kugouCookieRepo.getCookiesOnce()
+                val loggedIn = cookies.isNotEmpty()
+                val playlists = withContext(Dispatchers.IO) {
+                    if (loggedIn) {
+                        val mine = runCatching {
+                            AppContainer.kugouApi.getUserPlaylists(
+                                cookies["openid"]?.takeIf { it.isNotBlank() }
+                                    ?: cookies["userid"].orEmpty()
+                            )
+                        }.getOrElse { error ->
+                            NPLogger.w("LibraryViewModel", "酷狗我的歌单加载失败: ${error.message}")
+                            emptyList()
+                        }
+                        if (mine.isNotEmpty()) {
+                            mine
+                        } else {
+                            AppContainer.kugouApi.getHotPlaylists(count = 30)
+                        }
+                    } else {
+                        AppContainer.kugouApi.getHotPlaylists(count = 30)
+                    }
+                }
+                _uiState.value = _uiState.value.copy(
+                    kugouPlaylists = playlists.map { summary ->
+                        PlaylistSummary(
+                            id = summary.specialId,
+                            name = summary.title,
+                            picUrl = summary.picUrl.orEmpty(),
+                            playCount = summary.listenCount,
+                            trackCount = summary.songCount,
+                            source = "kugou"
+                        )
+                    },
+                    kugouLoggedIn = loggedIn,
+                    kugouError = null
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(kugouError = e.message)
+            }
+        }
+    }
+
+    fun refreshKuwoPlaylists() {
+        viewModelScope.launch {
+            try {
+                val cookies = AppContainer.kuwoCookieRepo.getCookiesOnce()
+                val loggedIn = cookies.isNotEmpty()
+                val playlists = withContext(Dispatchers.IO) {
+                    if (loggedIn) {
+                        val mine = runCatching {
+                            AppContainer.kuwoApi.getUserPlaylists(
+                                cookies["kwpp_userid"]?.takeIf { it.isNotBlank() }
+                                    ?: cookies["uid"].orEmpty()
+                            )
+                        }.getOrElse { error ->
+                            NPLogger.w("LibraryViewModel", "酷我我的歌单加载失败: ${error.message}")
+                            emptyList()
+                        }
+                        if (mine.isNotEmpty()) {
+                            mine
+                        } else {
+                            AppContainer.kuwoApi.getHotPlaylists(count = 30)
+                        }
+                    } else {
+                        AppContainer.kuwoApi.getHotPlaylists(count = 30)
+                    }
+                }
+                _uiState.value = _uiState.value.copy(
+                    kuwoPlaylists = playlists.map { summary ->
+                        PlaylistSummary(
+                            id = summary.playlistId,
+                            name = summary.title,
+                            picUrl = summary.picUrl.orEmpty(),
+                            playCount = summary.listenCount,
+                            trackCount = summary.songCount,
+                            source = "kuwo"
+                        )
+                    },
+                    kuwoLoggedIn = loggedIn,
+                    kuwoError = null
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(kuwoError = e.message)
             }
         }
     }
