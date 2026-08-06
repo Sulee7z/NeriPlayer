@@ -485,6 +485,7 @@
     <string name="library_create_new">+ Create Playlist</string>
     <string name="library_qqmusic_coming">Coming Soon</string>
     <string name="library_qqmusic_hot_hint">Popular QQ Music playlists</string>
+    <string name="library_qqmusic_mine">My QQ Music playlists</string>
     <string name="library_qqmusic_empty">No QQ Music playlists available</string>
     <string name="library_qqmusic_hint">Pull to refresh, tap a playlist to open it</string>
     <string name="library_qqmusic_plays">%1$s plays</string>

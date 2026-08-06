@@ -66,7 +66,8 @@ data class LibraryUiState(
     val biliPlaylists: List<BiliPlaylist> = emptyList(),
     val biliError: String? = null,
     val qqMusicPlaylists: List<PlaylistSummary> = emptyList(),
-    val qqMusicError: String? = null
+    val qqMusicError: String? = null,
+    val qqMusicLoggedIn: Boolean = false
 )
 
 @Suppress("unused")
@@ -173,6 +174,13 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                         biliError = null
                     )
                 }
+            }
+        }
+
+        // QQ音乐: 登录态变化时刷新(登录显示"我的歌单", 退出显示热门歌单)
+        viewModelScope.launch {
+            AppContainer.qqCookieRepo.authHealthFlow.collect { health ->
+                refreshQqMusicPlaylists()
             }
         }
     }
@@ -324,8 +332,16 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
     fun refreshQqMusicPlaylists() {
         viewModelScope.launch {
             try {
+                val qqCookies = AppContainer.qqCookieRepo.getCookiesOnce()
+                val qqUin = qqCookies["uin"]?.trim()?.trimStart('o').orEmpty()
                 val playlists = withContext(Dispatchers.IO) {
-                    AppContainer.qqMusicApi.getHotPlaylists(count = 50)
+                    if (qqUin.isNotBlank()) {
+                        // 已登录: 显示"我的歌单"(失败时回退热门歌单)
+                        AppContainer.qqMusicApi.getUserPlaylists(qqUin, num = 50)
+                            .ifEmpty { AppContainer.qqMusicApi.getHotPlaylists(count = 50) }
+                    } else {
+                        AppContainer.qqMusicApi.getHotPlaylists(count = 50)
+                    }
                 }
                 _uiState.value = _uiState.value.copy(
                     qqMusicPlaylists = playlists.map { summary ->
@@ -338,6 +354,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                             source = "qq"
                         )
                     },
+                    qqMusicLoggedIn = qqUin.isNotBlank(),
                     qqMusicError = null
                 )
             } catch (e: CancellationException) {

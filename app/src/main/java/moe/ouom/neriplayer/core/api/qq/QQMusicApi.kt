@@ -139,6 +139,82 @@ class QQMusicApi(
     }
 
     /**
+     * 登录用户的"我的歌单"(我创建的歌单)。
+     *
+     * 需要 QQ 登录态 cookie (musicu.fcg 的 music.mysrfDissInfo.queryDissInfo,
+     * 未登录返回 500003)。响应结构: req_1.data.dissinfo[] (或 diss[]):
+     * { disstid, dissname, imgurl, songnum, listennum }
+     */
+    suspend fun getUserPlaylists(
+        uin: String,
+        begin: Int = 0,
+        num: Int = 30
+    ): List<QQPlaylistSummary> {
+        val resolvedUin = uin.trim().trimStart('o')
+        if (resolvedUin.isBlank()) return emptyList()
+        return withContext(Dispatchers.IO) {
+            try {
+                val req = JSONObject().put(
+                    "comm", JSONObject().put("ct", 24).put("cv", 0)
+                ).put(
+                    "req_1", JSONObject()
+                        .put("module", "music.mysrfDissInfo")
+                        .put("method", "queryDissInfo")
+                        .put("param", JSONObject().apply {
+                            put("uin", resolvedUin)
+                            put("begin", begin)
+                            put("num", num)
+                            put("onlyNormal", 0)
+                        })
+                ).toString()
+
+                val requestUrl = "https://u.y.qq.com/cgi-bin/musicu.fcg".toHttpUrl().newBuilder()
+                    .addQueryParameter("format", "json")
+                    .addQueryParameter("data", req)
+                    .build()
+                val request = Request.Builder().url(requestUrl)
+                    .header("Referer", QQ_REFERER_PORTAL)
+                    .header("User-Agent", QQ_USER_AGENT)
+                    .build()
+                val responseJson = execute(request)
+                val root = JSONObject(responseJson)
+                val envelope = root.optJSONObject("req_1") ?: return@withContext emptyList()
+                if (envelope.optInt("code") != 0) {
+                    NPLogger.d(TAG, "我的歌单被拒: code=${envelope.optInt("code")}")
+                    return@withContext emptyList()
+                }
+                val data = envelope.optJSONObject("data") ?: return@withContext emptyList()
+                val list = data.optJSONArray("dissinfo")
+                    ?: data.optJSONArray("diss")
+                    ?: return@withContext emptyList()
+                buildList {
+                    for (i in 0 until list.length()) {
+                        val item = list.optJSONObject(i) ?: continue
+                        val id = item.optString("disstid").toLongOrNull() ?: continue
+                        add(
+                            QQPlaylistSummary(
+                                dissId = id,
+                                title = item.optString("dissname"),
+                                picUrl = item.optString("imgurl")
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { if (it.startsWith("http://")) "https://" + it.removePrefix("http://") else it },
+                                listenCount = item.optLong("listennum"),
+                                songCount = item.optInt("songnum"),
+                                creator = null
+                            )
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                NPLogger.d(TAG, "我的歌单加载失败: ${e.message}")
+                emptyList()
+            }
+        }
+    }
+
+    /**
      * 热门歌单(匿名可用)。
      *
      * @param categoryId 分类 ID, 10000000=全部, 具体分类可用 [getPlaylistCategories]

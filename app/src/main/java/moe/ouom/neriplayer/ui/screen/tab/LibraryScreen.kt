@@ -501,6 +501,7 @@ fun LibraryScreen(
                         LibraryTab.QQMUSIC -> QqMusicPlaylistList(
                             playlists = ui.qqMusicPlaylists,
                             error = ui.qqMusicError,
+                            loggedIn = ui.qqMusicLoggedIn,
                             listState = qqMusicListState,
                             onClick = onQqMusicPlaylistClick,
                             onRetry = { vm.refreshQqMusicPlaylists() },
@@ -3406,6 +3407,7 @@ private fun favoriteSourceLabel(source: String): String {
 private fun QqMusicPlaylistList(
     playlists: List<PlaylistSummary>,
     error: String?,
+    loggedIn: Boolean,
     listState: LazyListState,
     onClick: (PlaylistSummary) -> Unit,
     onRetry: () -> Unit,
@@ -3423,7 +3425,9 @@ private fun QqMusicPlaylistList(
     ) {
         item(key = "qq_music_header") {
             Text(
-                text = stringResource(R.string.library_qqmusic_hot_hint),
+                text = stringResource(
+                    if (loggedIn) R.string.library_qqmusic_mine else R.string.library_qqmusic_hot_hint
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)

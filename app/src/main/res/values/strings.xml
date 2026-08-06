@@ -485,6 +485,7 @@
     <string name="library_create_new">＋ 新建歌单</string>
     <string name="library_qqmusic_coming">QQ音乐功能开发中…</string>
     <string name="library_qqmusic_hot_hint">热门 QQ 音乐歌单</string>
+    <string name="library_qqmusic_mine">我的 QQ 音乐歌单</string>
     <string name="library_qqmusic_empty">暂时没有可展示的 QQ 音乐歌单</string>
     <string name="library_qqmusic_hint">下拉可刷新，点击歌单进入详情</string>
     <string name="library_qqmusic_plays">%1$s 次播放</string>
