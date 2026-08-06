@@ -503,6 +503,12 @@
     <string name="ftp_download_failed">Download failed</string>
     <string name="ftp_folder">Folder</string>
     <string name="ftp_file">File</string>
+    <string name="ftp_scan">Scan Music/Video</string>
+    <string name="ftp_scanning">Scanning the server for music and video files…</string>
+    <string name="ftp_scan_results">%1$d music/video files found. Tap to download and play</string>
+    <string name="ftp_scan_results_title">Scan results</string>
+    <string name="ftp_scan_back">Back to browsing</string>
+    <string name="ftp_scan_empty">No music/video files found (scans up to 4 levels deep and 500 files)</string>
     <string name="library_create_playlist_default">New Playlist</string>
     <string name="library_name_reserved">This name is reserved for \"%s\", please choose another name~</string>
     <string name="library_name_exists">A playlist with this name already exists, please choose another name</string>

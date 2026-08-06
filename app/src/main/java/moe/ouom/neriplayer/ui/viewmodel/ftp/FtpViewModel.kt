@@ -62,7 +62,11 @@ data class FtpUiState(
     val error: String? = null,
     val downloading: FtpDownloadState? = null,
     val savingConfig: Boolean = false,
-    val configError: String? = null
+    val configError: String? = null,
+    val scanning: Boolean = false,
+    val scanError: String? = null,
+    val mediaFiles: List<FtpEntry> = emptyList(),
+    val showMediaResults: Boolean = false
 )
 
 class FtpViewModel(application: Application) : AndroidViewModel(application) {
@@ -180,6 +184,44 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
         refresh()
     }
 
+    /** 扫描当前目录下的音乐/视频文件(递归最多 4 层)。 */
+    fun scanMedia() {
+        val config = _uiState.value.config
+        if (!config.isConfigured() || _uiState.value.scanning) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    scanning = true,
+                    scanError = null,
+                    mediaFiles = emptyList(),
+                    showMediaResults = true
+                )
+            }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    FtpClient.scanMediaFiles(config, _uiState.value.currentPath)
+                }
+            }
+            _uiState.update {
+                result.fold(
+                    onSuccess = { files ->
+                        it.copy(scanning = false, mediaFiles = files)
+                    },
+                    onFailure = { error ->
+                        it.copy(
+                            scanning = false,
+                            scanError = error.message ?: "scan_failed"
+                        )
+                    }
+                )
+            }
+        }
+    }
+
+    fun showBrowse() {
+        _uiState.update { it.copy(showMediaResults = false, mediaFiles = emptyList()) }
+    }
+
     fun downloadAndPlay(entry: FtpEntry) {
         if (entry.isDirectory) return
         val config = _uiState.value.config
@@ -206,6 +248,8 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
             result.onSuccess { file ->
                 playLocalFile(file, entry)
             }.onFailure { error ->
+                // 清理半截文件, 避免下次直接播放损坏文件
+                runCatching { target.delete() }
                 NPLogger.w("FtpViewModel", "FTP 下载失败: ${error.message}")
                 _uiState.update {
                     it.copy(error = "download_failed:${error.message}")

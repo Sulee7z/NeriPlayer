@@ -503,6 +503,12 @@
     <string name="ftp_download_failed">下载失败</string>
     <string name="ftp_folder">目录</string>
     <string name="ftp_file">文件</string>
+    <string name="ftp_scan">扫描音乐/视频</string>
+    <string name="ftp_scanning">正在扫描服务器上的音乐/视频文件…</string>
+    <string name="ftp_scan_results">扫描到 %1$d 个音乐/视频文件，点击即可下载播放</string>
+    <string name="ftp_scan_results_title">扫描结果</string>
+    <string name="ftp_scan_back">返回目录浏览</string>
+    <string name="ftp_scan_empty">未找到音乐/视频文件（最多扫描 4 层目录、500 个文件）</string>
     <string name="library_create_playlist_default">新建歌单</string>
     <string name="library_name_reserved">该名称已保留为\"%s\"，请换一个名称哦~</string>
     <string name="library_name_exists">已存在同名歌单，请换一个名称</string>

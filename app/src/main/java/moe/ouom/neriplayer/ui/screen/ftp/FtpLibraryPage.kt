@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.outlined.AudioFile
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VideoFile
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -130,12 +131,86 @@ fun FtpLibraryPage(offlineMode: Boolean = false) {
     Column(Modifier.fillMaxSize()) {
         FtpBrowserHeader(
             path = ui.currentPath,
-            loading = ui.loading,
+            loading = ui.loading || ui.scanning,
             onUp = vm::goUp,
             onRefresh = vm::refresh,
+            onScan = vm::scanMedia,
+            onShowBrowse = vm::showBrowse,
+            showingScanResults = ui.showMediaResults,
             onEditConfig = { vm.setEditingConfig(true) }
         )
-        when {
+        if (ui.showMediaResults) {
+            val scanErrorMessage = ui.scanError
+            when {
+                ui.scanning -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                text = stringResource(R.string.ftp_scanning),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                scanErrorMessage != null -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = scanErrorMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 32.dp)
+                        )
+                    }
+                }
+
+                ui.mediaFiles.isEmpty() -> {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = stringResource(R.string.ftp_scan_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(
+                            start = 8.dp,
+                            end = 8.dp,
+                            top = 8.dp,
+                            bottom = 8.dp + miniPlayerHeight
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        item(key = "ftp_scan_header") {
+                            Text(
+                                text = stringResource(R.string.ftp_scan_results, ui.mediaFiles.size),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                            )
+                        }
+                        items(ui.mediaFiles, key = { it.path }) { entry ->
+                            FtpEntryRow(
+                                entry = entry,
+                                onClick = {
+                                    if (!entry.isDirectory && isPlayableMedia(entry.name)) {
+                                        vm.downloadAndPlay(entry)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            when {
             ui.loading -> {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -203,6 +278,7 @@ fun FtpLibraryPage(offlineMode: Boolean = false) {
             }
         }
     }
+    }
 
     ui.downloading?.let { download ->
         AlertDialog(
@@ -251,6 +327,9 @@ private fun FtpBrowserHeader(
     loading: Boolean,
     onUp: () -> Unit,
     onRefresh: () -> Unit,
+    onScan: () -> Unit,
+    onShowBrowse: () -> Unit,
+    showingScanResults: Boolean,
     onEditConfig: () -> Unit
 ) {
     Row(
@@ -259,20 +338,39 @@ private fun FtpBrowserHeader(
             .padding(horizontal = 12.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onUp, enabled = path != "/" && !loading) {
+        IconButton(
+            onClick = if (showingScanResults) onShowBrowse else onUp,
+            enabled = !loading && (showingScanResults || path != "/")
+        ) {
             Icon(
                 Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = stringResource(R.string.ftp_go_up)
+                contentDescription = if (showingScanResults) {
+                    stringResource(R.string.ftp_scan_back)
+                } else {
+                    stringResource(R.string.ftp_go_up)
+                }
             )
         }
         Text(
-            text = path,
+            text = if (showingScanResults) {
+                stringResource(R.string.ftp_scan_results_title)
+            } else {
+                path
+            },
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
+        if (!showingScanResults) {
+            IconButton(onClick = onScan, enabled = !loading) {
+                Icon(
+                    Icons.Outlined.Search,
+                    contentDescription = stringResource(R.string.ftp_scan)
+                )
+            }
+        }
         IconButton(onClick = onRefresh, enabled = !loading) {
             Icon(
                 Icons.Outlined.Refresh,
