@@ -489,7 +489,7 @@
     <string name="ftp_password">Password</string>
     <string name="ftp_base_path">Root path</string>
     <string name="ftp_base_path_hint">Default /, can be left empty</string>
-    <string name="ftp_save_and_connect">Save & Connect</string>
+    <string name="ftp_save_and_connect">Save &amp; Connect</string>
     <string name="ftp_save_hint">Saves the config and connects to list the directory</string>
     <string name="ftp_config_required">Server address is required</string>
     <string name="ftp_connecting">Connecting to server…</string>
