@@ -57,7 +57,15 @@ private const val QQ_QR_REFERER = "https://xui.ptlogin2.qq.com/"
 private const val QQ_QR_UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
         "AppleWebKit/537.36 (KHTML, like Gecko) " +
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/126.0.0.0 Safari/537.36"
+
+/** xlogin 预检页 URL (完整 Referer 用) */
+private fun buildXLoginUrl(): String = QQ_XLOGIN_URL.toHttpUrl().newBuilder()
+    .addQueryParameter("appid", QQ_APP_ID.toString())
+    .addQueryParameter("s_url", QQ_REDIRECT_URL)
+    .addQueryParameter("pt_no_auth", "1")
+    .build()
+    .toString()
 
 private const val QQ_QR_NETWORK_RETRY_COUNT = 3
 private const val QQ_QR_NETWORK_RETRY_DELAY_MS = 200L
@@ -89,6 +97,9 @@ data class QqQrLoginCheckResult(
 
 class QqQrLoginClient {
     private val cookieStore: ConcurrentHashMap<String, String> = ConcurrentHashMap()
+    /** ptqrlogin 的 js_ver 参数: 优先从 xlogin 页面动态提取, 失败回退默认值 */
+    @Volatile
+    private var currentJsVer: String = "22082315"
     private val http = OkHttpClient.Builder()
         .proxySelector(DynamicProxySelector)
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -104,16 +115,15 @@ class QqQrLoginClient {
     @Throws(IOException::class)
     fun createSession(): QqQrLoginSession {
         NPLogger.d(QQ_QR_LOG_TAG, "Create QR session start")
-        // 1. 先访问 xlogin 页面拿到 pt_login_sig cookie (失败不致命, 继续走 ptqrshow)
+        // 1. 先访问 xlogin 页面拿到 pt_login_sig cookie 与 js_ver (失败不致命, 继续走 ptqrshow)
         runCatching {
-            executeGetText(
-                QQ_XLOGIN_URL.toHttpUrl().newBuilder()
-                    .addQueryParameter("appid", QQ_APP_ID.toString())
-                    .addQueryParameter("s_url", QQ_REDIRECT_URL)
-                    .addQueryParameter("pt_no_auth", "1")
-                    .build()
-                    .toString()
-            )
+            val xloginBody = executeGetText(buildXLoginUrl())
+            extractJsVer(xloginBody)?.let { jsVer ->
+                if (jsVer.isNotBlank() && jsVer != currentJsVer) {
+                    currentJsVer = jsVer
+                    NPLogger.d(QQ_QR_LOG_TAG, "xlogin js_ver=$jsVer")
+                }
+            }
         }.onFailure { error ->
             NPLogger.w(QQ_QR_LOG_TAG, "xlogin preflight failed (non-fatal): ${error.message}")
         }
@@ -164,34 +174,53 @@ class QqQrLoginClient {
         )
     }
 
+    /** 从 xlogin 页面提取 js_ver (ptqrlogin 必需, 过旧会被腾讯风控拒绝) */
+    private fun extractJsVer(body: String): String? {
+        val patterns = listOf(
+            Regex("""js_ver[=:]["']?(\d{6,10})"""),
+            Regex("""js_ver["']?\s*[:=]\s*["']?(\d{6,10})"""),
+            Regex("""jsver[=:]["']?(\d{6,10})""")
+        )
+        for (pattern in patterns) {
+            pattern.find(body)?.groupValues?.getOrNull(1)?.let { return it }
+        }
+        return null
+    }
+
     @Throws(IOException::class)
     fun checkLogin(session: QqQrLoginSession): QqQrLoginCheckResult {
         val ptqrtoken = hash33(session.qrsig)
         val loginSig = cookieStore["pt_login_sig"].orEmpty()
-        val timestamp = System.currentTimeMillis()
-        val url = QQ_PTQR_LOGIN_URL.toHttpUrl().newBuilder()
-            .addQueryParameter("u1", QQ_REDIRECT_URL)
-            .addQueryParameter("ptqrtoken", ptqrtoken.toString())
-            .addQueryParameter("ptredirect", "0")
-            .addQueryParameter("h", "1")
-            .addQueryParameter("t", "1")
-            .addQueryParameter("g", "1")
-            .addQueryParameter("from_ui", "1")
-            .addQueryParameter("ptlang", "2052")
-            .addQueryParameter("action", "0-0-$timestamp")
-            .addQueryParameter("js_ver", "22082315")
-            .addQueryParameter("js_type", "1")
-            .addQueryParameter("login_sig", loginSig)
-            .addQueryParameter("pt_uistyle", "40")
-            .addQueryParameter("aid", QQ_APP_ID.toString())
-            .addQueryParameter("daid", QQ_DAID.toString())
-            .addQueryParameter("pt_3rd_aid", QQ_PT_3RD_AID.toString())
-            .build()
+        val url = buildPtQrLoginUrl(ptqrtoken, loginSig)
         NPLogger.d(
             QQ_QR_LOG_TAG,
-            "Poll QR status qrsig=${session.qrsig.redactedKey()} ptqrtoken=$ptqrtoken"
+            "Poll QR status qrsig=${session.qrsig.redactedKey()} ptqrtoken=$ptqrtoken js_ver=$currentJsVer"
         )
-        val text = executeGetText(url.toString())
+        val text = try {
+            executeGetText(url.toString())
+        } catch (e: IOException) {
+            // 403 通常意味着会话特征不足(js_ver 过旧 / pt_login_sig 缺失):
+            // 重新跑 xlogin 预检刷新票据后重试一次
+            if (e.message?.contains("403") == true) {
+                NPLogger.w(QQ_QR_LOG_TAG, "ptqrlogin 403, refreshing xlogin preflight and retrying: ${e.message}")
+                runCatching {
+                    val xloginBody = executeGetText(buildXLoginUrl())
+                    extractJsVer(xloginBody)?.let { jsVer ->
+                        if (jsVer.isNotBlank() && jsVer != currentJsVer) {
+                            currentJsVer = jsVer
+                            NPLogger.d(QQ_QR_LOG_TAG, "refreshed js_ver=$jsVer")
+                        }
+                    }
+                }.onFailure { refreshError ->
+                    NPLogger.w(QQ_QR_LOG_TAG, "xlogin refresh failed: ${refreshError.message}")
+                }
+                executeGetText(
+                    buildPtQrLoginUrl(ptqrtoken, cookieStore["pt_login_sig"].orEmpty()).toString()
+                )
+            } else {
+                throw e
+            }
+        }
         val (code, jumpUrl, message, uin) = parsePtuiCallback(text)
         if (code == 0) {
             // 跟随登录跳转链接逐跳收割 skey / p_skey / pt4_token 等登录票据
@@ -261,6 +290,28 @@ class QqQrLoginClient {
             "&daid=$QQ_DAID&pt_3rd_aid=$QQ_PT_3RD_AID&t=${System.currentTimeMillis()}&u=1"
     }
 
+    private fun buildPtQrLoginUrl(ptqrtoken: Int, loginSig: String): okhttp3.HttpUrl {
+        val timestamp = System.currentTimeMillis()
+        return QQ_PTQR_LOGIN_URL.toHttpUrl().newBuilder()
+            .addQueryParameter("u1", QQ_REDIRECT_URL)
+            .addQueryParameter("ptqrtoken", ptqrtoken.toString())
+            .addQueryParameter("ptredirect", "0")
+            .addQueryParameter("h", "1")
+            .addQueryParameter("t", "1")
+            .addQueryParameter("g", "1")
+            .addQueryParameter("from_ui", "1")
+            .addQueryParameter("ptlang", "2052")
+            .addQueryParameter("action", "0-0-$timestamp")
+            .addQueryParameter("js_ver", currentJsVer)
+            .addQueryParameter("js_type", "1")
+            .addQueryParameter("login_sig", loginSig)
+            .addQueryParameter("pt_uistyle", "40")
+            .addQueryParameter("aid", QQ_APP_ID.toString())
+            .addQueryParameter("daid", QQ_DAID.toString())
+            .addQueryParameter("pt_3rd_aid", QQ_PT_3RD_AID.toString())
+            .build()
+    }
+
     /** 解析 ptuiCB('code','type','url','encry','msg','uin') 形式的 JS 回调 */
     private fun parsePtuiCallback(text: String): PtuiCallback {
         val match = Regex("ptuiCB\\('([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\s*,\\s*'([^']*)'\\)")
@@ -317,7 +368,8 @@ class QqQrLoginClient {
             .url(url)
             .header("Accept", "*/*")
             .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
-            .header("Referer", QQ_QR_REFERER)
+            .header("Referer", buildXLoginUrl())
+            .header("Origin", "https://xui.ptlogin2.qq.com")
             .header("User-Agent", QQ_QR_UA)
             .get()
         currentCookieHeader().takeIf { it.isNotBlank() }?.let { cookieHeader ->
@@ -359,7 +411,8 @@ class QqQrLoginClient {
                 .url(currentUrl)
                 .header("Accept", "*/*")
                 .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
-                .header("Referer", QQ_QR_REFERER)
+                .header("Referer", buildXLoginUrl())
+                .header("Origin", "https://xui.ptlogin2.qq.com")
                 .header("User-Agent", QQ_QR_UA)
                 .get()
             currentCookieHeader().takeIf { it.isNotBlank() }?.let { cookieHeader ->
