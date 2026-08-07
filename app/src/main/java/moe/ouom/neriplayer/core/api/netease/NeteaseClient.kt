@@ -887,47 +887,72 @@ class NeteaseClient {
     }
 
     /**
-     * 上报一首歌的听歌记录 (eapi/feedback/weblog)
+     * 上报一首歌的听歌记录 (weapi/feedback/weblog)
      *
-     * 网易云网页端/客户端的听歌记录都是通过这个接口上报的, 参数含义:
-     * - id: 网易云歌曲 ID
-     * - time: 已播放时长 (秒)
-     * - end: playend=完整听完, 其他值表示中途切歌
-     * - sourceId: 可选, 播放来源 (播放列表 ID 等)
+     * 对齐 ncmm 项目(社区验证可用的上报链路): 网易云网页端的听歌记录上报由两个事件组成,
+     * 两者缺一不可:
+     * 1. startplay: 标记开始播放, json={id, type:"song", content:"id=<sourceId>", mainsite:"1"}
+     * 2. play: 播放结束/切歌, json={type:"song", wifi:0, download:0, id, time:实际播放秒数,
+     *    end:"ui"(听完)/"interrupt"(切歌), source, sourceId, mainsite:"1", content:"id=<sourceId>"}
+     *
+     * 注意: time 必须传实际已播放秒数(不能为 0), content 必须是 "id=<sourceId>" 格式,
+     * 否则网易云可能静默丢弃上报, 听歌记录不会出现
      */
     @Throws(IOException::class)
     fun scrobble(
         songId: Long,
         playedTimeSeconds: Int,
         sourceId: Long? = null,
-        endType: String = "playend"
+        endType: String = "interrupt"
     ): String {
-        // 载荷对齐官方网页端 / pyncm: time 固定为 0, source/mainsite/content 字段
-        // 缺失或 time 传实际秒数时网易云可能静默忽略上报, 导致听歌记录不出现
-        val logJson = JSONObject().apply {
-            put("download", 0)
-            put("end", endType)
-            put("id", songId)
-            put("sourceId", sourceId?.toString() ?: "0")
-            put("time", 0)
-            put("type", "song")
-            put("wifi", 0)
-            put("source", "list")
-            put("mainsite", 1)
-            put("content", "")
+        val sourceIdStr = sourceId?.toString() ?: "0"
+        // 1) startplay 事件: 标记播放开始
+        val startplayLog = JSONObject().apply {
+            put("action", "startplay")
+            put("json", JSONObject().apply {
+                put("id", songId)
+                put("type", "song")
+                put("content", "id=$sourceIdStr")
+                put("mainsite", "1")
+            })
         }
-        val logEntry = JSONObject().apply {
+        // 2) play 事件: 播放结束/切歌, time 必须为实际播放秒数
+        val playLog = JSONObject().apply {
             put("action", "play")
-            put("json", logJson)
+            put("json", JSONObject().apply {
+                put("type", "song")
+                put("wifi", 0)
+                put("download", 0)
+                put("id", songId)
+                put("time", playedTimeSeconds.coerceAtLeast(1))
+                put("end", endType)
+                put("source", "list")
+                put("sourceId", sourceIdStr)
+                put("mainsite", "1")
+                put("content", "id=$sourceIdStr")
+            })
         }
-        val logs = JSONArray().apply { put(logEntry) }.toString()
-        val params = mapOf("logs" to logs)
-        // 先走 eapi(官方客户端通道, 网页 weapi 通道的上报可能不写入最近播放);
-        // eapi 失败时回退 weapi
+        // 按官方网页端链路顺序上报: 先 startplay 标记开始, 再 play 结算
+        // startplay 失败不影响主上报(仅标记), play 失败时回退 eapi 通道
+        runCatching {
+            callWeApi(
+                "/feedback/weblog",
+                mapOf("logs" to JSONArray().apply { put(startplayLog) }.toString()),
+                usePersistedCookies = true
+            )
+        }
         return try {
-            callEApi("/feedback/weblog", params, usePersistedCookies = true)
+            callWeApi(
+                "/feedback/weblog",
+                mapOf("logs" to JSONArray().apply { put(playLog) }.toString()),
+                usePersistedCookies = true
+            )
         } catch (e: IOException) {
-            callWeApi("/feedback/weblog", params, usePersistedCookies = true)
+            callEApi(
+                "/feedback/weblog",
+                mapOf("logs" to JSONArray().apply { put(playLog) }.toString()),
+                usePersistedCookies = true
+            )
         }
     }
 

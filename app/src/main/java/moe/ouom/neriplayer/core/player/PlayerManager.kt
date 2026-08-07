@@ -2198,8 +2198,7 @@ object PlayerManager {
                     .toInt()
                 client.scrobble(
                     songId = neteaseId,
-                    playedTimeSeconds = playedSeconds,
-                    endType = "playend"
+                    playedTimeSeconds = playedSeconds
                 )
             }.onFailure { error ->
                 NPLogger.e("NERI-PlayerManager", "netease scrobble failed: ${error.message}", error)
