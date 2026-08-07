@@ -49,6 +49,15 @@ import moe.ouom.neriplayer.util.network.DynamicProxySelector
 class NeteaseClient {
     private companion object {
         const val MAX_RESPONSE_BYTES = 4L * 1024L * 1024L
+
+        /** 常规接口默认 UA(移动端), 与既有行为保持一致 */
+        const val DEFAULT_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 10; NeriPlayer) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+
+        /** weblog 听歌记录上报专用 UA: 对齐 ncmm 项目, 网页端上报必须伪装成桌面浏览器,
+         *  否则网易云可能按客户端 UA 将 weapi 上报静默丢弃 */
+        const val WEBLOG_DESKTOP_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
     }
 
     private val okHttpClient: OkHttpClient
@@ -226,7 +235,8 @@ class NeteaseClient {
         params: Map<String, Any>,
         mode: CryptoMode,
         method: String,
-        usePersistedCookies: Boolean
+        usePersistedCookies: Boolean,
+        userAgent: String = DEFAULT_USER_AGENT
     ): Request {
         val requestUrl = url.toHttpUrl()
 
@@ -245,7 +255,7 @@ class NeteaseClient {
             .header("Connection", "keep-alive")
             .header("Referer", "https://music.163.com")
             .header("Host", requestUrl.host)
-            .header("User-Agent", "Mozilla/5.0 (Linux; Android 10; NeriPlayer) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36")
+            .header("User-Agent", userAgent)
 
         if (usePersistedCookies) {
             buildPersistedCookieHeader()?.let { builder.header("Cookie", it) }
@@ -887,13 +897,66 @@ class NeteaseClient {
     }
 
     /**
-     * 上报一首歌的听歌记录 (weapi/feedback/weblog)
+     * weblog 日志上报 (weapi/feedback/weblog), 完全对齐 ncmm 项目
      *
-     * 对齐 ncmm 项目(社区验证可用的上报链路): 网易云网页端的听歌记录上报由两个事件组成,
-     * 两者缺一不可:
-     * 1. startplay: 标记开始播放, json={id, type:"song", content:"id=<sourceId>", mainsite:"1"}
-     * 2. play: 播放结束/切歌, json={type:"song", wifi:0, download:0, id, time:实际播放秒数,
-     *    end:"ui"(听完)/"interrupt"(切歌), source, sourceId, mainsite:"1", content:"id=<sourceId>"}
+     * 与普通 weapi 请求的差异:
+     * - 请求体加密 JSON 内携带 csrf_token 字段(与 url query 的 csrf_token 保持一致)
+     * - UA 伪装为桌面 Chrome(网页端上报用, 移动 UA 的 weapi 上报会被网易静默丢弃)
+     */
+    @Throws(IOException::class)
+    private fun reportWebLog(logs: String): String {
+        val csrf = persistedCookies["__csrf_token"]
+            ?: persistedCookies["__csrf"]
+            ?: getCsrfCookie()
+            ?: ""
+        val params = mapOf(
+            "csrf_token" to csrf,
+            "logs" to logs
+        )
+        val request = buildRequest(
+            url = "https://music.163.com/weapi/feedback/weblog",
+            params = params,
+            mode = CryptoMode.WEAPI,
+            method = "POST",
+            usePersistedCookies = true,
+            userAgent = WEBLOG_DESKTOP_USER_AGENT
+        )
+        return executeRequest(okHttpClient, request)
+    }
+
+    /**
+     * 标记一首歌开始播放 (weapi/feedback/weblog, startplay 事件)
+     *
+     * 对齐 ncmm 项目(社区验证可用的上报链路): 官方网页端在歌曲开始播放时先上报
+     * startplay 事件, 歌曲结束/切歌时再上报 play 事件(time=实际播放秒数)。
+     * 两个事件必须保持先后时序(先 startplay, 稍后 play), 网易云据此判定一次真实播放;
+     * 若两者几乎同时发出且 time 与间隔不符, 上报可能被静默丢弃。
+     */
+    @Throws(IOException::class)
+    fun notifyPlayStart(
+        songId: Long,
+        sourceId: Long? = null
+    ): String {
+        val sourceIdStr = sourceId?.toString() ?: "0"
+        val startplayLog = JSONObject().apply {
+            put("action", "startplay")
+            put("json", JSONObject().apply {
+                put("id", songId)
+                put("type", "song")
+                put("content", "id=$sourceIdStr")
+                put("mainsite", "1")
+            })
+        }
+        return reportWebLog(
+            JSONArray().apply { put(startplayLog) }.toString()
+        )
+    }
+
+    /**
+     * 上报一首歌的听歌记录 (weapi/feedback/weblog, play 事件)
+     *
+     * 对齐 ncmm 项目(社区验证可用的上报链路): 歌曲开始播放时已由 [notifyPlayStart]
+     * 上报 startplay 事件, 此处上报播放结束/切歌的 play 事件, 两者构成完整播放链路。
      *
      * 注意: time 必须传实际已播放秒数(不能为 0), content 必须是 "id=<sourceId>" 格式,
      * 否则网易云可能静默丢弃上报, 听歌记录不会出现
@@ -906,17 +969,7 @@ class NeteaseClient {
         endType: String = "interrupt"
     ): String {
         val sourceIdStr = sourceId?.toString() ?: "0"
-        // 1) startplay 事件: 标记播放开始
-        val startplayLog = JSONObject().apply {
-            put("action", "startplay")
-            put("json", JSONObject().apply {
-                put("id", songId)
-                put("type", "song")
-                put("content", "id=$sourceIdStr")
-                put("mainsite", "1")
-            })
-        }
-        // 2) play 事件: 播放结束/切歌, time 必须为实际播放秒数
+        // play 事件: 播放结束/切歌, time 必须为实际播放秒数
         val playLog = JSONObject().apply {
             put("action", "play")
             put("json", JSONObject().apply {
@@ -932,28 +985,9 @@ class NeteaseClient {
                 put("content", "id=$sourceIdStr")
             })
         }
-        // 按官方网页端链路顺序上报: 先 startplay 标记开始, 再 play 结算
-        // startplay 失败不影响主上报(仅标记), play 失败时回退 eapi 通道
-        runCatching {
-            callWeApi(
-                "/feedback/weblog",
-                mapOf("logs" to JSONArray().apply { put(startplayLog) }.toString()),
-                usePersistedCookies = true
-            )
-        }
-        return try {
-            callWeApi(
-                "/feedback/weblog",
-                mapOf("logs" to JSONArray().apply { put(playLog) }.toString()),
-                usePersistedCookies = true
-            )
-        } catch (e: IOException) {
-            callEApi(
-                "/feedback/weblog",
-                mapOf("logs" to JSONArray().apply { put(playLog) }.toString()),
-                usePersistedCookies = true
-            )
-        }
+        return reportWebLog(
+            JSONArray().apply { put(playLog) }.toString()
+        )
     }
 
     /**

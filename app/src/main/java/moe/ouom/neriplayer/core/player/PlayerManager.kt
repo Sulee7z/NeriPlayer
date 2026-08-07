@@ -2206,6 +2206,39 @@ object PlayerManager {
         }
     }
 
+    /**
+     * 歌曲真正开始播放时(进度首次推进)异步上报 startplay 事件到网易云,
+     * 与播放结束时的 [scrobbleToNeteaseIfEnabled] 构成完整上报链路。
+     *
+     * 仅对能直接确定网易云 ID 的歌曲上报(不在此处做搜索转换, 避免每首歌都发搜索请求;
+     * 第三方音源歌曲的 ID 转换在计入播放时由 scrobble 完成)。
+     *
+     * 该调用是 fire-and-forget 的, 失败只记录日志
+     */
+    internal fun notifyNeteasePlayStartIfEnabled(song: SongItem) {
+        ioScope.launch {
+            runCatching {
+                val enabled = settingsRepo
+                    .settingFlow(AutoSettingsSchema.playback.neteaseScrobbleEnabled)
+                    .first()
+                if (!enabled) return@launch
+
+                val neteaseId = resolveNeteaseSongIdOrNull(song)
+                if (neteaseId == null) return@launch
+
+                val client = AppContainer.neteaseClient
+                if (!client.hasLogin()) return@launch
+
+                client.notifyPlayStart(songId = neteaseId)
+            }.onFailure { error ->
+                NPLogger.d(
+                    "NERI-PlayerManager",
+                    "netease notifyPlayStart failed: ${error.message}"
+                )
+            }
+        }
+    }
+
     internal fun drainPlaybackStatsPersistJobBlocking(reason: String) {
         if (!initialized) return
         val pendingJob = synchronized(playbackStatsPersistLock) {

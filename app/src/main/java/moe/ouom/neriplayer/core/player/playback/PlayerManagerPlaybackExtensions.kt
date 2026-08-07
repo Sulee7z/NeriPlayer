@@ -1841,6 +1841,11 @@ internal fun PlayerManager.startProgressUpdates() {
                     playing = true,
                     reason = "progress_position_advanced"
                 )
+                // 歌曲真正开始出声: 上报网易云 startplay 事件, 与计入播放时的
+                // play 事件构成完整听歌记录上报链路
+                _currentSongFlow.value?.let { song ->
+                    notifyNeteasePlayStartIfEnabled(song)
+                }
             }
             val durationMs = runCatching { player.duration.coerceAtLeast(0L) }
                 .getOrDefault(_playbackDurationMs.value)
