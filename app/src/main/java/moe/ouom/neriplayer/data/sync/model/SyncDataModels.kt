@@ -38,6 +38,7 @@ import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
 import moe.ouom.neriplayer.data.model.SongIdentity
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.data.model.toSyncableRemoteSongOrNull
 import moe.ouom.neriplayer.data.sync.CoverUrlMapper
 
 internal const val LEGACY_SYNC_METADATA_VERSION = 0
@@ -49,6 +50,25 @@ internal fun mergePositiveTimestamp(left: Long, right: Long): Long {
         right <= 0L -> left
         else -> minOf(left, right)
     }
+}
+
+internal fun sanitizeCoverUrlForSync(
+    coverUrl: String?,
+    mapper: CoverUrlMapper? = null
+): String? {
+    val normalizedUrl = coverUrl?.trim()?.takeIf { it.isNotBlank() } ?: return null
+    if (!LocalSongSupport.isLocalMediaUri(normalizedUrl)) {
+        return normalizedUrl
+    }
+    return mapper?.getSyncableNetworkUrl(normalizedUrl)
+}
+
+internal fun SyncSong.sanitizeCoverUrlsForSync(): SyncSong {
+    return copy(
+        coverUrl = sanitizeCoverUrlForSync(coverUrl),
+        customCoverUrl = sanitizeCoverUrlForSync(customCoverUrl),
+        originalCoverUrl = sanitizeCoverUrlForSync(originalCoverUrl)
+    )
 }
 
 /**
@@ -73,8 +93,35 @@ data class SyncData(
     @ProtoNumber(13) val playlistSongDeletions: List<SyncPlaylistSongDeletion> = emptyList(),
     @ProtoNumber(14) val playlistUsageStats: List<SyncPlaylistUsageStat> = emptyList(),
     @ProtoNumber(15) val localPlaylistPlaybackStats: List<SyncLocalPlaylistPlaybackStat> = emptyList(),
-    @ProtoNumber(16) val localPlaylistPlaybackBuckets: List<SyncLocalPlaylistPlaybackBucket> = emptyList()
+    @ProtoNumber(16) val localPlaylistPlaybackBuckets: List<SyncLocalPlaylistPlaybackBucket> = emptyList(),
+    @ProtoNumber(17) val biliVideoSkipRules: List<SyncBiliVideoSkipRule> = emptyList()
 )
+
+internal fun SyncData.sanitizeLocalCoverUrls(): SyncData {
+    return copy(
+        playlists = playlists.map { playlist ->
+            playlist.copy(songs = playlist.songs.map(SyncSong::sanitizeCoverUrlsForSync))
+        },
+        favoritePlaylists = favoritePlaylists.map { playlist ->
+            playlist.copy(
+                coverUrl = sanitizeCoverUrlForSync(playlist.coverUrl),
+                songs = playlist.songs.map(SyncSong::sanitizeCoverUrlsForSync)
+            )
+        },
+        recentPlays = recentPlays.map { play ->
+            play.copy(song = play.song.sanitizeCoverUrlsForSync())
+        },
+        playbackStats = playbackStats.map { stat ->
+            stat.copy(coverUrl = sanitizeCoverUrlForSync(stat.coverUrl))
+        },
+        playbackStatBuckets = playbackStatBuckets.map { bucket ->
+            bucket.copy(coverUrl = sanitizeCoverUrlForSync(bucket.coverUrl))
+        },
+        playlistUsageStats = playlistUsageStats.map { stat ->
+            stat.copy(coverUrl = sanitizeCoverUrlForSync(stat.coverUrl))
+        }
+    )
+}
 
 /**
  * 同步歌单
@@ -212,18 +259,16 @@ data class SyncSong(
 ) {
     companion object {
         fun fromSongItemOrNull(song: SongItem, context: Context? = null): SyncSong? {
-            if (LocalSongSupport.isLocalSong(song, context)) {
-                return null
-            }
-            return fromSongItem(song, context)
+            return song
+                .toSyncableRemoteSongOrNull(context)
+                ?.let { syncableSong -> fromSongItem(syncableSong, context) }
         }
 
         fun fromSongItem(song: SongItem, context: Context? = null): SyncSong {
-            // 使用网络地址进行同步
             val mapper = context?.let { CoverUrlMapper.getInstance(it) }
-            val syncCoverUrl = mapper?.getNetworkUrl(song.coverUrl) ?: song.coverUrl
-            val syncCustomCoverUrl = mapper?.getNetworkUrl(song.customCoverUrl) ?: song.customCoverUrl
-            val syncOriginalCoverUrl = mapper?.getNetworkUrl(song.originalCoverUrl) ?: song.originalCoverUrl
+            val syncCoverUrl = sanitizeCoverUrlForSync(song.coverUrl, mapper)
+            val syncCustomCoverUrl = sanitizeCoverUrlForSync(song.customCoverUrl, mapper)
+            val syncOriginalCoverUrl = sanitizeCoverUrlForSync(song.originalCoverUrl, mapper)
 
             return SyncSong(
                 id = song.id,
@@ -398,11 +443,12 @@ data class SyncFavoritePlaylist(
 ) {
     companion object {
         fun fromFavoritePlaylist(playlist: FavoritePlaylist, context: Context? = null): SyncFavoritePlaylist {
+            val mapper = context?.let { CoverUrlMapper.getInstance(it) }
             if (playlist.isDeleted) {
                 return SyncFavoritePlaylist(
                     id = playlist.id,
                     name = playlist.name,
-                    coverUrl = playlist.coverUrl,
+                    coverUrl = sanitizeCoverUrlForSync(playlist.coverUrl, mapper),
                     trackCount = 0,
                     source = playlist.source,
                     songs = emptyList(),
@@ -417,8 +463,7 @@ data class SyncFavoritePlaylist(
             }
             val syncedSongs = playlist.songs.mapNotNull { SyncSong.fromSongItemOrNull(it, context) }
             val hasFilteredLocalSongs = syncedSongs.size != playlist.songs.size
-            val syncedCoverUrl = playlist.coverUrl
-                ?.takeUnless { LocalSongSupport.isLocalMediaUri(it) }
+            val syncedCoverUrl = sanitizeCoverUrlForSync(playlist.coverUrl, mapper)
                 ?: syncedSongs.firstOrNull()?.coverUrl
             return SyncFavoritePlaylist(
                 id = playlist.id,
@@ -446,7 +491,7 @@ data class SyncFavoritePlaylist(
         return FavoritePlaylist(
             id = id,
             name = name,
-            coverUrl = coverUrl,
+            coverUrl = sanitizeCoverUrlForSync(coverUrl),
             trackCount = trackCount,
             source = source,
             browseId = browseId,

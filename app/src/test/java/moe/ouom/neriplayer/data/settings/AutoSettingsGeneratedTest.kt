@@ -114,6 +114,19 @@ class AutoSettingsGeneratedTest {
             "floating_lyrics_render_style" in stringKeyNames
         )
         assertTrue(
+            "floating lyrics long-press drag switch should be exportable",
+            "floating_lyrics_long_press_drag_enabled" in booleanKeyNames
+        )
+        listOf(
+            "floating_lyrics_landscape_position_x",
+            "floating_lyrics_landscape_position_y"
+        ).forEach { keyName ->
+            assertTrue(
+                "landscape floating lyrics position should be exportable: $keyName",
+                keyName in floatKeyNames
+            )
+        }
+        assertTrue(
             "download string should be exportable",
             "download_directory_uri" in stringKeyNames
         )
@@ -367,6 +380,19 @@ class AutoSettingsGeneratedTest {
     }
 
     @Test
+    fun standardizedLyricEmbeddingDefaultsToDisabled() {
+        val setting = AutoSettingsSchema.download.standardizedLyricEmbeddingEnabled
+        val metadata = AutoSettingsMetadata.setting(setting.key)
+
+        assertEquals("standardized_lyric_embedding_enabled", setting.preferencesKey.name)
+        assertEquals(false, setting.defaultValue)
+        assertEquals(SettingValueType.Boolean, metadata?.valueType)
+        assertEquals(SettingUiType.Switch, metadata?.ui)
+        assertEquals(AutoSettingsSections.download, metadata?.section)
+        assertEquals(AutoSettingIcon.LibraryMusic, metadata?.icon)
+    }
+
+    @Test
     fun alwaysUseNewTabStyleDefaultsOnAndUsesDisplaySwitch() {
         val setting = AutoSettingsSchema.display.alwaysUseNewTabStyle
         val metadata = AutoSettingsMetadata.setting("always_use_new_tab_style")
@@ -380,6 +406,15 @@ class AutoSettingsGeneratedTest {
             1,
             AutoSettingsMetadata.settings.count { it.icon == AutoSettingIcon.Tab }
         )
+    }
+
+    @Test
+    fun alwaysRecordLogsUsesStorageIcon() {
+        val alwaysRecordLogs = AutoSettingsSchema.general.alwaysRecordLogsEnabled
+        val metadata = AutoSettingsMetadata.setting(alwaysRecordLogs.key)
+
+        assertEquals(AutoSettingIcon.Storage, alwaysRecordLogs.icon)
+        assertEquals(AutoSettingIcon.Storage, metadata?.icon)
     }
 
     @Test

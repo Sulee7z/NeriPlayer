@@ -181,6 +181,7 @@ import moe.ouom.neriplayer.data.model.displayName
 import moe.ouom.neriplayer.data.model.SongIdentity
 import moe.ouom.neriplayer.data.model.identity
 import moe.ouom.neriplayer.data.local.media.isLocalSong
+import moe.ouom.neriplayer.data.model.isSyncableRemoteSong
 import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
@@ -365,6 +366,13 @@ fun LocalPlaylistDetailScreen(
     }
     val scanPreviewState by vm.scanPreviewState.collectAsState()
     val metadataProcessingState by vm.metadataProcessingState.collectAsState()
+    val downloadedSongs by GlobalDownloadManager.downloadedSongs.collectAsState()
+    val downloadedPlaybackCoverCandidates = remember(downloadedSongs) {
+        downloadedSongs.map { it.toPlaybackSongItem() }
+    }
+    val latestDownloadedPlaybackCoverCandidates by rememberUpdatedState(
+        downloadedPlaybackCoverCandidates
+    )
     val visibleMetadataProcessingState = metadataProcessingState
         .takeIf { it.playlistId == playlistId }
         ?: LocalMetadataProcessingState()
@@ -386,7 +394,18 @@ fun LocalPlaylistDetailScreen(
                     AppContainer.playlistUsageRepo.updateInfo(
                         id = playlist.id,
                         name = playlist.name,
-                        picUrl = playlist.displayCoverUrl(context),
+                        picUrl = playlist.displayCoverUrl(
+                            context = context,
+                            additionalCoverCandidates = if (LocalFilesPlaylist.isSystemPlaylist(
+                                    playlist,
+                                    context
+                                )
+                            ) {
+                                latestDownloadedPlaybackCoverCandidates
+                            } else {
+                                emptyList()
+                            }
+                        ),
                         trackCount = playlist.songs.size,
                         source = "local"
                     )
@@ -527,7 +546,6 @@ fun LocalPlaylistDetailScreen(
             // 下载进度
             val downloadTaskSummary by GlobalDownloadManager.downloadTaskSummary.collectAsState()
             val hasDownloadManagerEntry = downloadTaskSummary.hasPendingTasks
-            val downloadedSongs by GlobalDownloadManager.downloadedSongs.collectAsState()
 
             // Snackbar状态
             val snackbarHostState = remember { SnackbarHostState() }
@@ -805,7 +823,7 @@ fun LocalPlaylistDetailScreen(
             }
 
             fun launchWithLocalSyncWarning(songs: List<SongItem>, actionLabel: String, action: () -> Unit) {
-                if (songs.any { it.isLocalSong() }) {
+                if (songs.any { !it.isSyncableRemoteSong(context) }) {
                     pendingSyncConfirmLabel = actionLabel
                     pendingSyncConfirmAction = action
                 } else {

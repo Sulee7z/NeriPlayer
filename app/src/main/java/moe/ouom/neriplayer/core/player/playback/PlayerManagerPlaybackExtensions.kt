@@ -37,6 +37,7 @@ import moe.ouom.neriplayer.core.player.policy.command.USB_TRACK_TRANSITION_PROTE
 import moe.ouom.neriplayer.core.player.policy.command.resolveEffectivePlaybackStartPlan
 import moe.ouom.neriplayer.core.player.policy.command.resolveManagedPlaybackStartPlan
 import moe.ouom.neriplayer.core.player.policy.command.resolveManualResumePlaybackDecision
+import moe.ouom.neriplayer.core.player.policy.command.resolveNoFadePlaybackStartPlan
 import moe.ouom.neriplayer.core.player.policy.command.resolvePauseVolumePlan
 import moe.ouom.neriplayer.core.player.policy.command.resolvePlaybackContinuationStartPlan
 import moe.ouom.neriplayer.core.player.policy.command.shouldPausePlaybackWhenToggling
@@ -52,6 +53,8 @@ import moe.ouom.neriplayer.core.player.policy.progress.LONG_FORM_PLAYBACK_MIN_DU
 import moe.ouom.neriplayer.core.player.policy.progress.PLAYBACK_PROGRESS_STATS_UPDATE_INTERVAL_MS
 import moe.ouom.neriplayer.core.player.policy.progress.resolvePlaybackProgressUpdateIntervalMs
 import moe.ouom.neriplayer.core.player.policy.progress.shouldRunPlaybackProgressUpdates
+import moe.ouom.neriplayer.core.player.policy.skip.BiliSkipSegmentSource
+import moe.ouom.neriplayer.core.player.policy.skip.resolveBiliSkipSegmentPromptMessageRes
 import moe.ouom.neriplayer.core.player.policy.wake.PlaybackTransitionWakeLock
 import moe.ouom.neriplayer.core.player.prefetch.cancelGenericUrlPrefetchUnlessReusableForSong
 import moe.ouom.neriplayer.core.player.prefetch.cancelYouTubePrefetchForPlaybackDemand
@@ -59,6 +62,7 @@ import moe.ouom.neriplayer.core.player.prefetch.clearPlaybackDemandCacheKey
 import moe.ouom.neriplayer.core.player.prefetch.kickoffYouTubePlaybackIntentWarmup
 import moe.ouom.neriplayer.core.player.prefetch.replacePlaybackDemandCacheKey
 import moe.ouom.neriplayer.core.player.resolver.youtube.YouTubeSeekRefreshPolicy
+import moe.ouom.neriplayer.core.player.service.AudioPlayerService
 import moe.ouom.neriplayer.core.player.url.cancelUrlRefreshIfNotReusableForPendingLoad
 import moe.ouom.neriplayer.core.player.url.invalidateMismatchedCachedResource
 import moe.ouom.neriplayer.core.player.url.resolveSongUrl
@@ -657,6 +661,7 @@ internal fun PlayerManager.playAtIndex(
     useTrackTransitionFade: Boolean = false,
     commandSource: PlaybackCommandSource = PlaybackCommandSource.LOCAL,
     forceStartupProtectionFade: Boolean = false,
+    startPlanOverride: PlaybackStartPlan? = null,
     allowRememberedLongFormPosition: Boolean =
         commandSource == PlaybackCommandSource.LOCAL
 ) {
@@ -728,6 +733,14 @@ internal fun PlayerManager.playAtIndex(
     playbackRequestToken += 1
     val requestToken = playbackRequestToken
     BiliSponsorBlockPlaybackController.onPlaybackRequestStarted(song, requestToken)
+    BiliVideoSkipPlaybackController.onPlaybackRequestStarted(song, requestToken)
+    if (isBiliTrack(song) && !isListenTogetherActive()) {
+        BiliVideoSkipPlaybackController.prepareActiveBiliTrackTarget(
+            song = song,
+            requestToken = requestToken,
+            scope = ioScope
+        )
+    }
     PlaybackTransitionWakeLock.acquire(
         context = application,
         requestToken = requestToken,
@@ -747,7 +760,10 @@ internal fun PlayerManager.playAtIndex(
         val result = resolveSongUrlOrWaitForAuthoritativeStream(
             shouldWaitForAuthoritativeStream = shouldAwaitAuthoritativeStream
         ) {
-            resolveSongUrl(song)
+            resolveSongUrl(
+                song = song,
+                playbackRequestTokenOverride = requestToken
+            )
         }
         if (!shouldApplyResolvedMedia(requestToken, playbackRequestToken) || !isActive) {
             NPLogger.d(
@@ -829,7 +845,7 @@ internal fun PlayerManager.playAtIndex(
                         positionMs = resolvedResumePositionMs,
                         shouldResumePlayback = true
                     )
-                    val startPlan = resolveCurrentPlaybackStartPlan(
+                    val startPlan = startPlanOverride ?: resolveCurrentPlaybackStartPlan(
                         useTrackTransitionFade = useTrackTransitionFade,
                         useUsbTransitionProtection = useUsbTransitionProtection,
                         forceStartupProtectionFade = forceStartupProtectionFade &&
@@ -1026,7 +1042,8 @@ internal fun PlayerManager.playBiliVideoPartsImpl(
 
 internal fun PlayerManager.playImpl(
     commandSource: PlaybackCommandSource = PlaybackCommandSource.LOCAL,
-    bypassLoudVolumeWarning: Boolean = false
+    bypassLoudVolumeWarning: Boolean = false,
+    allowFadeIn: Boolean = true
 ) {
     ensureInitialized()
     if (!initialized) return
@@ -1040,7 +1057,8 @@ internal fun PlayerManager.playImpl(
             continuePlayback = {
                 playImpl(
                     commandSource = commandSource,
-                    bypassLoudVolumeWarning = true
+                    bypassLoudVolumeWarning = true,
+                    allowFadeIn = allowFadeIn
                 )
             }
         )
@@ -1111,10 +1129,14 @@ internal fun PlayerManager.playImpl(
         preparedInPlayer -> {
             syncExoRepeatMode()
             startPlayerPlaybackWithFade(
-                resolvePlaybackContinuationStartPlan(
-                    plan = resolveCurrentPlaybackStartPlan(),
-                    currentVolume = resumeVolumeFromPendingPause
-                )
+                if (allowFadeIn) {
+                    resolvePlaybackContinuationStartPlan(
+                        plan = resolveCurrentPlaybackStartPlan(),
+                        currentVolume = resumeVolumeFromPendingPause
+                    )
+                } else {
+                    resolveNoFadePlaybackStartPlan()
+                }
             )
             val resumePositionMs = player.currentPosition.coerceAtLeast(0L)
             _playbackPositionMs.value = resumePositionMs
@@ -1143,7 +1165,8 @@ internal fun PlayerManager.playImpl(
                 currentIndex,
                 resumePositionMs = manualResumeDecision.resumePositionMs,
                 commandSource = commandSource,
-                forceStartupProtectionFade = manualResumeDecision.forceStartupProtectionFade
+                forceStartupProtectionFade = manualResumeDecision.forceStartupProtectionFade,
+                startPlanOverride = if (allowFadeIn) null else resolveNoFadePlaybackStartPlan()
             )
             emitPlaybackCommand(
                 type = "PLAY",
@@ -1153,7 +1176,11 @@ internal fun PlayerManager.playImpl(
             )
         }
         currentPlaylist.isNotEmpty() -> {
-            playAtIndex(0, commandSource = commandSource)
+            playAtIndex(
+                index = 0,
+                commandSource = commandSource,
+                startPlanOverride = if (allowFadeIn) null else resolveNoFadePlaybackStartPlan()
+            )
             emitPlaybackCommand(
                 type = "PLAY",
                 source = commandSource,
@@ -1410,7 +1437,7 @@ private fun PlayerManager.pauseInternal(
     }
 }
 
-internal fun PlayerManager.togglePlayPauseImpl() {
+internal fun PlayerManager.togglePlayPauseImpl(allowFade: Boolean = true) {
     ensureInitialized()
     if (!initialized) return
     if (shouldPausePlaybackWhenToggling(
@@ -1421,9 +1448,12 @@ internal fun PlayerManager.togglePlayPauseImpl() {
             playJobActive = playJob?.isActive == true
         )
     ) {
-        pause()
+        pauseImpl(
+            allowFadeOut = allowFade,
+            debugReason = if (allowFade) "toggle_play_pause" else "skip_interval_editor"
+        )
     } else {
-        play()
+        playImpl(allowFadeIn = allowFade)
     }
 }
 
@@ -1819,6 +1849,35 @@ internal fun PlayerManager.startProgressUpdates() {
             }
             val currentSong = _currentSongFlow.value
             if (currentSong != null && !isListenTogetherActive()) {
+                val userSkipPositionMs = BiliVideoSkipPlaybackController.nextSkipPosition(
+                    song = currentSong,
+                    currentPositionMs = positionMs,
+                    durationMs = durationMs
+                )
+                if (userSkipPositionMs != null) {
+                    NPLogger.d(
+                        "BiliVideoSkip",
+                        "auto skipping interval: from=${positionMs}ms, to=${userSkipPositionMs}ms"
+                    )
+                    resolveBiliSkipSegmentPromptMessageRes(
+                        promptsEnabled = biliSkipSegmentPromptEnabled,
+                        source = BiliSkipSegmentSource.CUSTOM_INTERVAL
+                    )?.let { messageRes ->
+                        AppFeedback.showToast(
+                            context = application,
+                            message = getLocalizedString(messageRes)
+                        )
+                    }
+                    seekTo(
+                        positionMs = userSkipPositionMs,
+                        commandSource = PlaybackCommandSource.LOCAL_SAFETY
+                    )
+                    AudioPlayerService.refreshPlaybackWidgetAfterSeekFromActiveService(
+                        reason = "bili_video_auto_skip"
+                    )
+                    delay(updateIntervalMs)
+                    continue
+                }
                 val skipPositionMs = BiliSponsorBlockPlaybackController.nextSkipPosition(
                     song = currentSong,
                     currentPositionMs = positionMs,
@@ -1829,13 +1888,21 @@ internal fun PlayerManager.startProgressUpdates() {
                         "BiliSponsorBlock",
                         "auto skipping segment: from=${positionMs}ms, to=${skipPositionMs}ms"
                     )
-                    AppFeedback.showToast(
-                        context = application,
-                        message = getLocalizedString(R.string.toast_bili_sponsor_block_skipped)
-                    )
+                    resolveBiliSkipSegmentPromptMessageRes(
+                        promptsEnabled = biliSkipSegmentPromptEnabled,
+                        source = BiliSkipSegmentSource.SPONSOR_BLOCK
+                    )?.let { messageRes ->
+                        AppFeedback.showToast(
+                            context = application,
+                            message = getLocalizedString(messageRes)
+                        )
+                    }
                     seekTo(
                         positionMs = skipPositionMs,
                         commandSource = PlaybackCommandSource.LOCAL_SAFETY
+                    )
+                    AudioPlayerService.refreshPlaybackWidgetAfterSeekFromActiveService(
+                        reason = "bili_sponsor_block_auto_skip"
                     )
                     delay(updateIntervalMs)
                     continue
