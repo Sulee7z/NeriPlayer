@@ -432,6 +432,8 @@ object PlayerManager {
     internal var floatingLyricsShowTranslation = true
     internal var cloudMusicLyricDefaultOffsetMs = DEFAULT_CLOUD_MUSIC_LYRIC_OFFSET_MS
     internal var qqMusicLyricDefaultOffsetMs = DEFAULT_QQ_MUSIC_LYRIC_OFFSET_MS
+    @Volatile
+    internal var biliSkipSegmentPromptEnabled = false
     internal var keepLastPlaybackProgressEnabled = true
     internal var rememberLongFormPlaybackProgressEnabled = true
     internal var keepPlaybackModeStateEnabled = true
@@ -2335,7 +2337,10 @@ object PlayerManager {
                 )
             }
             isBiliTrack(song) -> {
-                val cidPart = song.subAudioId ?: song.album.split('|').getOrNull(1)
+                val cidPart = song.subAudioId ?: song.album
+                    .substringAfter('|', "")
+                    .substringBefore('|')
+                    .takeIf { it.isNotBlank() }
                 val biliSongId = song.audioId ?: song.id.toString()
                 if (cidPart != null) {
                     "bili-$biliSongId-$cidPart-${effectiveBiliQuality()}"
@@ -2521,6 +2526,8 @@ object PlayerManager {
 
     fun togglePlayPause() = this.togglePlayPauseImpl()
 
+    fun togglePlayPauseWithoutFade() = this.togglePlayPauseImpl(allowFade = false)
+
     fun seekTo(
         positionMs: Long,
         commandSource: PlaybackCommandSource = PlaybackCommandSource.LOCAL
@@ -2635,7 +2642,7 @@ object PlayerManager {
         onComplete: ((Boolean) -> Unit)? = null
     ) = replaceMetadataFromSearchImpl(originalSong, selectedSong, isAuto, onComplete)
 
-    fun updateSongCustomInfo(
+    suspend fun updateSongCustomInfo(
         originalSong: SongItem,
         customCoverUrl: String?,
         customName: String?,
@@ -2644,7 +2651,8 @@ object PlayerManager {
         restoreBaseName: Boolean = false,
         restoreBaseArtist: Boolean = false,
         clearMatchedMetadata: Boolean = false,
-        writeLocalMetadata: Boolean = false
+        writeLocalMetadata: Boolean = false,
+        writeLyrics: Boolean = false
     ) = updateSongCustomInfoImpl(
         originalSong,
         customCoverUrl,
@@ -2654,7 +2662,8 @@ object PlayerManager {
         restoreBaseName,
         restoreBaseArtist,
         clearMatchedMetadata,
-        writeLocalMetadata
+        writeLocalMetadata,
+        writeLyrics
     )
 
     fun hydrateSongMetadata(originalSong: SongItem, updatedSong: SongItem) =

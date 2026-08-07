@@ -24,8 +24,20 @@ package moe.ouom.neriplayer.ui.screen.tab
  */
 
 import android.app.Application
+import android.content.ClipData
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -65,15 +77,20 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
 import androidx.compose.material.icons.automirrored.outlined.QueueMusic
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material3.Checkbox
@@ -115,9 +132,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -136,6 +156,7 @@ import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.bili.BiliClient
 import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSummary
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.core.download.GlobalDownloadManager
 import moe.ouom.neriplayer.data.platform.youtube.YouTubeFeatureGate
 import moe.ouom.neriplayer.data.search.ExploreSearchHistoryRepository
 import moe.ouom.neriplayer.data.search.exploreSearchHistoryRecordKeyword
@@ -161,6 +182,7 @@ import moe.ouom.neriplayer.ui.component.playlist.showPlaylistBatchExportAddedRes
 import moe.ouom.neriplayer.ui.component.playlist.showPlaylistBatchExportCreatedResult
 import moe.ouom.neriplayer.ui.component.sheet.bottomSheetScrollGuard
 import moe.ouom.neriplayer.ui.feedback.NeriSnackbarHost
+import moe.ouom.neriplayer.ui.feedback.showNeriSnackbar
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.ui.viewmodel.tab.ExploreSearchResult
 import moe.ouom.neriplayer.ui.viewmodel.tab.ExploreUiState
@@ -175,6 +197,8 @@ import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeMusicPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.tab.shouldLoadExploreSearchMore
 import moe.ouom.neriplayer.ui.util.currentWindowWidthDp
 import moe.ouom.neriplayer.ui.util.rememberSongDisplayCoverUrl
+import moe.ouom.neriplayer.ui.util.ClipboardCopyResult
+import moe.ouom.neriplayer.ui.util.copyPlainTextSafely
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.haptic.HapticTextButton
 import moe.ouom.neriplayer.core.logging.NPLogger
@@ -445,11 +469,7 @@ fun ExploreScreen(
         history = visibleSearchHistory,
         contentScrolled = isExploreContentScrolled
     )
-    val shouldShowNeteaseSearchTypeBar = shouldShowExploreNeteaseSearchTypeBar(
-        selectedSearchSource = ui.selectedSearchSource,
-        contentScrolled = isExploreContentScrolled
-    )
-    val shouldShowYouTubeSearchTypeBar = shouldShowExploreYouTubeSearchTypeBar(
+    val searchTypeBarSource = exploreSearchTypeBarSource(
         selectedSearchSource = ui.selectedSearchSource,
         contentScrolled = isExploreContentScrolled
     )
@@ -795,48 +815,16 @@ fun ExploreScreen(
                             }
                         }
                     }
-                    AnimatedVisibility(visible = shouldShowNeteaseSearchTypeBar) {
-                        FlowRow(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            NeteaseExploreSearchType.entries.forEach { type ->
-                                ExploreTagChip(
-                                    label = neteaseSearchTypeLabel(type),
-                                    icon = neteaseSearchTypeIcon(type),
-                                    selected = ui.selectedNeteaseSearchType == type,
-                                    onClick = { vm.setNeteaseSearchType(type) },
-                                    selectedAlpha = tagChipSelectedAlpha,
-                                    unselectedAlpha = tagChipUnselectedAlpha,
-                                    borderAlpha = tagChipBorderAlpha
-                                )
-                            }
-                        }
-                    }
-                    AnimatedVisibility(visible = shouldShowYouTubeSearchTypeBar) {
-                        FlowRow(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            YouTubeExploreSearchType.entries.forEach { type ->
-                                ExploreTagChip(
-                                    label = youtubeSearchTypeLabel(type),
-                                    icon = youtubeSearchTypeIcon(type),
-                                    selected = ui.selectedYouTubeMusicSearchType == type,
-                                    onClick = { vm.setYouTubeMusicSearchType(type) },
-                                    selectedAlpha = tagChipSelectedAlpha,
-                                    unselectedAlpha = tagChipUnselectedAlpha,
-                                    borderAlpha = tagChipBorderAlpha
-                                )
-                            }
-                        }
-                    }
+                    ExploreSearchTypeBar(
+                        source = searchTypeBarSource,
+                        selectedNeteaseSearchType = ui.selectedNeteaseSearchType,
+                        selectedYouTubeSearchType = ui.selectedYouTubeMusicSearchType,
+                        onNeteaseSearchTypeClick = vm::setNeteaseSearchType,
+                        onYouTubeSearchTypeClick = vm::setYouTubeMusicSearchType,
+                        selectedAlpha = tagChipSelectedAlpha,
+                        unselectedAlpha = tagChipUnselectedAlpha,
+                        borderAlpha = tagChipBorderAlpha
+                    )
                 }
 
             HorizontalPager(
@@ -900,6 +888,7 @@ fun ExploreScreen(
                                                 isFavorite = isFavoriteSong,
                                                 favoriteActionEnabled = localPlaylistsReady,
                                                 offlineMode = offlineMode,
+                                                snackbarHostState = snackbarHostState,
                                                 onClick = {
                                                     if (shouldShowBiliPartsPicker(song)) {
                                                         scope.launch {
@@ -923,6 +912,17 @@ fun ExploreScreen(
                                                 onPlayNow = { onSongPlayPreservingQueue(song) },
                                                 onPlayNext = { onSongPlayNext(song) },
                                                 onAddToQueueEnd = { onSongAddToQueueEnd(song) },
+                                                onDownload = {
+                                                    GlobalDownloadManager.startDownload(context, song)
+                                                    scope.launch {
+                                                        snackbarHostState.showNeriSnackbar(
+                                                            composeResources.getString(
+                                                                R.string.download_starting,
+                                                                song.displayName()
+                                                            )
+                                                        )
+                                                    }
+                                                },
                                                 onToggleFavorite = {
                                                     if (localPlaylistsReady) {
                                                         scope.launchLocalPlaylistMutation(
@@ -1387,18 +1387,203 @@ internal fun shouldShowExploreNeteaseSearchTypeBar(
     selectedSearchSource: SearchSource,
     contentScrolled: Boolean
 ): Boolean {
-    return selectedSearchSource == SearchSource.NETEASE && !contentScrolled
+    return exploreSearchTypeBarSource(selectedSearchSource, contentScrolled) ==
+        SearchSource.NETEASE
 }
 
 internal fun shouldShowExploreYouTubeSearchTypeBar(
     selectedSearchSource: SearchSource,
     contentScrolled: Boolean
 ): Boolean {
-    return selectedSearchSource == SearchSource.YOUTUBE_MUSIC && !contentScrolled
+    return exploreSearchTypeBarSource(selectedSearchSource, contentScrolled) ==
+        SearchSource.YOUTUBE_MUSIC
+}
+
+internal fun exploreSearchTypeBarSource(
+    selectedSearchSource: SearchSource,
+    contentScrolled: Boolean
+): SearchSource? {
+    if (contentScrolled) return null
+    return selectedSearchSource.takeIf {
+        it == SearchSource.NETEASE || it == SearchSource.YOUTUBE_MUSIC
+    }
+}
+
+internal fun isExploreSearchTypeBarSourceSwap(
+    initialSource: SearchSource?,
+    targetSource: SearchSource?
+): Boolean {
+    return initialSource != targetSource &&
+        initialSource in EXPLORE_SEARCH_TYPE_BAR_SOURCES &&
+        targetSource in EXPLORE_SEARCH_TYPE_BAR_SOURCES
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun ExploreSearchTypeBar(
+    source: SearchSource?,
+    selectedNeteaseSearchType: NeteaseExploreSearchType,
+    selectedYouTubeSearchType: YouTubeExploreSearchType,
+    onNeteaseSearchTypeClick: (NeteaseExploreSearchType) -> Unit,
+    onYouTubeSearchTypeClick: (YouTubeExploreSearchType) -> Unit,
+    selectedAlpha: Float,
+    unselectedAlpha: Float,
+    borderAlpha: Float
+) {
+    AnimatedContent(
+        targetState = source,
+        modifier = Modifier.testTag(EXPLORE_SEARCH_TYPE_BAR_CONTAINER_TAG),
+        transitionSpec = {
+            val sourceSwap = isExploreSearchTypeBarSourceSwap(initialState, targetState)
+            val enter = if (sourceSwap) {
+                fadeIn(
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_ENTER_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                ) + slideInVertically(
+                    initialOffsetY = { height ->
+                        if (targetState == SearchSource.YOUTUBE_MUSIC) {
+                            height / EXPLORE_SEARCH_TYPE_BAR_SLIDE_DIVISOR
+                        } else {
+                            -height / EXPLORE_SEARCH_TYPE_BAR_SLIDE_DIVISOR
+                        }
+                    },
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_ENTER_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            } else {
+                fadeIn(
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_ENTER_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                ) + expandVertically(
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_SIZE_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            }
+            val exit = if (sourceSwap) {
+                fadeOut(
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_EXIT_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                ) + slideOutVertically(
+                    targetOffsetY = { height ->
+                        if (targetState == SearchSource.YOUTUBE_MUSIC) {
+                            -height / EXPLORE_SEARCH_TYPE_BAR_SLIDE_DIVISOR
+                        } else {
+                            height / EXPLORE_SEARCH_TYPE_BAR_SLIDE_DIVISOR
+                        }
+                    },
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_EXIT_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            } else {
+                fadeOut(
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_EXIT_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                ) + shrinkVertically(
+                    animationSpec = tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_SIZE_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                )
+            }
+            enter togetherWith exit using SizeTransform(
+                clip = true,
+                sizeAnimationSpec = { _, _ ->
+                    tween(
+                        durationMillis = EXPLORE_SEARCH_TYPE_BAR_SIZE_DURATION_MS,
+                        easing = FastOutSlowInEasing
+                    )
+                }
+            )
+        },
+        label = "explore_search_type_bar"
+    ) { displayedSource ->
+        when (displayedSource) {
+            SearchSource.NETEASE -> {
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .testTag(EXPLORE_NETEASE_SEARCH_TYPE_BAR_TAG),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    NeteaseExploreSearchType.entries.forEach { type ->
+                        ExploreTagChip(
+                            label = neteaseSearchTypeLabel(type),
+                            icon = neteaseSearchTypeIcon(type),
+                            selected = selectedNeteaseSearchType == type,
+                            onClick = {
+                                if (source == displayedSource) {
+                                    onNeteaseSearchTypeClick(type)
+                                }
+                            },
+                            selectedAlpha = selectedAlpha,
+                            unselectedAlpha = unselectedAlpha,
+                            borderAlpha = borderAlpha
+                        )
+                    }
+                }
+            }
+
+            SearchSource.YOUTUBE_MUSIC -> {
+                FlowRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp)
+                        .testTag(EXPLORE_YOUTUBE_SEARCH_TYPE_BAR_TAG),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    YouTubeExploreSearchType.entries.forEach { type ->
+                        ExploreTagChip(
+                            label = youtubeSearchTypeLabel(type),
+                            icon = youtubeSearchTypeIcon(type),
+                            selected = selectedYouTubeSearchType == type,
+                            onClick = {
+                                if (source == displayedSource) {
+                                    onYouTubeSearchTypeClick(type)
+                                }
+                            },
+                            selectedAlpha = selectedAlpha,
+                            unselectedAlpha = unselectedAlpha,
+                            borderAlpha = borderAlpha
+                        )
+                    }
+                }
+            }
+
+            else -> Unit
+        }
+    }
 }
 
 private const val EXPLORE_HISTORY_DISPLAY_LIMIT = 15
 private const val EXPLORE_HISTORY_RECORD_DEBOUNCE_MS = 1_200L
+private val EXPLORE_SEARCH_TYPE_BAR_SOURCES = setOf(
+    SearchSource.NETEASE,
+    SearchSource.YOUTUBE_MUSIC
+)
+private const val EXPLORE_SEARCH_TYPE_BAR_ENTER_DURATION_MS = 180
+private const val EXPLORE_SEARCH_TYPE_BAR_EXIT_DURATION_MS = 140
+private const val EXPLORE_SEARCH_TYPE_BAR_SIZE_DURATION_MS = 220
+private const val EXPLORE_SEARCH_TYPE_BAR_SLIDE_DIVISOR = 5
+internal const val EXPLORE_SEARCH_TYPE_BAR_CONTAINER_TAG = "explore_search_type_bar"
+internal const val EXPLORE_NETEASE_SEARCH_TYPE_BAR_TAG = "explore_netease_search_type_bar"
+internal const val EXPLORE_YOUTUBE_SEARCH_TYPE_BAR_TAG = "explore_youtube_search_type_bar"
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
@@ -1865,19 +2050,24 @@ private fun SearchLoadMoreErrorRow(
 }
 
 @Composable
-private fun SongRow(
+internal fun SongRow(
     index: Int,
     song: SongItem,
     isFavorite: Boolean,
     favoriteActionEnabled: Boolean,
     offlineMode: Boolean,
+    snackbarHostState: SnackbarHostState,
     onClick: () -> Unit,
     onPlayNow: () -> Unit,
     onPlayNext: () -> Unit,
     onAddToQueueEnd: () -> Unit,
+    onDownload: () -> Unit,
     onToggleFavorite: () -> Unit
 ) {
     val context = LocalContext.current
+    val composeResources = LocalResources.current
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
     val coverUrl = rememberSongDisplayCoverUrl(song)
     var showMoreMenu by remember { mutableStateOf(false) }
     Row(
@@ -1962,6 +2152,12 @@ private fun SongRow(
             ) {
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.search_result_play_keep_queue)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.PlayCircle,
+                            contentDescription = null
+                        )
+                    },
                     onClick = {
                         context.performHapticFeedback()
                         onPlayNow()
@@ -1970,6 +2166,12 @@ private fun SongRow(
                 )
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.local_playlist_play_next)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
+                            contentDescription = null
+                        )
+                    },
                     onClick = {
                         context.performHapticFeedback()
                         onPlayNext()
@@ -1978,6 +2180,12 @@ private fun SongRow(
                 )
                 DropdownMenuItem(
                     text = { Text(stringResource(R.string.search_result_add_to_current_queue)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
+                            contentDescription = null
+                        )
+                    },
                     onClick = {
                         context.performHapticFeedback()
                         onAddToQueueEnd()
@@ -1994,6 +2202,16 @@ private fun SongRow(
                             }
                         )
                     },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (isFavorite) {
+                                Icons.Filled.Favorite
+                            } else {
+                                Icons.Outlined.FavoriteBorder
+                            },
+                            contentDescription = null
+                        )
+                    },
                     enabled = favoriteActionEnabled,
                     onClick = {
                         context.performHapticFeedback()
@@ -2001,9 +2219,57 @@ private fun SongRow(
                         showMoreMenu = false
                     }
                 )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.download_to_local)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Download,
+                            contentDescription = null
+                        )
+                    },
+                    onClick = {
+                        context.performHapticFeedback()
+                        onDownload()
+                        showMoreMenu = false
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.action_copy_song_info)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.ContentCopy,
+                            contentDescription = null
+                        )
+                    },
+                    onClick = {
+                        scope.launch {
+                            val messageRes = when (
+                                val result = clipboard.copyPlainTextSafely(
+                                    label = "text",
+                                    text = buildExploreSongInfo(song)
+                                )
+                            ) {
+                                is ClipboardCopyResult.Copied -> if (result.wasTruncated) {
+                                    R.string.toast_copy_truncated
+                                } else {
+                                    R.string.toast_copied
+                                }
+                                ClipboardCopyResult.TransactionTooLarge -> R.string.toast_copy_failed
+                            }
+                            snackbarHostState.showNeriSnackbar(
+                                composeResources.getString(messageRes)
+                            )
+                        }
+                        showMoreMenu = false
+                    }
+                )
             }
         }
     }
+}
+
+internal fun buildExploreSongInfo(song: SongItem): String {
+    return "${song.displayName()}-${song.displayArtist()}"
 }
 
 @Composable

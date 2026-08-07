@@ -24,13 +24,16 @@ package moe.ouom.neriplayer.data.model
  */
 
 
+import android.content.Context
 import android.os.Parcelable
 import kotlinx.parcelize.Parcelize
 import moe.ouom.neriplayer.data.local.media.LocalSongSupport
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeMusicMediaUri
 import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
 import moe.ouom.neriplayer.data.platform.youtube.stableYouTubeMusicId
+import moe.ouom.neriplayer.data.sync.CoverUrlMapper
 import moe.ouom.neriplayer.data.sync.model.SyncSong
+import moe.ouom.neriplayer.data.sync.model.sanitizeCoverUrlForSync
 import java.util.Locale
 
 @Parcelize
@@ -52,8 +55,8 @@ fun SongIdentity.stableKey(): String = buildString {
 }
 
 fun SongItem.identity(): SongIdentity {
+    normalizedSourceStableIdentity()?.let { return it }
     normalizedRemoteIdentity()?.let { return it }
-    normalizedDownloadedSourceIdentity()?.let { return it }
     return SongIdentity(
         id = normalizedYouTubeMusicId(this) ?: id,
         album = normalizedYouTubeMusicAlbum(this),
@@ -62,6 +65,63 @@ fun SongItem.identity(): SongIdentity {
 }
 
 fun SongItem.stableKey(): String = identity().stableKey()
+
+internal fun SongItem.remoteSourceIdentityOrNull(): SongIdentity? =
+    normalizedSourceStableIdentity()
+
+internal fun SongItem.isSyncableRemoteSong(context: Context? = null): Boolean {
+    return !LocalSongSupport.isLocalSong(this, context) ||
+        remoteSourceIdentityOrNull() != null
+}
+
+internal fun SongItem.toSyncableRemoteSongOrNull(context: Context? = null): SongItem? {
+    if (!LocalSongSupport.isLocalSong(this, context)) {
+        return this
+    }
+    val sourceIdentity = remoteSourceIdentityOrNull() ?: return null
+    val rawSourceChannel = channelId
+        ?.trim()
+        ?.takeIf { it.isNotBlank() && !it.equals("local", ignoreCase = true) }
+    val sourceChannel = rawSourceChannel ?: sourceIdentity.album
+    val sourceAudioId = audioId
+        ?.trim()
+        ?.takeIf { rawSourceChannel != null && it.isNotBlank() }
+        ?: sourceIdentity.id.toString().takeIf { sourceChannel == "netease" }
+    val sourceSubAudioId = subAudioId
+        ?.trim()
+        ?.takeIf { rawSourceChannel != null && it.isNotBlank() }
+    val retainsSourceAddress = rawSourceChannel != null && sourceAudioId != null
+    val sourceIsNetease = sourceChannel.equals("netease", ignoreCase = true) &&
+        sourceIdentity.album.equals("netease", ignoreCase = true) &&
+        sourceIdentity.mediaUri == null
+    val mapper = context?.let(CoverUrlMapper::getInstance)
+    val syncCoverUrl = sanitizeCoverUrlForSync(coverUrl, mapper)
+        ?: sanitizeCoverUrlForSync(originalCoverUrl, mapper)
+    val syncCustomCoverUrl = sanitizeCoverUrlForSync(customCoverUrl, mapper)
+    val syncOriginalCoverUrl = sanitizeCoverUrlForSync(originalCoverUrl, mapper)
+
+    return copy(
+        id = if (sourceIsNetease) {
+            sourceIdentity.id
+        } else if (retainsSourceAddress) {
+            id
+        } else {
+            sourceIdentity.id
+        },
+        album = sourceIdentity.album,
+        albumId = 0L,
+        mediaUri = sourceIdentity.mediaUri,
+        localFileName = null,
+        localFilePath = null,
+        coverUrl = syncCoverUrl,
+        customCoverUrl = syncCustomCoverUrl,
+        originalCoverUrl = syncOriginalCoverUrl,
+        channelId = sourceChannel,
+        audioId = sourceAudioId,
+        subAudioId = sourceSubAudioId,
+        streamUrl = null
+    )
+}
 
 fun SyncSong.identity(): SongIdentity {
     normalizedRemoteIdentity()?.let { return it }
@@ -152,8 +212,7 @@ private fun SongItem.normalizedRemoteIdentity(): SongIdentity? {
     )
 }
 
-private fun SongItem.normalizedDownloadedSourceIdentity(): SongIdentity? {
-    if (!LocalSongSupport.isLocalSong(this, null)) return null
+private fun SongItem.normalizedSourceStableIdentity(): SongIdentity? {
     val sourceKey = sourceStableKey
         ?.trim()
         ?.takeIf { it.isNotBlank() }
@@ -161,6 +220,32 @@ private fun SongItem.normalizedDownloadedSourceIdentity(): SongIdentity? {
     val sourceIdentity = parseStableSongIdentity(sourceKey) ?: return null
     if (sourceIdentity.album == LocalSongSupport.LOCAL_ALBUM_IDENTITY) return null
     return sourceIdentity
+}
+
+internal fun SongItem.recoverNeteaseRemoteSourceFromStaleLocalCopy(): SongItem? {
+    if (!LocalSongSupport.isLocalSong(this, null)) return null
+    val sourceIdentity = sourceStableKey
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let(::parseStableSongIdentity)
+        ?: return null
+    if (sourceIdentity.album != "netease" || sourceIdentity.mediaUri != null) {
+        return null
+    }
+
+    return copy(
+        id = sourceIdentity.id,
+        album = "Netease",
+        albumId = 0L,
+        mediaUri = null,
+        localFileName = null,
+        localFilePath = null,
+        channelId = "netease",
+        audioId = sourceIdentity.id.toString(),
+        subAudioId = null,
+        sourceStableKey = null,
+        streamUrl = null
+    )
 }
 
 private fun SyncSong.normalizedRemoteIdentity(): SongIdentity? {
@@ -249,7 +334,11 @@ private fun normalizedSubAudioId(
 ): String {
     val explicitSubAudioId = rawSubAudioId?.trim()?.takeIf { it.isNotBlank() }
     if (channel != "bilibili") return ""
-    return explicitSubAudioId ?: album.substringAfter('|', "").takeIf { it.isNotBlank() }.orEmpty()
+    return explicitSubAudioId ?: album
+        .substringAfter('|', "")
+        .substringBefore('|')
+        .takeIf { it.isNotBlank() }
+        .orEmpty()
 }
 
 private fun stableRemoteIdentityId(channel: String, audio: String, subAudio: String): Long {

@@ -40,6 +40,7 @@ import moe.ouom.neriplayer.core.player.policy.refresh.shouldApplyRefreshResult
 import moe.ouom.neriplayer.core.player.policy.refresh.YouTubePlaybackRecoveryStrategy
 import moe.ouom.neriplayer.core.player.playback.advanceAfterPlaybackFailure
 import moe.ouom.neriplayer.core.player.playback.BiliSponsorBlockPlaybackController
+import moe.ouom.neriplayer.core.player.playback.BiliVideoSkipPlaybackController
 import moe.ouom.neriplayer.core.player.playback.preparePlayerForManagedStart
 import moe.ouom.neriplayer.core.player.prefetch.consumeGenericUrlPrefetch
 import moe.ouom.neriplayer.core.player.quality.effectiveBiliQuality
@@ -52,7 +53,9 @@ import moe.ouom.neriplayer.core.player.watchdog.configureActivePlaybackCandidate
 import moe.ouom.neriplayer.core.player.watchdog.currentPlaybackCandidate
 import moe.ouom.neriplayer.core.player.watchdog.resetPlaybackProgressAdvanceBaseline
 import moe.ouom.neriplayer.core.player.watchdog.schedulePlaybackStartupWatchdog
+import moe.ouom.neriplayer.data.model.recoverNeteaseRemoteSourceFromStaleLocalCopy
 import moe.ouom.neriplayer.data.model.sameIdentityAs
+import moe.ouom.neriplayer.data.platform.bili.BiliVideoSkipTarget
 import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.core.logging.NPLogger
@@ -70,14 +73,15 @@ internal suspend fun PlayerManager.resolveSongUrl(
     forceRefresh: Boolean = false,
     youtubeRecoveryStrategy: YouTubePlaybackRecoveryStrategy? = null,
     sideEffects: RefreshResolverSideEffects = RefreshResolverSideEffects(),
-    allowGenericPrefetchCache: Boolean = true
+    allowGenericPrefetchCache: Boolean = true,
+    playbackRequestTokenOverride: Long? = null
 ): SongUrlResult {
     NPLogger.d(
         "NERI-PlayerManager",
         "resolveSongUrl: song=${song.name}, source=${song.album}, forceRefresh=$forceRefresh, streamUrl=${song.streamUrl}, currentUrl=${_currentMediaUrl.value}, stack=[${debugStackHint()}]"
     )
     if (!forceRefresh && isDirectStreamUrl(song.streamUrl)) {
-        prepareBiliSponsorBlockForCachedPlayback(song)
+        prepareBiliPlaybackSkipsForResolvedPlayback(song, playbackRequestTokenOverride)
         return SongUrlResult.Success(song.streamUrl.orEmpty())
     }
     if (isLocalSong(song)) {
@@ -86,9 +90,25 @@ internal suspend fun PlayerManager.resolveSongUrl(
             val playbackAudioInfo = localMediaUri.toLocalPlaybackUri()
                 ?.let { buildLocalPlaybackAudioInfo(it, application) }
                 ?: buildLocalPlaybackAudioInfo(song, application)
+            prepareBiliPlaybackSkipsForResolvedPlayback(song, playbackRequestTokenOverride)
             return SongUrlResult.Success(
                 url = toPlayableLocalUrl(localMediaUri) ?: localMediaUri,
                 audioInfo = playbackAudioInfo
+            )
+        }
+        song.recoverNeteaseRemoteSourceFromStaleLocalCopy()?.let { recoveredSong ->
+            NPLogger.w(
+                "NERI-PlayerManager",
+                "Deleted downloaded reference found in remote entry, retry as Netease: " +
+                    "song=${song.name}, stale=$localMediaUri"
+            )
+            return resolveSongUrl(
+                song = recoveredSong,
+                forceRefresh = forceRefresh,
+                youtubeRecoveryStrategy = youtubeRecoveryStrategy,
+                sideEffects = sideEffects,
+                allowGenericPrefetchCache = allowGenericPrefetchCache,
+                playbackRequestTokenOverride = playbackRequestTokenOverride
             )
         }
         sideEffects.emitError {
@@ -99,7 +119,7 @@ internal suspend fun PlayerManager.resolveSongUrl(
 
     val localResult = checkLocalCache(song, sideEffects)
     if (localResult != null) {
-        prepareBiliSponsorBlockForCachedPlayback(song)
+        prepareBiliPlaybackSkipsForResolvedPlayback(song, playbackRequestTokenOverride)
         NPLogger.d(
             "NERI-PlayerManager",
             "resolveSongUrl: hit local playback cache for song=${song.name}"
@@ -146,7 +166,7 @@ internal suspend fun PlayerManager.resolveSongUrl(
 
                 else -> null
             }
-        prepareBiliSponsorBlockForCachedPlayback(song)
+        prepareBiliPlaybackSkipsForResolvedPlayback(song, playbackRequestTokenOverride)
         return SongUrlResult.Success(
             url = "$OFFLINE_CACHE_URL_PREFIX$cacheKey",
             durationMs = song.durationMs.takeIf { it > 0L },
@@ -156,7 +176,7 @@ internal suspend fun PlayerManager.resolveSongUrl(
     }
     if (!forceRefresh && allowGenericPrefetchCache && !isYouTubeTrack) {
         consumeGenericUrlPrefetch(cacheKey)?.let { prefetchedResult ->
-            prepareBiliSponsorBlockForCachedPlayback(song)
+            prepareBiliPlaybackSkipsForResolvedPlayback(song)
             return prefetchedResult
         }
     }
@@ -186,7 +206,8 @@ internal suspend fun PlayerManager.resolveSongUrl(
             isBiliTrack(song) -> getBiliAudioUrl(
                 song = song,
                 suppressError = suppressError,
-                sideEffects = resolverSideEffects
+                sideEffects = resolverSideEffects,
+                playbackRequestTokenOverride = playbackRequestTokenOverride
             )
             isQQMusicTrack(song) -> getQQMusicAudioUrl(
                 song = song,
@@ -241,7 +262,10 @@ internal suspend fun PlayerManager.resolveSongUrl(
     }
 }
 
-private fun PlayerManager.prepareBiliSponsorBlockForCachedPlayback(song: SongItem) {
+private fun PlayerManager.prepareBiliPlaybackSkipsForResolvedPlayback(
+    song: SongItem,
+    playbackRequestTokenOverride: Long? = null
+) {
     if (
         !isBiliTrack(song) ||
         isListenTogetherActive() ||
@@ -249,9 +273,15 @@ private fun PlayerManager.prepareBiliSponsorBlockForCachedPlayback(song: SongIte
     ) {
         return
     }
+    val requestToken = playbackRequestTokenOverride ?: playbackRequestToken
     BiliSponsorBlockPlaybackController.prepareActiveBiliTrackTarget(
         song = song,
-        requestToken = playbackRequestToken,
+        requestToken = requestToken,
+        scope = ioScope
+    )
+    BiliVideoSkipPlaybackController.prepareActiveBiliTrackTarget(
+        song = song,
+        requestToken = requestToken,
         scope = ioScope
     )
 }
@@ -681,7 +711,8 @@ private suspend fun PlayerManager.runRefreshOperation(
             song = song,
             forceRefresh = isYouTubeMusicTrack(song),
             youtubeRecoveryStrategy = semantics.youtubeRecoveryStrategy,
-            sideEffects = RefreshResolverSideEffects(refreshSideEffectGate(semantics, song))
+            sideEffects = RefreshResolverSideEffects(refreshSideEffectGate(semantics, song)),
+            playbackRequestTokenOverride = semantics.requestGeneration
         )
         deferred.complete(result)
         handleRefreshResult(semantics, song, result)
@@ -1407,7 +1438,8 @@ private suspend fun PlayerManager.getKuwoAudioUrl(
 private suspend fun PlayerManager.getBiliAudioUrl(
     song: SongItem,
     suppressError: Boolean = false,
-    sideEffects: RefreshResolverSideEffects = RefreshResolverSideEffects()
+    sideEffects: RefreshResolverSideEffects = RefreshResolverSideEffects(),
+    playbackRequestTokenOverride: Long? = null
 ): SongUrlResult = withContext(Dispatchers.IO) {
     try {
         val resolved = resolveBiliSong(song, biliClient)
@@ -1425,6 +1457,7 @@ private suspend fun PlayerManager.getBiliAudioUrl(
         }
 
         if (!isListenTogetherActive() && _currentSongFlow.value?.sameIdentityAs(song) == true) {
+            val requestToken = playbackRequestTokenOverride ?: playbackRequestToken
             BiliSponsorBlockPlaybackController.onBiliTrackResolved(
                 song = song,
                 target = BiliSponsorBlockTarget(
@@ -1437,8 +1470,16 @@ private suspend fun PlayerManager.getBiliAudioUrl(
                         ?.takeIf { it > 0L }
                         ?: song.durationMs
                 ),
-                requestToken = playbackRequestToken,
+                requestToken = requestToken,
                 scope = ioScope
+            )
+            BiliVideoSkipPlaybackController.onBiliTrackResolved(
+                song = song,
+                target = BiliVideoSkipTarget(
+                    bvid = resolved.videoInfo.bvid,
+                    cid = resolved.cid
+                ),
+                requestToken = requestToken
             )
         }
 
