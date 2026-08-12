@@ -172,7 +172,6 @@ import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.data.local.playlist.system.FavoritesPlaylist
 import moe.ouom.neriplayer.data.playlist.usage.UsageEntry
 import moe.ouom.neriplayer.data.settings.DEFAULT_ENHANCED_ADVANCED_BLUR_RADIUS_DP
-import moe.ouom.neriplayer.data.settings.AdvancedBlurQuality
 import moe.ouom.neriplayer.data.settings.AdvancedBlurQualityPreference
 import moe.ouom.neriplayer.data.settings.FloatingLyricsPreferences
 import moe.ouom.neriplayer.data.settings.LyricFontScaleTarget
@@ -202,7 +201,6 @@ import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSceneMotion
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSceneLayer
 import moe.ouom.neriplayer.ui.effect.glass.DRAWER_BACKGROUND_SINK_FRACTION
 import moe.ouom.neriplayer.ui.effect.glass.DRAWER_RECESSED_CONTENT_SCALE
-import moe.ouom.neriplayer.ui.effect.glass.advancedGlassMainTabTransitionSpec
 import moe.ouom.neriplayer.ui.effect.glass.advancedGlassSceneZIndex
 import moe.ouom.neriplayer.ui.effect.glass.animateAdvancedGlassVisibilitySceneMotion
 import moe.ouom.neriplayer.ui.effect.glass.captureAdvancedGlassBackdrop
@@ -242,7 +240,6 @@ import moe.ouom.neriplayer.ui.screen.playlist.NeteaseAlbumDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteasePlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.theme.NeriTheme
-import moe.ouom.neriplayer.ui.theme.isActualSystemDarkTheme
 import moe.ouom.neriplayer.ui.theme.rememberActualSystemDarkTheme
 import moe.ouom.neriplayer.ui.util.rememberSongDisplayCoverUrl
 import moe.ouom.neriplayer.ui.view.HyperBackground
@@ -266,6 +263,7 @@ import moe.ouom.neriplayer.ui.haptic.HapticTextButton
 import moe.ouom.neriplayer.util.platform.openAppBackgroundSettings
 import moe.ouom.neriplayer.util.platform.readBackgroundBehaviorAllowance
 import moe.ouom.neriplayer.util.platform.requestIgnoreBatteryOptimizationsCompat
+import moe.ouom.neriplayer.util.platform.LanguageManager
 import moe.ouom.neriplayer.util.format.formatFileSize
 import moe.ouom.neriplayer.util.media.isRemoteImageSource
 import moe.ouom.neriplayer.util.media.offlineCachedImageRequest
@@ -659,14 +657,9 @@ internal fun AnimatedContentTransitionScope<NavBackStackEntry>.transparentDetail
     return if (!coherentFeedbackEnabled) {
         ExitTransition.KeepUntilTransitionsFinished
     } else if (handoff == MainTabDetailHandoff.RETURN_TO_TAB) {
-        val durationMillis = if (coherentFeedbackEnabled) {
-            MAIN_TAB_DETAIL_CLOSE_DURATION_MS
-        } else {
-            DRAWER_DETAIL_CLOSE_DURATION_MS
-        }
         slideOutVertically(
             animationSpec = tween(
-                durationMillis = durationMillis,
+                durationMillis = MAIN_TAB_DETAIL_CLOSE_DURATION_MS,
                 easing = mainTabDetailContentOffsetEasing()
             )
         ) { fullHeight -> fullHeight }
@@ -805,7 +798,7 @@ internal fun resolveMainStartDestination(
     }
 }
 
-private fun SongItem?.resolveUiCoverSource(context: android.content.Context): String? {
+private fun SongItem?.resolveUiCoverSource(context: Context): String? {
     return this?.displayCoverUrl(context)
 }
 
@@ -1339,14 +1332,10 @@ fun NeriApp(
         EmptyLauncherShortcutRequestFlow,
     onLauncherShortcutRequestConsumed: (LauncherShortcutRequest) -> Unit = {},
     onIsDarkChanged: (Boolean) -> Unit = {},
-    onNowPlayingVisibilityChanged: (Boolean) -> Unit = {}
+    onNowPlayingVisibilityChanged: (Boolean) -> Unit = {},
+    onLanguageChanged: (LanguageManager.Language) -> Unit = {}
 ) {
-    val context = LocalContext.current
     var appContentReady by rememberSaveable { mutableStateOf(false) }
-    val bootstrapIsDark = StartupThemeResolver.resolveSnapshotUseDark(
-        snapshot = initialThemeSnapshot,
-        systemDark = isActualSystemDarkTheme(context)
-    )
 
     LaunchedEffect(Unit) {
         // 先交一个极轻的背景首帧, 下一帧再挂整棵导航和状态订阅树
@@ -1354,22 +1343,29 @@ fun NeriApp(
         appContentReady = true
     }
 
-    if (!appContentReady) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(if (bootstrapIsDark) Color(0xFF121212) else Color(0xFFF4EFE7))
-        )
-        return
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        AnimatedVisibility(
+            visible = appContentReady,
+            enter = fadeIn(
+                animationSpec = tween(280, easing = FastOutSlowInEasing)
+            ),
+            exit = ExitTransition.None,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            NeriAppContent(
+                initialThemeSnapshot = initialThemeSnapshot,
+                launcherShortcutRequestFlow = launcherShortcutRequestFlow,
+                onLauncherShortcutRequestConsumed = onLauncherShortcutRequestConsumed,
+                onIsDarkChanged = onIsDarkChanged,
+                onNowPlayingVisibilityChanged = onNowPlayingVisibilityChanged,
+                onLanguageChanged = onLanguageChanged
+            )
+        }
     }
-
-    NeriAppContent(
-        initialThemeSnapshot = initialThemeSnapshot,
-        launcherShortcutRequestFlow = launcherShortcutRequestFlow,
-        onLauncherShortcutRequestConsumed = onLauncherShortcutRequestConsumed,
-        onIsDarkChanged = onIsDarkChanged,
-        onNowPlayingVisibilityChanged = onNowPlayingVisibilityChanged
-    )
 }
 
 @Composable
@@ -1402,7 +1398,8 @@ private fun NeriAppContent(
         EmptyLauncherShortcutRequestFlow,
     onLauncherShortcutRequestConsumed: (LauncherShortcutRequest) -> Unit = {},
     onIsDarkChanged: (Boolean) -> Unit = {},
-    onNowPlayingVisibilityChanged: (Boolean) -> Unit = {}
+    onNowPlayingVisibilityChanged: (Boolean) -> Unit = {},
+    onLanguageChanged: (LanguageManager.Language) -> Unit = {}
 ) {
     val context = LocalContext.current
     val composeResources = LocalResources.current
@@ -1508,12 +1505,8 @@ private fun NeriAppContent(
     val backgroundImageAlpha by repo.backgroundImageAlphaFlow.collectAsStateWithLifecycle(initialValue = 0.3f)
     val hapticFeedbackEnabled by repo.hapticFeedbackEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
     val showCoverSourceBadge by repo.showCoverSourceBadgeFlow.collectAsStateWithLifecycle(initialValue = true)
-    val nowPlayingToolbarDockEnabled by repo.nowPlayingToolbarDockEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
     val nowPlayingKeepScreenOn by repo.nowPlayingKeepScreenOnFlow.collectAsStateWithLifecycle(initialValue = true)
     val showNowPlayingTitle by repo.nowPlayingShowTitleFlow.collectAsStateWithLifecycle(initialValue = true)
-    val showNowPlayingProgressQualitySwitch by repo.nowPlayingProgressShowQualitySwitchFlow.collectAsStateWithLifecycle(initialValue = true)
-    val showNowPlayingProgressAudioCodec by repo.nowPlayingProgressShowAudioCodecFlow.collectAsStateWithLifecycle(initialValue = true)
-    val showNowPlayingProgressAudioSpec by repo.nowPlayingProgressShowAudioSpecFlow.collectAsStateWithLifecycle(initialValue = true)
     val showLyricTranslation by repo.showLyricTranslationFlow.collectAsStateWithLifecycle(initialValue = true)
     val defaultStartDestination: String? by repo.defaultStartDestinationFlow
         .collectAsStateWithLifecycle(initialValue = null)
@@ -1523,8 +1516,12 @@ private fun NeriAppContent(
     val showHomeTrendingCard by repo.homeCardTrendingFlow.collectAsStateWithLifecycle(initialValue = true)
     val showHomeRadarCard by repo.homeCardRadarFlow.collectAsStateWithLifecycle(initialValue = true)
     val showHomeRecommendedCard by repo.homeCardRecommendedFlow.collectAsStateWithLifecycle(initialValue = true)
-    val playbackFadeIn by repo.playbackFadeInFlow.collectAsStateWithLifecycle(initialValue = false)
-    val playbackCrossfadeNext by repo.playbackCrossfadeNextFlow.collectAsStateWithLifecycle(initialValue = false)
+    val playbackFadeIn by repo.playbackFadeInFlow.collectAsStateWithLifecycle(
+        initialValue = startupPlaybackPreferences.playbackFadeIn
+    )
+    val playbackCrossfadeNext by repo.playbackCrossfadeNextFlow.collectAsStateWithLifecycle(
+        initialValue = startupPlaybackPreferences.playbackCrossfadeNext
+    )
     val sleepTimerFinishCurrentOnExpiry by repo.sleepTimerFinishCurrentOnExpiryFlow
         .collectAsStateWithLifecycle(
             initialValue = startupPlaybackPreferences.sleepTimerFinishCurrentOnExpiry
@@ -2191,10 +2188,6 @@ private fun NeriAppContent(
         NPLogger.d("NERI-App", "Playing audio from Bili video: ${videos[index].title}")
         PlayerManager.playBiliVideoAsAudio(videos, index)
         ensureAudioServiceStarted(source = "play_bili_audio_and_open_now_playing")
-    }
-
-    fun playBiliAudioAndOpenNowPlaying(videos: List<BiliVideoItem>, index: Int) {
-        playBiliAudioAndOpenNowPlayingWithSource(videos, index, null)
     }
 
     fun playBiliPartsAndOpenNowPlayingWithSource(
@@ -3172,14 +3165,19 @@ private fun NeriAppContent(
                                 }
                                 if (options.needsExtraCacheClear) {
                                     val result = clearExtraStorageCaches(context, options)
-                                    messages += if (result.success) {
-                                        composeResources.getString(
+                                    messages += when {
+                                        !result.success -> composeResources.getString(
+                                            R.string.storage_extra_cache_clear_partial
+                                        )
+                                        result.roomBytesMadeReusable > 0L ->
+                                            composeResources.getString(
+                                                R.string.storage_extra_cache_clear_room_complete,
+                                                formatFileSize(result.freedBytes),
+                                                formatFileSize(result.roomBytesMadeReusable)
+                                            )
+                                        else -> composeResources.getString(
                                             R.string.storage_extra_cache_clear_complete,
                                             formatFileSize(result.freedBytes)
-                                        )
-                                    } else {
-                                        composeResources.getString(
-                                            R.string.storage_extra_cache_clear_partial
                                         )
                                     }
                                 }
@@ -3187,6 +3185,7 @@ private fun NeriAppContent(
                             }
                         },
                         onBeforeLanguageRestart = clearThemeRevealState,
+                        onLanguageChanged = onLanguageChanged,
                         coherentFeedbackEnabled = coherentFeedbackEnabled,
                         renderScene = { revealTop, translationY, scale, sceneDepth, sceneContent ->
                             RenderMainTabNavigationScene(

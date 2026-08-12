@@ -227,13 +227,14 @@ import moe.ouom.neriplayer.listentogether.mapping.resolvedChannelId
 import moe.ouom.neriplayer.listentogether.mapping.resolvedPlaylistContextId
 import moe.ouom.neriplayer.listentogether.mapping.resolvedSubAudioId
 import moe.ouom.neriplayer.listentogether.playback.shouldHoldListenTogetherPlaybackForSafetyPause
-import moe.ouom.neriplayer.listentogether.playback.shouldUseListenTogetherListenerSafetyPause
+import moe.ouom.neriplayer.listentogether.playback.shouldMuteListenTogetherListenerForAudioRouteLoss
 import moe.ouom.neriplayer.listentogether.protocol.ListenTogetherChannels
 import moe.ouom.neriplayer.listentogether.session.resolveListenTogetherSessionRole
 import moe.ouom.neriplayer.ui.component.lyrics.LyricEntry
 import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.core.player.playback.stopPlaybackImmediatelyImpl
 import moe.ouom.neriplayer.util.platform.LanguageManager
 import java.io.File
 import java.io.RandomAccessFile
@@ -289,7 +290,8 @@ object PlayerManager {
     @Volatile
     internal var interactiveNowPlayingVisible: Boolean = false
 
-    internal lateinit var cache: Cache
+    @Volatile
+    internal var cache: Cache? = null
     internal var conditionalHttpFactory: ConditionalHttpDataSourceFactory? = null
 
     // Helper function to get localized string
@@ -413,8 +415,8 @@ object PlayerManager {
     internal var mobileDataNeteaseAudioQuality: String = "standard"
     internal var mobileDataYouTubeAudioQuality: String = "low"
     internal var mobileDataBiliAudioQuality: String = "low"
-    internal var playbackFadeInEnabled = false
-    internal var playbackCrossfadeNextEnabled = false
+    internal var playbackFadeInEnabled = true
+    internal var playbackCrossfadeNextEnabled = true
     internal var playbackFadeInDurationMs = DEFAULT_FADE_DURATION_MS
     internal var playbackFadeOutDurationMs = DEFAULT_FADE_DURATION_MS
     internal var playbackCrossfadeInDurationMs = DEFAULT_FADE_DURATION_MS
@@ -428,6 +430,7 @@ object PlayerManager {
     internal var statusBarLyricsEnable = false
     internal var externalBluetoothLyricsEnabled = false
     internal var externalBluetoothTranslationEnabled = false
+    internal var dynamicIslandLyricsEnabled = false
     internal var floatingLyricsEnabled = false
     internal var floatingLyricsShowTranslation = true
     internal var cloudMusicLyricDefaultOffsetMs = DEFAULT_CLOUD_MUSIC_LYRIC_OFFSET_MS
@@ -438,9 +441,9 @@ object PlayerManager {
     internal var rememberLongFormPlaybackProgressEnabled = true
     internal var keepPlaybackModeStateEnabled = true
     @Volatile
-    internal var neteaseAutoSourceSwitchEnabled = true
+    internal var neteaseAutoSourceSwitchEnabled = false
     @Volatile
-    internal var neteaseLocalSourceFallbackEnabled = true
+    internal var neteaseLocalSourceFallbackEnabled = false
     internal var stopOnBluetoothDisconnectEnabled = true
     @Volatile
     internal var usbExclusivePlaybackEnabled = false
@@ -828,7 +831,7 @@ object PlayerManager {
 
     internal fun isPlayerInitialized(): Boolean = this::player.isInitialized
 
-    internal fun isCacheInitialized(): Boolean = this::cache.isInitialized
+    internal fun isCacheInitialized(): Boolean = cache != null
 
     internal fun syncPlaybackControlPlayingState() {
         _playbackControlPlayingFlow.value = shouldShowPauseButtonForPlaybackControls(
@@ -1226,9 +1229,9 @@ object PlayerManager {
         ) == "controller"
     }
 
-    internal fun shouldUseListenTogetherListenerSafetyPause(): Boolean {
+    internal fun shouldMuteListenTogetherListenerForAudioRouteLoss(): Boolean {
         val room = activeListenTogetherRoomState()
-        return shouldUseListenTogetherListenerSafetyPause(
+        return shouldMuteListenTogetherListenerForAudioRouteLoss(
             listenTogetherActive = isListenTogetherActive(),
             isCurrentUserController = isCurrentUserControllerInListenTogether(),
             allowMemberControl = room?.settings?.allowMemberControl
@@ -2380,8 +2383,34 @@ object PlayerManager {
                     "bili-$biliSongId-${effectiveBiliQuality()}"
                 }
             }
-            else -> "netease-${song.id}-${effectiveNeteaseQuality()}"
+            else -> buildNeteasePlaybackCacheKey(
+                songId = song.id,
+                preferredQuality = effectiveNeteaseQuality(),
+                useFallbackNamespace = neteaseAutoSourceSwitchEnabled ||
+                    neteaseLocalSourceFallbackEnabled
+            )
         }
+    }
+
+    internal fun buildNeteasePlaybackCacheKey(
+        songId: Long,
+        preferredQuality: String,
+        useFallbackNamespace: Boolean
+    ): String {
+        val quality = preferredQuality.trim().lowercase().ifBlank { "exhigh" }
+        return if (useFallbackNamespace) {
+            "netease-$songId-$quality-fallback-v1"
+        } else {
+            "netease-$songId-$quality"
+        }
+    }
+
+    internal fun buildNeteasePreviewCacheKey(
+        songId: Long,
+        preferredQuality: String
+    ): String {
+        val quality = preferredQuality.trim().lowercase().ifBlank { "exhigh" }
+        return "netease-preview-v1-$songId-$quality"
     }
 
     /**
@@ -2589,6 +2618,11 @@ object PlayerManager {
     ) = this.applyListenTogetherPlaybackModeImpl(repeatMode, shuffleEnabled)
 
     internal fun stopProgressUpdates() = this.stopProgressUpdatesImpl()
+
+    internal fun stopPlaybackImmediately(
+        reason: String,
+        forcePersist: Boolean = true
+    ) = this.stopPlaybackImmediatelyImpl(reason, forcePersist)
 
     internal fun stopPlaybackPreservingQueue(clearMediaUrl: Boolean = false) =
         this.stopPlaybackPreservingQueueImpl(clearMediaUrl)

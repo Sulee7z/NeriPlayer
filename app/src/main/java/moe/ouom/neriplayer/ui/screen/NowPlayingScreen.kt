@@ -2569,6 +2569,7 @@ fun NowPlayingScreen(
                         lyricOffsetMs = totalOffset,
                         isPlaying = isPlaying,
                         isPlaybackWaiting = isPlaybackWaiting,
+                        playbackSpeed = playbackSoundState.speed,
                         progressInfoSegments = progressInfoSegments,
                         seekEnabled = playbackProgressSeekEnabled,
                         activeContentColor = targetNowPlayingActiveIconColor,
@@ -2859,6 +2860,7 @@ fun NowPlayingScreen(
                                     text = currentSong?.customName ?: currentSong?.name ?: "",
                                     marqueeEnabled = nowPlayingSongTitleMarqueeEnabled,
                                     style = MaterialTheme.typography.headlineSmall,
+                                    color = targetNowPlayingColorScheme.onSurface,
                                     modifier = Modifier
                                         .widthIn(max = maxWidth)
                                         .clip(RoundedCornerShape(8.dp))
@@ -5091,6 +5093,7 @@ private fun NowPlayingProgressSection(
     lyricOffsetMs: Long,
     isPlaying: Boolean,
     isPlaybackWaiting: Boolean,
+    playbackSpeed: Float,
     progressInfoSegments: List<NowPlayingProgressInfoSegment>,
     seekEnabled: Boolean,
     activeContentColor: Color,
@@ -5207,7 +5210,13 @@ private fun NowPlayingProgressSection(
                 isPlaying = isPlaying,
                 enabled = seekEnabled,
                 isPlaybackWaiting = delayedPlaybackWaiting,
-                activeTint = activeContentColor
+                isProgressStalled = isPlaybackWaiting,
+                isProgressPreviewing = isUserDraggingSlider ||
+                    pendingSeekPreviewPositionMs != null,
+                activeTint = activeContentColor,
+                durationMs = durationMs,
+                playbackSpeed = playbackSpeed,
+                playbackSessionKey = songKey
             )
 
             Text(
@@ -5331,6 +5340,14 @@ fun LyricsEditorSheet(
     }
     val hasSearchedSelectedLyricSources = selectedLyricMatchSources.any { source ->
         source in searchedLyricMatchSources
+    }
+
+    BackHandler {
+        when {
+            showLocalMetadataWriteBackConfirm -> showLocalMetadataWriteBackConfirm = false
+            showLyricMatchSheet -> showLyricMatchSheet = false
+            else -> dismissLyricsEditor()
+        }
     }
 
     fun saveLyrics(writeLocalMetadata: Boolean) {
