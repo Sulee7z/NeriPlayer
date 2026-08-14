@@ -25,7 +25,9 @@ import moe.ouom.neriplayer.core.player.policy.refresh.YouTubePlaybackRecoveryStr
 import moe.ouom.neriplayer.core.player.url.YOUTUBE_STABLE_RECOVERY_QUALITY
 import moe.ouom.neriplayer.core.player.url.currentPlaybackCacheKeyForRecovery
 import moe.ouom.neriplayer.core.player.url.invalidateCachedResourceForPlaybackRecovery
-import moe.ouom.neriplayer.core.player.url.invalidateMismatchedCachedResource
+import moe.ouom.neriplayer.core.player.url.allowsCustomCacheKey
+import moe.ouom.neriplayer.core.player.url.offlineCacheKeyFromUrl
+import moe.ouom.neriplayer.core.player.url.synchronizeCachedPlaybackDescriptor
 import moe.ouom.neriplayer.core.player.usb.path.UsbExclusiveAudioPathState
 import moe.ouom.neriplayer.core.player.usb.path.UsbExclusiveAudioPathTracker
 import moe.ouom.neriplayer.core.player.usb.session.UsbExclusiveSessionController
@@ -53,6 +55,14 @@ internal fun PlayerManager.clearActivePlaybackCandidates() {
     activePlaybackCommandSource = PlaybackCommandSource.LOCAL
     startupStallRecoveryAttempts = 0
     resetPlaybackProgressAdvanceBaseline(0L)
+}
+
+internal fun shouldInvalidateOfflineCacheForStartupStall(
+    recoveryAttempt: Int,
+    currentUrl: String?
+): Boolean {
+    return recoveryAttempt == 1 &&
+        offlineCacheKeyFromUrl(currentUrl) != null
 }
 
 internal fun PlayerManager.currentPlaybackCandidate(): PlaybackUrlCandidate? {
@@ -146,10 +156,11 @@ private fun PlayerManager.startupWatchdogTimeoutMs(): Long {
 }
 
 private fun PlayerManager.startupEarlyWatchdogTimeoutMs(timeoutMs: Long): Long {
-    val earlyTimeoutMs = if (usbExclusivePlaybackEnabled) {
-        STARTUP_STALL_USB_EARLY_TIMEOUT_MS
-    } else {
-        STARTUP_STALL_READY_EARLY_TIMEOUT_MS
+    val earlyTimeoutMs = when {
+        usbExclusivePlaybackEnabled -> STARTUP_STALL_USB_EARLY_TIMEOUT_MS
+        player.playbackState == Player.STATE_BUFFERING ->
+            STARTUP_STALL_BUFFERING_EARLY_TIMEOUT_MS
+        else -> STARTUP_STALL_READY_EARLY_TIMEOUT_MS
     }
     return earlyTimeoutMs.coerceAtMost(timeoutMs)
 }
@@ -160,7 +171,30 @@ private fun PlayerManager.isEarlyStartupPlaybackStalled(startPositionMs: Long): 
     val advancedMs = currentPositionMs - startPositionMs.coerceAtLeast(0L)
     if (advancedMs > STARTUP_STALL_POSITION_TOLERANCE_MS) return false
     if (usbExclusivePlaybackEnabled && isUsbExclusiveStartupOutputPathActive()) return true
-    return player.playbackState == Player.STATE_READY && player.playWhenReady
+    return shouldRecoverFromEarlyStartupStall(
+        playbackState = player.playbackState,
+        playWhenReady = player.playWhenReady,
+        advancedMs = advancedMs,
+        bufferedDurationMs = runCatching { player.totalBufferedDuration }
+            .getOrDefault(0L)
+    )
+}
+
+internal fun shouldRecoverFromEarlyStartupStall(
+    playbackState: Int,
+    playWhenReady: Boolean,
+    advancedMs: Long,
+    bufferedDurationMs: Long
+): Boolean {
+    if (!playWhenReady || advancedMs > PlayerManager.STARTUP_STALL_POSITION_TOLERANCE_MS) {
+        return false
+    }
+    return when (playbackState) {
+        Player.STATE_READY -> true
+        Player.STATE_BUFFERING ->
+            bufferedDurationMs < PlayerManager.STARTUP_STALL_BUFFERING_GRACE_MS
+        else -> false
+    }
 }
 
 private fun PlayerManager.isUsbExclusiveStartupOutputPathActive(): Boolean {
@@ -187,6 +221,31 @@ private fun PlayerManager.isStartupPlaybackStalled(startPositionMs: Long): Boole
 private fun PlayerManager.recoverPlaybackStartupStall(requestToken: Long) {
     if (requestToken != playbackRequestToken) return
     startupStallRecoveryAttempts += 1
+
+    val offlineCacheKey = offlineCacheKeyFromUrl(_currentMediaUrl.value)
+    if (
+        offlineCacheKey != null &&
+        shouldInvalidateOfflineCacheForStartupStall(
+            recoveryAttempt = startupStallRecoveryAttempts,
+            currentUrl = _currentMediaUrl.value
+        )
+    ) {
+        val song = _currentSongFlow.value
+        if (song != null && !isLocalSong(song)) {
+            val resumePositionMs = player.currentPosition.coerceAtLeast(0L)
+            refreshCurrentSongUrl(
+                resumePositionMs = resumePositionMs,
+                allowFallback = false,
+                reason = "startup_stall_offline_cache",
+                bypassCooldown = true,
+                fallbackSeekPositionMs = resumePositionMs,
+                resumePlaybackAfterRefresh = true,
+                resumedPlaybackCommandSource = activePlaybackCommandSource,
+                cacheKeyToInvalidateBeforeResolve = offlineCacheKey
+            )
+            return
+        }
+    }
 
     if (tryRecoverUsbExclusiveStartupStall(requestToken)) {
         return
@@ -238,7 +297,8 @@ private fun PlayerManager.recoverPlaybackStartupStall(requestToken: Long) {
             fallbackSeekPositionMs = resumePositionMs,
             resumePlaybackAfterRefresh = true,
             resumedPlaybackCommandSource = activePlaybackCommandSource,
-            youtubeRecoveryStrategy = stallRecoveryStrategy
+            youtubeRecoveryStrategy = stallRecoveryStrategy,
+            cacheKeyToInvalidateBeforeResolve = null
         )
         return
     }
@@ -342,18 +402,28 @@ private suspend fun PlayerManager.applyPlaybackCandidate(
     ) {
         invalidateCachedResourceForPlaybackRecovery(
             cacheKey = staleCacheKey.orEmpty(),
-            reason = recoveryReason
+            reason = recoveryReason,
+            shouldApplyMutation = { requestToken == playbackRequestToken }
         )
     }
     if (requestToken != playbackRequestToken) return
-    invalidateMismatchedCachedResource(
+    val cacheSynchronization = synchronizeCachedPlaybackDescriptor(
         cacheKey = cacheKey,
-        expectedContentLength = candidate.expectedContentLength
+        audioInfo = candidate.audioInfo,
+        expectedContentLength = candidate.expectedContentLength,
+        representationIdentity = candidate.representationIdentity,
+        shouldApplyMutation = { requestToken == playbackRequestToken }
     )
     if (requestToken != playbackRequestToken) return
     _currentPlaybackAudioInfo.value = candidate.audioInfo
     updateAudioOffloadPreferences("playback_candidate_source")
-    val mediaItem = buildMediaItem(song, candidate.url, cacheKey, candidate.mimeType)
+    val mediaItem = buildMediaItem(
+        song = song,
+        url = candidate.url,
+        cacheKey = cacheKey,
+        mimeType = candidate.mimeType,
+        allowCustomCacheKey = cacheSynchronization.allowsCustomCacheKey()
+    )
     preparePlayerForManagedStart(resolvePlaybackStartPlan(shouldFadeIn = false, fadeDurationMs = 0L))
     resetTrackEndDeduplicationState()
     applyWakeModeForPlaybackUrl(candidate.url)

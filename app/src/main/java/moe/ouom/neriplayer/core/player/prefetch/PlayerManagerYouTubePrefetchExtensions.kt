@@ -1,25 +1,19 @@
 package moe.ouom.neriplayer.core.player.prefetch
 
-import androidx.annotation.OptIn
 import androidx.annotation.VisibleForTesting
-import androidx.core.net.toUri
-import androidx.media3.common.C
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DataSpec
-import androidx.media3.datasource.cache.CacheDataSource
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.core.api.youtube.YouTubePlayableStreamType
-import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.player.PlayerManager
 import moe.ouom.neriplayer.core.player.quality.effectiveYouTubeQuality
 import moe.ouom.neriplayer.core.player.url.CachePrefetchReadiness
+import moe.ouom.neriplayer.core.player.url.allowsCustomCacheKey
+import moe.ouom.neriplayer.core.player.url.buildYouTubePlaybackAudioInfo
+import moe.ouom.neriplayer.core.player.url.buildYouTubeRepresentationIdentity
 import moe.ouom.neriplayer.core.player.url.hasCompleteExoPlayerCache
-import moe.ouom.neriplayer.core.player.url.invalidateMismatchedCachedResource
 import moe.ouom.neriplayer.core.player.url.prepareExoPlayerCacheForPrefetch
+import moe.ouom.neriplayer.core.player.url.synchronizeCachedPlaybackDescriptor
 import moe.ouom.neriplayer.core.player.policy.command.resolveYouTubeImmediatePlaybackWarmupTargets
 import moe.ouom.neriplayer.core.player.policy.command.resolveYouTubeWarmupTargets
 import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
@@ -27,7 +21,6 @@ import moe.ouom.neriplayer.data.platform.youtube.YouTubeFeatureGate
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.core.logging.NPLogger
 
-private const val YOUTUBE_WARMUP_BUFFER_BYTES = 64 * 1024
 private const val YOUTUBE_WARMUP_MIN_PREFETCH_BYTES = 256L * 1024L
 private const val YOUTUBE_WARMUP_FIRST_TRACK_PREFETCH_BYTES = 1536L * 1024L
 private const val YOUTUBE_WARMUP_SECOND_TRACK_PREFETCH_BYTES = 1024L * 1024L
@@ -262,8 +255,11 @@ private fun PlayerManager.canRunYouTubePrefetch(source: String): Boolean {
     return false
 }
 
-private suspend fun PlayerManager.shouldStartMediaCachePrefetch(cacheKey: String): Boolean {
-    return when (prepareExoPlayerCacheForPrefetch(cacheKey)) {
+private suspend fun PlayerManager.shouldStartMediaCachePrefetch(
+    cacheKey: String,
+    shouldApplyMutation: () -> Boolean = { true }
+): Boolean {
+    return when (prepareExoPlayerCacheForPrefetch(cacheKey, shouldApplyMutation)) {
         CachePrefetchReadiness.COMPLETE -> false
         CachePrefetchReadiness.READY_FOR_PREFETCH -> true
         CachePrefetchReadiness.UNAVAILABLE -> {
@@ -304,7 +300,11 @@ private suspend fun PlayerManager.prefetchYouTubePlayableAudio(spec: YouTubePref
         )
         return
     }
-    if (!shouldStartMediaCachePrefetch(cacheKey)) {
+    if (!shouldStartMediaCachePrefetch(
+            cacheKey = cacheKey,
+            shouldApplyMutation = { !playbackDemandArbiter.shouldYieldPrefetch(cacheKey) }
+        )
+    ) {
         return
     }
     val existingJob = youtubeStreamWarmupJobs[cacheKey]
@@ -325,13 +325,33 @@ private suspend fun PlayerManager.prefetchYouTubePlayableAudio(spec: YouTubePref
             preferM4a = false,
             isPrefetch = true
         ) ?: return
-        invalidateMismatchedCachedResource(
+        if (playableAudio.streamType != YouTubePlayableStreamType.DIRECT) {
+            NPLogger.d(
+                "NERI-PlayerManager",
+                "skip media prefetch for non-direct YouTube stream: " +
+                    "videoId=${spec.videoId}, type=${playableAudio.streamType}, source=${spec.source}"
+            )
+            return
+        }
+        val playbackAudioInfo = buildYouTubePlaybackAudioInfo(playableAudio) { it.toString() }
+        val representationIdentity = buildYouTubeRepresentationIdentity(playableAudio)
+        val synchronization = synchronizeCachedPlaybackDescriptor(
             cacheKey = cacheKey,
+            audioInfo = playbackAudioInfo,
             expectedContentLength = playableAudio.contentLength,
+            representationIdentity = representationIdentity,
             shouldApplyMutation = {
                 !playbackDemandArbiter.shouldYieldPrefetch(cacheKey)
             }
         )
+        if (!synchronization.allowsCustomCacheKey()) {
+            NPLogger.w(
+                "NERI-PlayerManager",
+                "skip YouTube media prefetch because cache descriptor was not synchronized: " +
+                    "key=$cacheKey, result=$synchronization"
+            )
+            return
+        }
         if (playbackDemandArbiter.shouldYieldPrefetch(cacheKey)) {
             NPLogger.d(
                 "NERI-PlayerManager",
@@ -339,14 +359,11 @@ private suspend fun PlayerManager.prefetchYouTubePlayableAudio(spec: YouTubePref
             )
             return
         }
-        if (!shouldStartMediaCachePrefetch(cacheKey)) {
-            return
-        }
-        if (playableAudio.streamType != YouTubePlayableStreamType.DIRECT) {
-            NPLogger.d(
-                "NERI-PlayerManager",
-                "skip media prefetch for non-direct YouTube stream: videoId=${spec.videoId}, type=${playableAudio.streamType}, source=${spec.source}"
+        if (!shouldStartMediaCachePrefetch(
+                cacheKey = cacheKey,
+                shouldApplyMutation = { !playbackDemandArbiter.shouldYieldPrefetch(cacheKey) }
             )
+        ) {
             return
         }
         val targetBytes = resolveYouTubeWarmupPrefetchBytes(
@@ -402,58 +419,4 @@ private fun resolveYouTubeWarmupPrefetchBytes(
         ?.takeIf { it > 0L }
         ?.coerceAtMost(boostedBytes)
         ?: boostedBytes
-}
-
-@OptIn(UnstableApi::class)
-private suspend fun PlayerManager.prefetchIntoPlayerCache(
-    url: String,
-    cacheKey: String,
-    targetBytes: Long
-): Long = withContext(Dispatchers.IO) {
-    val mediaCache = cache ?: return@withContext 0L
-    val upstreamFactory = conditionalHttpFactory ?: return@withContext 0L
-    val requestedBytes = targetBytes.coerceAtLeast(YOUTUBE_WARMUP_MIN_PREFETCH_BYTES)
-    if (playbackDemandArbiter.shouldYieldPrefetch(cacheKey)) {
-        return@withContext 0L
-    }
-    val cacheDataSource = CacheDataSource.Factory()
-        .setCache(mediaCache)
-        .setUpstreamDataSourceFactory(upstreamFactory)
-        .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE)
-        .setEventListener(object : CacheDataSource.EventListener {
-            override fun onCachedBytesRead(cacheSizeBytes: Long, cachedBytesRead: Long) {
-                AppContainer.trafficStatsRepo.recordCacheHitBytes(cachedBytesRead)
-            }
-
-            override fun onCacheIgnored(reason: Int) = Unit
-        })
-        .createDataSource()
-    val dataSpec = DataSpec.Builder()
-        .setUri(url.toUri())
-        .setKey(cacheKey)
-        .setPosition(0L)
-        .setLength(requestedBytes)
-        .build()
-    val buffer = ByteArray(YOUTUBE_WARMUP_BUFFER_BYTES)
-    var totalRead = 0L
-    try {
-        cacheDataSource.open(dataSpec)
-        while (totalRead < requestedBytes) {
-            if (playbackDemandArbiter.shouldYieldPrefetch(cacheKey)) {
-                break
-            }
-            val bytesToRead = minOf(
-                buffer.size.toLong(),
-                requestedBytes - totalRead
-            ).toInt()
-            val read = cacheDataSource.read(buffer, 0, bytesToRead)
-            if (read == C.RESULT_END_OF_INPUT || read < 0) {
-                break
-            }
-            totalRead += read.toLong()
-        }
-    } finally {
-        runCatching { cacheDataSource.close() }
-    }
-    totalRead
 }

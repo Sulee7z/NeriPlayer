@@ -199,6 +199,7 @@ import moe.ouom.neriplayer.core.player.timer.SleepTimerManager
 import moe.ouom.neriplayer.core.player.timer.SleepTimerMode
 import moe.ouom.neriplayer.core.player.url.YOUTUBE_PLAYBACK_PREFER_M4A
 import moe.ouom.neriplayer.core.player.url.refreshCurrentSongUrlImpl
+import moe.ouom.neriplayer.core.player.url.safeCustomPlaybackCacheKey
 import moe.ouom.neriplayer.core.player.usb.path.UsbExclusiveAudioPathState
 import moe.ouom.neriplayer.core.player.usb.path.UsbExclusiveAudioPathTracker
 import moe.ouom.neriplayer.core.player.usb.session.UsbExclusiveSessionController
@@ -484,10 +485,12 @@ object PlayerManager {
     internal const val PENDING_SEEK_POSITION_TOLERANCE_MS = 1_500L
     internal const val STARTUP_STALL_POSITION_TOLERANCE_MS = 500L
     internal const val STARTUP_STALL_LOCAL_TIMEOUT_MS = 5_000L
-    internal const val STARTUP_STALL_REMOTE_TIMEOUT_MS = 12_000L
+    internal const val STARTUP_STALL_REMOTE_TIMEOUT_MS = 10_000L
     internal const val STARTUP_STALL_YOUTUBE_TIMEOUT_MS = 25_000L
     internal const val STARTUP_STALL_YOUTUBE_DEEP_SEEK_TIMEOUT_MS = 5_000L
     internal const val STARTUP_STALL_READY_EARLY_TIMEOUT_MS = 5_000L
+    internal const val STARTUP_STALL_BUFFERING_EARLY_TIMEOUT_MS = 5_000L
+    internal const val STARTUP_STALL_BUFFERING_GRACE_MS = 2_000L
     internal const val STARTUP_STALL_USB_EARLY_TIMEOUT_MS = 4_000L
     internal const val STARTUP_STALL_MAX_RECOVERY_ATTEMPTS = 3
     internal const val QUALITY_CHANGE_REFRESH_DEBOUNCE_MS = 0L
@@ -2433,7 +2436,8 @@ object PlayerManager {
         song: SongItem,
         url: String,
         cacheKey: String,
-        mimeType: String? = null
+        mimeType: String? = null,
+        allowCustomCacheKey: Boolean = true
     ): MediaItem {
         val isLocalFile =
             url.startsWith("file://") ||
@@ -2448,8 +2452,8 @@ object PlayerManager {
                     setMimeType(mimeType)
                 }
                 // Local files do not need a custom cache key.
-                if (!isLocalFile) {
-                    setCustomCacheKey(cacheKey)
+                if (!isLocalFile && allowCustomCacheKey) {
+                    safeCustomPlaybackCacheKey(cacheKey)?.let(::setCustomCacheKey)
                 }
             }
             .build()
