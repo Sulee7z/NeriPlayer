@@ -111,7 +111,6 @@ data class HomeUiState(
     val playlists: HomeSectionState<PlaylistSummary> = HomeSectionState(),
     val hotSongs: HomeSectionState<SongItem> = HomeSectionState(),
     val radarSongs: HomeSectionState<SongItem> = HomeSectionState(),
-    val dailySongs: HomeSectionState<SongItem> = HomeSectionState(),
     val playlistSections: List<HomeNeteasePlaylistSectionState> = emptyList(),
     val trendingSongSections: List<HomeNeteaseSongSectionState> = emptyList(),
     val radarSongSections: List<HomeNeteaseSongSectionState> = emptyList(),
@@ -139,7 +138,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private var playlistJob: Job? = null
     private var hotSongsJob: Job? = null
     private var radarSongsJob: Job? = null
-    private var dailySongsJob: Job? = null
     private var radarPlaylistsJob: Job? = null
     private var ytMusicPlaylistJob: Job? = null
     private var ytMusicHomeFeedJob: Job? = null
@@ -167,7 +165,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 loading = loading
             ),
             radarPlaylists = HomeSectionState(loading = loading),
-            dailySongs = HomeSectionState(loading = loading),
             hasLogin = hasLogin
         )
     }
@@ -383,7 +380,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 trendingSongSections = clearSongSectionLoading(state.trendingSongSections),
                 radarSongSections = clearSongSectionLoading(state.radarSongSections),
                 radarPlaylists = state.radarPlaylists.copy(loading = false, error = null),
-                dailySongs = state.dailySongs.copy(loading = false, error = null),
                 ytMusicPlaylists = state.ytMusicPlaylists.copy(loading = false, error = null),
                 ytMusicHomeShelves = state.ytMusicHomeShelves.copy(loading = false, error = null)
             )
@@ -394,7 +390,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         playlistJob?.cancel()
         hotSongsJob?.cancel()
         radarSongsJob?.cancel()
-        dailySongsJob?.cancel()
         radarPlaylistsJob?.cancel()
         ytMusicPlaylistJob?.cancel()
         ytMusicHomeFeedJob?.cancel()
@@ -468,49 +463,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
         refreshRadarSongs()
         refreshHotSongs()
-        refreshDailySongs()
-    }
-
-    /** 拉取网易云每日推荐（日推），需要登录 */
-    fun refreshDailySongs() {
-        if (offlineMode) return
-        if (!hasRecommendLogin) {
-            _uiState.value = _uiState.value.copy(
-                dailySongs = HomeSectionState(loading = false)
-            )
-            return
-        }
-
-        NPLogger.d(TAG, "refreshDailySongs start")
-        dailySongsJob?.cancel()
-        val previous = _uiState.value.dailySongs
-        _uiState.value = _uiState.value.copy(
-            dailySongs = previous.copy(loading = true, error = null)
-        )
-        dailySongsJob = viewModelScope.launch {
-            when (val result = fetchWithRetry("refreshDailySongs") {
-                val raw = withContext(Dispatchers.IO) {
-                    client.getDailyRecommendedSongs()
-                }
-                parseDailySongsOnWorker(raw)
-            }) {
-                is RetryLoadResult.Success -> {
-                    NPLogger.d(TAG, "refreshDailySongs success: count=${result.items.size}")
-                    _uiState.value = _uiState.value.copy(
-                        dailySongs = HomeSectionState(items = result.items)
-                    )
-                }
-                is RetryLoadResult.Failure -> {
-                    NPLogger.e(TAG, "refreshDailySongs failed", result.throwable)
-                    _uiState.value = _uiState.value.copy(
-                        dailySongs = _uiState.value.dailySongs.copy(
-                            loading = false,
-                            error = buildHomeErrorMessage(result.throwable)
-                        )
-                    )
-                }
-            }
-        }
     }
 
     private fun refreshHotSongs() {
@@ -821,11 +773,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             parseNeteaseHomeSongs(raw, limit = HOME_NETEASE_SONG_LIMIT)
         }
 
-    private suspend fun parseDailySongsOnWorker(raw: String): List<SongItem> =
-        withContext(Dispatchers.Default) {
-            parseDailySongs(raw)
-        }
-
     private suspend fun fetchSongSection(
         name: String,
         source: NeteaseHomeSongSource
@@ -1108,40 +1055,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             throw ApiCodeException(code)
         }
         val songs = root.optJSONObject("result")?.optJSONArray("songs") ?: return emptyList()
-        for (i in 0 until songs.length()) {
-            val obj = songs.optJSONObject(i) ?: continue
-            val artistItems = parseNeteaseArtistSummaries(obj.optJSONArray("ar"))
-            val albumObj = obj.optJSONObject("al")
-            list.add(
-                SongItem(
-                    id = obj.optLong("id"),
-                    name = obj.optString("name"),
-                    artist = artistItems.joinToString(" / ") { it.name },
-                    album = albumObj?.optString("name").orEmpty(),
-                    albumId = albumObj?.optLong("id", 0L) ?: 0L,
-                    durationMs = obj.optLong("dt"),
-                    coverUrl = albumObj?.optString("picUrl")?.replace("http://", "https://"),
-                    channelId = "netease",
-                    audioId = obj.optLong("id").toString(),
-                    neteaseArtists = artistItems
-                )
-            )
-        }
-        return list
-    }
-
-    /**
-     * 解析网易云日推响应（/api/v3/discovery/recommend/songs）
-     * 结构: { code, data: { dailySongs: [ { id, name, ar, al, dt, ... } ] } }
-     */
-    private fun parseDailySongs(raw: String): List<SongItem> {
-        val list = mutableListOf<SongItem>()
-        val root = JSONObject(raw)
-        val code = root.optInt("code", -1)
-        if (code != 200) {
-            throw ApiCodeException(code)
-        }
-        val songs = root.optJSONObject("data")?.optJSONArray("dailySongs") ?: return emptyList()
         for (i in 0 until songs.length()) {
             val obj = songs.optJSONObject(i) ?: continue
             val artistItems = parseNeteaseArtistSummaries(obj.optJSONArray("ar"))

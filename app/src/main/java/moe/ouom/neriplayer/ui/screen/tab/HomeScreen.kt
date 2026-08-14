@@ -190,9 +190,6 @@ private const val HomeScrollKeyNeteaseTrendingContent = "$HomeScrollKeyNeteaseTr
 private const val HomeScrollKeyNeteaseRadar = "home:netease:radar"
 private const val HomeScrollKeyNeteaseRadarHeader = "$HomeScrollKeyNeteaseRadar:header"
 private const val HomeScrollKeyNeteaseRadarContent = "$HomeScrollKeyNeteaseRadar:content"
-private const val HomeScrollKeyNeteaseDaily = "home:netease:daily"
-private const val HomeScrollKeyNeteaseDailyHeader = "$HomeScrollKeyNeteaseDaily:header"
-private const val HomeScrollKeyNeteaseDailyContent = "$HomeScrollKeyNeteaseDaily:content"
 private const val HomeScrollKeyNeteaseRecommended = "home:netease:recommended"
 private const val HomeScrollKeyNeteaseRecommendedHeader = "$HomeScrollKeyNeteaseRecommended:header"
 private const val HomeScrollKeyNeteaseRecommendedLoading = "$HomeScrollKeyNeteaseRecommended:loading"
@@ -247,7 +244,6 @@ fun HomeScreen(
     showTrendingCard: Boolean = true,
     showRadarCard: Boolean = true,
     showRecommendedCard: Boolean = true,
-    showDailyCard: Boolean = true,
     usageEntries: List<UsageEntry> = emptyList(),
     usageLoaded: Boolean = true,
     offlineMode: Boolean = false,
@@ -369,7 +365,6 @@ fun HomeScreen(
     val isInternational = ui.internationalizationEnabled
     val showNeteaseTrending = showTrendingCard && (isInternational || ui.hasLogin)
     val showNeteaseRadar = showRadarCard && (isInternational || ui.hasLogin)
-    val showNeteaseDaily = showDailyCard && !isInternational && ui.hasLogin
     val showOnlineFeeds = !offlineMode
     var wasOffline by remember { mutableStateOf(offlineMode) }
     val windowWidthDp = currentWindowWidthDp()
@@ -728,42 +723,6 @@ fun HomeScreen(
                                 }
                             }
                         } else {
-                            if (showNeteaseDaily) {
-                                item(
-                                    key = registerGridItemKey(HomeScrollKeyNeteaseDailyHeader),
-                                    span = { GridItemSpan(maxLineSpan) }
-                                ) {
-                                    SectionHeader(
-                                        icon = Icons.Outlined.CalendarToday,
-                                        title = stringResource(R.string.recommend_daily),
-                                        onClick = if (ui.dailySongs.items.isNotEmpty()) {
-                                            { showDailySheet = true }
-                                        } else null
-                                    )
-                                }
-                                sectionContent(
-                                    section = ui.dailySongs,
-                                    loadingText = homeLoadingText,
-                                    errorDetail = ui.dailySongs.error,
-                                    keyPrefix = HomeScrollKeyNeteaseDaily,
-                                    registerKey = ::registerGridItemKey
-                                ) {
-                                    item(
-                                        key = registerGridItemKey(HomeScrollKeyNeteaseDailyContent),
-                                        span = { GridItemSpan(maxLineSpan) }
-                                    ) {
-                                        ResponsiveSongPagerList(
-                                            songs = ui.dailySongs.items,
-                                            onSongClick = onSongClick,
-                                            favoriteSongs = favoriteSongs,
-                                            onFavoriteToggle = ::toggleHomeSongFavorite,
-                                            onShowSnackbar = showHomeSnackbar,
-                                            offlineMode = offlineMode
-                                        )
-                                    }
-                                }
-                            }
-
                             if (showNeteaseRadar) {
                                 ui.radarSongSections
                                     .filter { it.source == NeteaseHomeSongSource.PERSONAL_RADAR }
@@ -841,7 +800,10 @@ fun HomeScreen(
                                             favoriteSongs = favoriteSongs,
                                             onFavoriteToggle = ::toggleHomeSongFavorite,
                                             onShowSnackbar = showHomeSnackbar,
-                                            offlineMode = offlineMode
+                                            offlineMode = offlineMode,
+                                            onHeaderClick = if (sectionState.source == NeteaseHomeSongSource.DAILY_RECOMMEND) {
+                                                { showDailySheet = true }
+                                            } else null
                                         )
                                     }
                             }
@@ -901,8 +863,12 @@ fun HomeScreen(
     }
 
     if (showDailySheet) {
+        val dailyRecommendSongs = ui.radarSongSections
+            .firstOrNull { it.source == NeteaseHomeSongSource.DAILY_RECOMMEND }
+            ?.section?.items
+            .orEmpty()
         DailySongsSheet(
-            songs = ui.dailySongs.items,
+            songs = dailyRecommendSongs,
             onSongClick = { list, index ->
                 showDailySheet = false
                 onSongClick(list, index)
@@ -998,7 +964,8 @@ private fun LazyGridScope.addNeteaseSongSection(
     favoriteSongs: List<SongItem>,
     onFavoriteToggle: (SongItem, Boolean) -> Unit,
     onShowSnackbar: (String) -> Unit,
-    offlineMode: Boolean
+    offlineMode: Boolean,
+    onHeaderClick: (() -> Unit)? = null
 ) {
     item(
         key = registerKey("$sectionKey:header"),
@@ -1006,7 +973,8 @@ private fun LazyGridScope.addNeteaseSongSection(
     ) {
         SectionHeader(
             icon = icon,
-            title = stringResource(sectionState.source.titleRes)
+            title = stringResource(sectionState.source.titleRes),
+            onClick = onHeaderClick
         )
     }
     sectionContent(
