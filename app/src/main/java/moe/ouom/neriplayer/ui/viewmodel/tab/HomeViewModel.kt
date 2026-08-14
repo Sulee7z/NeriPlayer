@@ -862,7 +862,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 s = 0
             )
             NeteaseHomeSongSource.DAILY_RECOMMEND -> client.getDailyRecommendedSongs(
-                afresh = true
+                afresh = false
             )
             NeteaseHomeSongSource.PRIVATE_FM -> client.getPersonalFmSongs()
             NeteaseHomeSongSource.PERSONALIZED_NEW_SONGS -> client.getPersonalizedNewSongs(
