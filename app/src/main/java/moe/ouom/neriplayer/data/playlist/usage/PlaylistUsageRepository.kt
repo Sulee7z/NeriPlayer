@@ -187,6 +187,8 @@ class PlaylistUsageRepository internal constructor(
     private val mutationLock = Any()
     private val persistenceMutex = Mutex()
     private var persistenceGeneration = 0L
+    private val manuallyRemovedUsageKeys = mutableMapOf<String, Long>()
+    private var manuallyRemovedUsageKeysLoaded = false
     @Volatile
     private var roomStorageEnabled = roomStore != null
     private val initialEntries = load()
@@ -319,11 +321,12 @@ class PlaylistUsageRepository internal constructor(
         val out = synchronized(mutationLock) {
             val data = _flow.value.toMutableList()
             val targetKey = playlistUsageKey(source, id, subtype)
+            clearManualRemovalLocked(targetKey)
             val idx = data.indexOfFirst { it.usageKey() == targetKey }
             val updated = if (idx >= 0) {
                 data[idx].copy(
                     name = name,
-                    picUrl = picUrl,
+                    picUrl = picUrl?.takeIf { it.isNotBlank() } ?: data[idx].picUrl,
                     trackCount = trackCount,
                     fid = fid,
                     mid = mid,
@@ -370,24 +373,37 @@ class PlaylistUsageRepository internal constructor(
 
     fun applyMergedStats(stats: List<SyncPlaylistUsageStat>) {
         val out = synchronized(mutationLock) {
-            val existing = _flow.value
-            val merged = SyncPlaylistUsageStatsMergePolicy.mergePlaylistUsageStats(
-                local = existing.map(UsageEntry::toSyncPlaylistUsageStat),
-                remote = stats
-            )
-            // 同步合并会重建条目, 把本地置顶状态按 usageKey 补回去, 避免同步把置顶冲掉
-            val pinnedLookup = existing.associate { it.usageKey() to it.pinnedAt }
-            normalizeUsageEntries(
-                merged.map { stat ->
-                    val entry = stat.toUsageEntry()
-                    val pinnedAt = pinnedLookup[entry.usageKey()]
-                    if (pinnedAt != null && entry.pinnedAt == null) {
-                        entry.copy(pinnedAt = pinnedAt)
-                    } else {
-                        entry
-                    }
+            val current = _flow.value
+            val manualRemovals = manualRemovalTimestampsLocked()
+            val localStats = current
+                .filter { entry ->
+                    !isManuallyRemoved(entry.usageKey(), entry.lastOpened, manualRemovals)
                 }
-            ).also { _flow.value = it }
+                .map(UsageEntry::toSyncPlaylistUsageStat)
+            val remoteStats = stats.filter { stat ->
+                !isManuallyRemoved(stat.playlistKey.trim(), stat.lastOpenedAt, manualRemovals)
+            }
+            val merged = SyncPlaylistUsageStatsMergePolicy.mergePlaylistUsageStats(
+                local = localStats,
+                remote = remoteStats
+            )
+            val previousByKey = current.associateBy(UsageEntry::usageKey)
+            // 同步合并会重建条目, 把本地置顶状态按 usageKey 补回去, 避免同步把置顶冲掉
+            val pinnedLookup = current.associate { it.usageKey() to it.pinnedAt }
+            val mergedEntries = merged.map(SyncPlaylistUsageStat::toUsageEntry).map { entry ->
+                val previousCover = previousByKey[entry.usageKey()]?.picUrl
+                    ?.takeIf { it.isNotBlank() }
+                val stableCover = entry.picUrl?.takeIf { it.isNotBlank() } ?: previousCover
+                val withCover = if (stableCover == entry.picUrl) entry else entry.copy(picUrl = stableCover)
+                val pinnedAt = pinnedLookup[withCover.usageKey()]
+                if (pinnedAt != null && withCover.pinnedAt == null) {
+                    withCover.copy(pinnedAt = pinnedAt)
+                } else {
+                    withCover
+                }
+            }
+            normalizeUsageEntries(mergedEntries)
+                .also { _flow.value = it }
         }
         saveAsync(out)
     }
@@ -416,12 +432,13 @@ class PlaylistUsageRepository internal constructor(
         val out = synchronized(mutationLock) {
             val data = _flow.value.toMutableList()
             val targetKey = playlistUsageKey(source, id, subtype)
+            clearManualRemovalLocked(targetKey)
             val idx = data.indexOfFirst { it.usageKey() == targetKey }
             if (idx >= 0) {
                 val old = data[idx]
                 data[idx] = old.copy(
                     name = name,
-                    picUrl = picUrl,
+                    picUrl = picUrl?.takeIf { it.isNotBlank() } ?: old.picUrl,
                     trackCount = trackCount,
                     fid = fid,
                     mid = mid,
@@ -463,110 +480,127 @@ class PlaylistUsageRepository internal constructor(
         playlists: List<LocalPlaylist>,
         localFilesCoverCandidates: List<SongItem> = emptyList()
     ) {
-        val current = _flow.value
-        if (current.none { it.source == SOURCE_LOCAL }) return
-
-        val localizedContext = LanguageManager.applyLanguage(app)
-        val localPlaylistLookup = buildLocalPlaylistUsageLookup(playlists, localizedContext)
-        var changed = false
-        val updated = current.mapNotNull { entry ->
-            if (entry.source != SOURCE_LOCAL) return@mapNotNull entry
-
-            val playlist = localPlaylistLookup[entry.id] ?: run {
-                changed = true
-                return@mapNotNull null
+        val out = synchronized(mutationLock) {
+            val current = _flow.value
+            if (current.none { it.source == SOURCE_LOCAL }) {
+                return@synchronized null
             }
 
-            val refreshedName = SystemLocalPlaylists.resolve(
-                playlistId = playlist.id,
-                playlistName = playlist.name,
-                context = localizedContext
-            )?.currentName ?: playlist.name
-            val refreshedPicUrl = playlist.displayCoverUrl(
-                context = localizedContext,
-                resolveLocalMetadataFallback = true,
-                additionalCoverCandidates = if (LocalFilesPlaylist.isSystemPlaylist(
-                        playlist,
-                        localizedContext
-                    )
-                ) {
-                    localFilesCoverCandidates
-                } else {
-                    emptyList()
+            val localizedContext = LanguageManager.applyLanguage(app)
+            val localPlaylistLookup = buildLocalPlaylistUsageLookup(playlists, localizedContext)
+            var changed = false
+            val updated = current.mapNotNull { entry ->
+                if (entry.source != SOURCE_LOCAL) return@mapNotNull entry
+
+                val playlist = localPlaylistLookup[entry.id] ?: run {
+                    changed = true
+                    return@mapNotNull null
                 }
-            )
-            val refreshedTrackCount = playlist.songs.size
-            if (
-                entry.name == refreshedName &&
-                entry.picUrl == refreshedPicUrl &&
-                entry.trackCount == refreshedTrackCount
-            ) {
-                entry
-            } else {
-                changed = true
-                entry.copy(
-                    name = refreshedName,
-                    picUrl = refreshedPicUrl,
-                    trackCount = refreshedTrackCount
-                )
+
+                val refreshedName = SystemLocalPlaylists.resolve(
+                    playlistId = playlist.id,
+                    playlistName = playlist.name,
+                    context = localizedContext
+                )?.currentName ?: playlist.name
+                val refreshedPicUrl = playlist.displayCoverUrl(
+                    context = localizedContext,
+                    resolveLocalMetadataFallback = true,
+                    additionalCoverCandidates = if (LocalFilesPlaylist.isSystemPlaylist(
+                            playlist,
+                            localizedContext
+                        )
+                    ) {
+                        localFilesCoverCandidates
+                    } else {
+                        emptyList()
+                    }
+                )?.takeIf { it.isNotBlank() } ?: entry.picUrl
+                val refreshedTrackCount = playlist.songs.size
+                if (
+                    entry.name == refreshedName &&
+                    entry.picUrl == refreshedPicUrl &&
+                    entry.trackCount == refreshedTrackCount
+                ) {
+                    entry
+                } else {
+                    changed = true
+                    entry.copy(
+                        name = refreshedName,
+                        picUrl = refreshedPicUrl,
+                        trackCount = refreshedTrackCount
+                    )
+                }
             }
+
+            if (!changed) return@synchronized null
+
+            normalizeUsageEntries(updated).also { _flow.value = it }
         }
-
-        if (!changed) return
-
-        val out = normalizeUsageEntries(updated)
-        _flow.value = out
-        saveAsync(out)
+        out?.let(::saveAsync)
     }
 
     /** 同步本地歌手虚拟歌单卡片信息 */
     fun syncLocalArtistEntries(playlists: List<LocalPlaylist>) {
-        val current = _flow.value
-        if (current.none { it.source == SOURCE_LOCAL_ARTIST }) return
-
-        val localizedContext = LanguageManager.applyLanguage(app)
-        val artistsById = buildLocalArtistSummaries(playlists, localizedContext)
-            .associateBy { artist -> artist.id }
-        var changed = false
-        val updated = current.mapNotNull { entry ->
-            if (entry.source != SOURCE_LOCAL_ARTIST) return@mapNotNull entry
-
-            val artist = artistsById[entry.id] ?: run {
-                changed = true
-                return@mapNotNull null
+        val out = synchronized(mutationLock) {
+            val current = _flow.value
+            if (current.none { it.source == SOURCE_LOCAL_ARTIST }) {
+                return@synchronized null
             }
 
-            val refreshedPicUrl = artist.displayCoverUrl(
-                context = localizedContext,
-                resolveLocalMetadataFallback = true
-            )
-            val refreshedTrackCount = artist.songs.size
-            if (
-                entry.name == artist.name &&
-                entry.picUrl == refreshedPicUrl &&
-                entry.trackCount == refreshedTrackCount
-            ) {
-                entry
-            } else {
-                changed = true
-                entry.copy(
-                    name = artist.name,
-                    picUrl = refreshedPicUrl,
-                    trackCount = refreshedTrackCount
-                )
+            val localizedContext = LanguageManager.applyLanguage(app)
+            val artistsById = buildLocalArtistSummaries(playlists, localizedContext)
+                .associateBy { artist -> artist.id }
+            var changed = false
+            val updated = current.mapNotNull { entry ->
+                if (entry.source != SOURCE_LOCAL_ARTIST) return@mapNotNull entry
+
+                val artist = artistsById[entry.id] ?: run {
+                    changed = true
+                    return@mapNotNull null
+                }
+
+                val refreshedPicUrl = artist.displayCoverUrl(
+                    context = localizedContext,
+                    resolveLocalMetadataFallback = true
+                )?.takeIf { it.isNotBlank() } ?: entry.picUrl
+                val refreshedTrackCount = artist.songs.size
+                if (
+                    entry.name == artist.name &&
+                    entry.picUrl == refreshedPicUrl &&
+                    entry.trackCount == refreshedTrackCount
+                ) {
+                    entry
+                } else {
+                    changed = true
+                    entry.copy(
+                        name = artist.name,
+                        picUrl = refreshedPicUrl,
+                        trackCount = refreshedTrackCount
+                    )
+                }
             }
+
+            if (!changed) return@synchronized null
+
+            normalizeUsageEntries(updated).also { _flow.value = it }
         }
-
-        if (!changed) return
-
-        val out = normalizeUsageEntries(updated)
-        _flow.value = out
-        saveAsync(out)
+        out?.let(::saveAsync)
     }
 
     /** 从继续播放列表中移除指定项 */
     fun removeEntry(id: Long, source: String, subtype: String? = null) {
-        removeEntryIfPresent(id, source, subtype)
+        val targetKey = playlistUsageKey(source, id, subtype)
+        val out = synchronized(mutationLock) {
+            rememberManualRemovalLocked(targetKey)
+            val data = _flow.value.toMutableList()
+            val removed = data.removeAll { it.usageKey() == targetKey }
+            if (!removed) {
+                return@synchronized null
+            }
+            normalizeUsageEntries(data).also { _flow.value = it }
+        }
+        out?.let(::saveAsync)
+        triggerSync()
     }
 
     /** 置顶/取消置顶继续播放中的歌单 */
@@ -606,6 +640,62 @@ class PlaylistUsageRepository internal constructor(
     private fun syncCounterDeviceId(): String {
         return runCatching { syncStorage.getOrCreateDeviceId() }
             .getOrDefault(fallbackCounterDeviceId)
+    }
+
+    private fun manualRemovalTimestampsLocked(): MutableMap<String, Long> {
+        if (!manuallyRemovedUsageKeysLoaded) {
+            val persisted = runCatching { syncStorage.getPlaylistUsageDeletions() }
+                .getOrDefault(emptyMap())
+            manuallyRemovedUsageKeys.putAll(persisted)
+            manuallyRemovedUsageKeysLoaded = true
+        }
+        return manuallyRemovedUsageKeys
+    }
+
+    private fun rememberManualRemovalLocked(
+        playlistKey: String,
+        deletedAt: Long = System.currentTimeMillis()
+    ) {
+        val removals = manualRemovalTimestampsLocked()
+        val normalizedTimestamp = deletedAt.coerceAtLeast(1L)
+        if (normalizedTimestamp <= (removals[playlistKey] ?: 0L)) {
+            return
+        }
+        removals[playlistKey] = normalizedTimestamp
+        runCatching {
+            syncStorage.addPlaylistUsageDeletion(playlistKey, normalizedTimestamp)
+        }.onFailure { error ->
+            NPLogger.w(
+                "PlaylistUsageRepo",
+                "Failed to persist manually removed playlist usage",
+                error
+            )
+        }
+    }
+
+    private fun clearManualRemovalLocked(playlistKey: String) {
+        val removals = manualRemovalTimestampsLocked()
+        if (removals.remove(playlistKey) == null) {
+            return
+        }
+        runCatching {
+            syncStorage.removePlaylistUsageDeletion(playlistKey)
+        }.onFailure { error ->
+            NPLogger.w(
+                "PlaylistUsageRepo",
+                "Failed to clear manually removed playlist usage",
+                error
+            )
+        }
+    }
+
+    private fun isManuallyRemoved(
+        playlistKey: String,
+        openedAt: Long,
+        removals: Map<String, Long>
+    ): Boolean {
+        val removedAt = removals[playlistKey] ?: return false
+        return openedAt <= removedAt
     }
 
     private fun triggerSync() {

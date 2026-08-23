@@ -48,6 +48,7 @@ import moe.ouom.neriplayer.core.player.policy.pending.resolvePendingMediaLoadEnt
 import moe.ouom.neriplayer.core.player.policy.pending.resolvePendingPauseAction
 import moe.ouom.neriplayer.core.player.policy.pending.resolvePendingPlayAction
 import moe.ouom.neriplayer.core.player.policy.pending.resolvePendingSeekAction
+import moe.ouom.neriplayer.core.player.policy.pending.resolveSeekExecutionAction
 import moe.ouom.neriplayer.core.player.policy.pending.shouldApplyResolvedMedia
 import moe.ouom.neriplayer.core.player.policy.pending.shouldApplyResolvedMediaSideEffects
 import moe.ouom.neriplayer.core.player.policy.progress.LONG_FORM_PLAYBACK_MIN_DURATION_MS
@@ -66,8 +67,11 @@ import moe.ouom.neriplayer.core.player.resolver.youtube.YouTubeSeekRefreshPolicy
 import moe.ouom.neriplayer.core.player.service.AudioPlayerService
 import moe.ouom.neriplayer.core.player.url.cancelUrlRefreshIfNotReusableForPendingLoad
 import moe.ouom.neriplayer.core.player.url.allowsCustomCacheKey
+import moe.ouom.neriplayer.core.player.url.listenTogetherFallbackResult
+import moe.ouom.neriplayer.core.player.url.listenTogetherPreferredQualityKey
+import moe.ouom.neriplayer.core.player.url.mergeListenTogetherFallbackResult
 import moe.ouom.neriplayer.core.player.url.resolveSongUrl
-import moe.ouom.neriplayer.core.player.url.resolveSongUrlOrWaitForAuthoritativeStream
+import moe.ouom.neriplayer.core.player.url.resolvePlaybackAudioInfoForListenTogetherStreamCandidate
 import moe.ouom.neriplayer.core.player.url.synchronizeCachedPlaybackDescriptor
 import moe.ouom.neriplayer.core.player.url.youtubePlaybackRecoveryStrategyForSeek
 import moe.ouom.neriplayer.core.player.usb.path.UsbExclusiveAudioPathState
@@ -86,6 +90,7 @@ import moe.ouom.neriplayer.data.model.sameIdentityAs
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.data.platform.youtube.extractYouTubeMusicVideoId
 import moe.ouom.neriplayer.data.platform.youtube.youtubeMusicThumbnailUrl
+import moe.ouom.neriplayer.listentogether.playback.shouldShowListenTogetherPreviewClipNotice
 import moe.ouom.neriplayer.ui.feedback.AppFeedback
 
 internal fun PlayerManager.cancelVolumeFadeImpl(resetToFull: Boolean = false) {
@@ -130,7 +135,7 @@ internal fun PlayerManager.cancelPendingPauseRequestImpl(resetVolumeToFull: Bool
 }
 
 private fun PlayerManager.isAudioRouteMuteSuppressed(): Boolean {
-    return audioRouteMuteRestoreVolume != null
+    return audioRouteMuteRestoreVolume?.let { it > 0f } == true
 }
 
 private fun PlayerManager.volumeWhileAudioRouteMuted(volume: Float): Float {
@@ -138,34 +143,112 @@ private fun PlayerManager.volumeWhileAudioRouteMuted(volume: Float): Float {
 }
 
 internal fun PlayerManager.clearAudioRouteMuteSuppression(reason: String) {
-    val suppressedVolume = audioRouteMuteRestoreVolume ?: return
+    clearAudioRouteMuteSuppression(
+        reason = reason,
+        preserveExplicitRestore = shouldMuteListenTogetherListenerForAudioRouteLoss()
+    )
+}
+
+internal fun PlayerManager.clearAudioRouteMuteSuppression(
+    reason: String,
+    preserveExplicitRestore: Boolean
+) {
+    if (
+        preserveExplicitRestore &&
+        shouldDeferAudioRouteMuteRestore(audioRouteMuteRequiresExplicitRestore)
+    ) {
+        NPLogger.d(
+            "NERI-PlayerManager",
+            "clearAudioRouteMuteSuppression(): keep explicit listener mute, reason=$reason, currentSong=${_currentSongFlow.value?.name}"
+        )
+        return
+    }
+    val suppressedVolume = audioRouteMuteRestoreVolume
     audioRouteMuteRestoreVolume = null
+    audioRouteMuteRequiresExplicitRestore = false
+    _audioRouteMuteSuppressedFlow.value = false
+    if (suppressedVolume == null) return
     NPLogger.d(
         "NERI-PlayerManager",
         "clearAudioRouteMuteSuppression(): reason=$reason, suppressedVolume=$suppressedVolume, currentSong=${_currentSongFlow.value?.name}"
     )
 }
 
+internal fun shouldDeferAudioRouteMuteRestore(
+    requiresExplicitRestore: Boolean
+): Boolean = requiresExplicitRestore
+
+internal fun resolveAudioRouteMuteRestoreVolume(
+    currentVolume: Float,
+    existingRestoreVolume: Float?
+): Float? {
+    return existingRestoreVolume?.takeIf { it > 0f }
+        ?: currentVolume.coerceIn(0f, 1f).takeIf { it > 0f }
+}
+
 internal fun PlayerManager.suppressPlaybackForAudioRouteLoss(reason: String) {
     if (!isPlayerInitialized()) return
+    val requiresExplicitRestore = shouldMuteListenTogetherListenerForAudioRouteLoss()
     cancelVolumeFade(resetToFull = false)
     runPlayerActionOnMainThread {
         if (!isPlayerInitialized()) return@runPlayerActionOnMainThread
         val currentVolume = runCatching { player.volume.coerceIn(0f, 1f) }.getOrDefault(1f)
-        if (audioRouteMuteRestoreVolume == null) {
-            audioRouteMuteRestoreVolume = currentVolume
+        val restoreVolume = resolveAudioRouteMuteRestoreVolume(
+            currentVolume = currentVolume,
+            existingRestoreVolume = audioRouteMuteRestoreVolume
+        )
+        if (restoreVolume == null) {
+            audioRouteMuteRestoreVolume = null
+            audioRouteMuteRequiresExplicitRestore = false
+            _audioRouteMuteSuppressedFlow.value = false
+            return@runPlayerActionOnMainThread
         }
+        audioRouteMuteRestoreVolume = restoreVolume
+        audioRouteMuteRequiresExplicitRestore =
+            audioRouteMuteRequiresExplicitRestore || requiresExplicitRestore
+        _audioRouteMuteSuppressedFlow.value = true
         player.volume = 0f
         NPLogger.d(
             "NERI-PlayerManager",
-            "suppressPlaybackForAudioRouteLoss(): reason=$reason, capturedVolume=${audioRouteMuteRestoreVolume}, currentSong=${_currentSongFlow.value?.name}"
+            "suppressPlaybackForAudioRouteLoss(): reason=$reason, capturedVolume=$restoreVolume, explicitRestore=${audioRouteMuteRequiresExplicitRestore}, currentSong=${_currentSongFlow.value?.name}"
+        )
+    }
+}
+
+internal fun PlayerManager.restoreAudioRouteMuteImpl() {
+    val restoreVolume = audioRouteMuteRestoreVolume ?: run {
+        audioRouteMuteRequiresExplicitRestore = false
+        _audioRouteMuteSuppressedFlow.value = false
+        return
+    }
+    audioRouteMuteRestoreVolume = null
+    audioRouteMuteRequiresExplicitRestore = false
+    _audioRouteMuteSuppressedFlow.value = false
+    if (!isPlayerInitialized()) return
+    runPlayerActionOnMainThread {
+        if (!isPlayerInitialized()) return@runPlayerActionOnMainThread
+        player.volume = restoreVolume.coerceIn(0f, 1f)
+        NPLogger.d(
+            "NERI-PlayerManager",
+            "restoreAudioRouteMuteImpl(): restoredVolume=$restoreVolume, currentSong=${_currentSongFlow.value?.name}"
         )
     }
 }
 
 internal fun PlayerManager.restorePlaybackAfterTransientAudioRouteLoss(reason: String) {
-    val restoreVolume = audioRouteMuteRestoreVolume ?: return
+    if (shouldDeferAudioRouteMuteRestore(audioRouteMuteRequiresExplicitRestore)) {
+        NPLogger.d(
+            "NERI-PlayerManager",
+            "restorePlaybackAfterTransientAudioRouteLoss(): keep listener muted until explicit restore, reason=$reason, currentSong=${_currentSongFlow.value?.name}"
+        )
+        return
+    }
+    val restoreVolume = audioRouteMuteRestoreVolume ?: run {
+        _audioRouteMuteSuppressedFlow.value = false
+        return
+    }
     audioRouteMuteRestoreVolume = null
+    _audioRouteMuteSuppressedFlow.value = false
     if (!isPlayerInitialized()) return
     val shouldRestore = runCatching {
         player.playWhenReady || player.isPlaying
@@ -766,16 +849,15 @@ internal fun PlayerManager.playAtIndex(
     )
     kickoffYouTubePlaybackIntentWarmup(song, source = "play_at_index")
     cancelPendingPauseRequest()
+    val previousSong = _currentSongFlow.value
+    val retainCurrentAudioInfo = commandSource == PlaybackCommandSource.REMOTE_SYNC &&
+        previousSong?.sameIdentityAs(song) == true
     setCurrentSongForPlayback(song, syncLyricon = false)
     _currentMediaUrl.value = null
-    _currentPlaybackAudioInfo.value = null
-    currentMediaUrlResolvedAtMs = 0L
-    val shouldAwaitAuthoritativeStream =
-        commandSource == PlaybackCommandSource.REMOTE_SYNC &&
-            shouldWaitForListenTogetherAuthoritativeStream(song)
-    if (shouldAwaitAuthoritativeStream) {
-        stopCurrentPlaybackForListenTogetherAwaitingStream()
+    if (!retainCurrentAudioInfo) {
+        _currentPlaybackAudioInfo.value = null
     }
+    currentMediaUrlResolvedAtMs = 0L
     updateResumePlaybackRequested(true)
     clearUsbExclusiveInterruptedPlaybackIntent("play_at_index")
     restoredShouldResumePlayback = false
@@ -816,17 +898,18 @@ internal fun PlayerManager.playAtIndex(
     enterPendingMediaLoad(resolvedResumePositionMs)
     playJob = ioScope.launch {
         try {
-        val result = resolveSongUrlOrWaitForAuthoritativeStream(
-            shouldWaitForAuthoritativeStream = shouldAwaitAuthoritativeStream
-        ) {
-            resolveSongUrl(
-                song = song,
-                playbackRequestTokenOverride = requestToken,
-                shouldApplyCacheMutation = {
-                    shouldApplyResolvedMedia(requestToken, playbackRequestToken) && isActive
-                }
-            )
-        }
+        val localResult = resolveSongUrl(
+            song = song,
+            playbackRequestTokenOverride = requestToken,
+            shouldApplyCacheMutation = {
+                shouldApplyResolvedMedia(requestToken, playbackRequestToken) && isActive
+            }
+        )
+        val result = mergeListenTogetherFallbackResult(
+            localResult = localResult,
+            listenTogetherFallback = listenTogetherFallbackResult(song),
+            preferredQualityKey = listenTogetherPreferredQualityKey(song)
+        )
         if (!shouldApplyResolvedMedia(requestToken, playbackRequestToken) || !isActive) {
             NPLogger.d(
                 "NERI-PlayerManager",
@@ -858,6 +941,7 @@ internal fun PlayerManager.playAtIndex(
                 }
 
                 var appliedResolvedMedia = false
+                var switchedToAuthoritativeStreamWait = false
                 withContext(Dispatchers.Main) {
                     if (!shouldApplyResolvedMediaSideEffects(
                             requestGeneration = requestToken,
@@ -867,9 +951,28 @@ internal fun PlayerManager.playAtIndex(
                     ) {
                         return@withContext
                     }
+                    if (
+                        shouldAwaitListenTogetherSharedStreamFallback(
+                            song = song,
+                            localResolutionRequiresSharedStream = result.isPreviewClip
+                        )
+                    ) {
+                        switchedToAuthoritativeStreamWait = true
+                        stopCurrentPlaybackForListenTogetherAwaitingStream()
+                        return@withContext
+                    }
                     consecutivePlayFailures = 0
                     result.noticeMessage?.let { message ->
-                        postPlayerEvent(PlayerEvent.ShowError(message))
+                        if (shouldShowListenTogetherPreviewClipNotice(
+                                isPreviewClip = result.isPreviewClip,
+                                listenerAudioLinkSharingActive =
+                                    isListenTogetherAudioLinkFallbackEnabled(),
+                                controllerLinkConfirmedUnavailable =
+                                    isListenTogetherAuthoritativeStreamConfirmedUnavailable(song)
+                            )
+                        ) {
+                            postPlayerEvent(PlayerEvent.ShowError(message))
+                        }
                     }
                     maybeUpdateSongDuration(song, result.durationMs ?: 0L)
                     val cacheKey = result.cacheKeyOverride ?: computeCacheKey(song)
@@ -886,7 +989,11 @@ internal fun PlayerManager.playAtIndex(
                     )
                     val selectedCandidate = currentPlaybackCandidate()
                     val selectedUrl = selectedCandidate?.url ?: result.url
-                    val selectedAudioInfo = selectedCandidate?.audioInfo ?: result.audioInfo
+                    val selectedAudioInfo = resolvePlaybackAudioInfoForListenTogetherStreamCandidate(
+                        candidate = selectedCandidate,
+                        resolvedAudioInfo = result.audioInfo,
+                        existingAudioInfo = _currentPlaybackAudioInfo.value
+                    )
                     val selectedMimeType = selectedCandidate?.mimeType ?: result.mimeType
                     val selectedExpectedContentLength =
                         selectedCandidate?.expectedContentLength ?: result.expectedContentLength
@@ -966,12 +1073,22 @@ internal fun PlayerManager.playAtIndex(
                     PlaybackTransitionWakeLock.release(requestToken, "media_started")
                     appliedResolvedMedia = true
                 }
+                if (switchedToAuthoritativeStreamWait) {
+                    scheduleStatePersist(
+                        positionMs = resolvedResumePositionMs,
+                        shouldResumePlayback = true
+                    )
+                    return@launch
+                }
                 if (!appliedResolvedMedia) {
                     return@launch
                 }
                 maybeWarmNextYouTubeMusicAfterCurrentResolved()
             }
             SongUrlResult.WaitingForAuthoritativeStream -> {
+                withContext(Dispatchers.Main) {
+                    stopCurrentPlaybackForListenTogetherAwaitingStream()
+                }
                 NPLogger.d(
                     "NERI-PlayerManager",
                     "Waiting for authoritative listen-together stream: song=${song.name}, stableKey=${song.listenTogetherStableKeyOrNull()}"
@@ -982,6 +1099,21 @@ internal fun PlayerManager.playAtIndex(
                 )
             }
             is SongUrlResult.RequiresLogin -> {
+                if (
+                    shouldAwaitListenTogetherSharedStreamFallback(
+                        song = song,
+                        localResolutionRequiresSharedStream = true
+                    )
+                ) {
+                    withContext(Dispatchers.Main) {
+                        stopCurrentPlaybackForListenTogetherAwaitingStream()
+                    }
+                    scheduleStatePersist(
+                        positionMs = resolvedResumePositionMs,
+                        shouldResumePlayback = true
+                    )
+                    return@launch
+                }
                 clearPlaybackDemandCacheKey(reason = "play_at_index_requires_login")
                 NPLogger.w(
                     "NERI-PlayerManager",
@@ -1000,6 +1132,21 @@ internal fun PlayerManager.playAtIndex(
                 }
             }
             is SongUrlResult.Failure -> {
+                if (
+                    shouldAwaitListenTogetherSharedStreamFallback(
+                        song = song,
+                        localResolutionRequiresSharedStream = true
+                    )
+                ) {
+                    withContext(Dispatchers.Main) {
+                        stopCurrentPlaybackForListenTogetherAwaitingStream()
+                    }
+                    scheduleStatePersist(
+                        positionMs = resolvedResumePositionMs,
+                        shouldResumePlayback = true
+                    )
+                    return@launch
+                }
                 clearPlaybackDemandCacheKey(reason = "play_at_index_failure")
                 NPLogger.e(
                     "NERI-PlayerManager",
@@ -1330,6 +1477,8 @@ internal fun PlayerManager.pauseImpl(
     if (!initialized) return
     val internalUsbTransition = debugReason.startsWith("usb_toggle_")
     if (!internalUsbTransition && shouldBlockLocalRoomControl(commandSource)) return
+    restoredShouldResumePlayback = false
+    restoredResumePositionMs = 0L
     if (isPendingMediaLoadActive()) {
         val action = resolvePendingPauseAction(
             pendingLoadActive = true,
@@ -1358,7 +1507,12 @@ internal fun PlayerManager.pauseImpl(
         if (lyriconEnabled) {
             LyriconManager.setPlaybackState(false)
         }
-        clearAudioRouteMuteSuppression(reason = debugReason)
+        clearAudioRouteMuteSuppression(
+            reason = debugReason,
+            preserveExplicitRestore = shouldDeferAudioRouteMuteRestore(
+                audioRouteMuteRequiresExplicitRestore
+            )
+        )
         persistPausedPlaybackState(
             forcePersist = forcePersist,
             positionMs = action.persistPositionMs,
@@ -1498,14 +1652,19 @@ private fun PlayerManager.pauseInternal(
         }
         _playbackPositionMs.value = currentPosition
     }
-    if (restoreVolumeAfterPause) {
+    if (restoreVolumeAfterPause && !isAudioRouteMuteSuppressed()) {
         runPlayerActionOnMainThread {
             if (isPlayerInitialized()) {
                 player.volume = 1f
             }
         }
     }
-    clearAudioRouteMuteSuppression(reason = debugReason)
+    clearAudioRouteMuteSuppression(
+        reason = debugReason,
+        preserveExplicitRestore = shouldDeferAudioRouteMuteRestore(
+            audioRouteMuteRequiresExplicitRestore
+        )
+    )
     persistLongFormPlaybackProgress(
         song = currentSong,
         positionMs = currentPosition,
@@ -1525,6 +1684,10 @@ private fun PlayerManager.pauseInternal(
 internal fun PlayerManager.togglePlayPauseImpl(allowFade: Boolean = true) {
     ensureInitialized()
     if (!initialized) return
+    if (isAudioRouteMuteSuppressed()) {
+        restoreAudioRouteMuteImpl()
+        return
+    }
     if (shouldPausePlaybackWhenToggling(
             resumePlaybackRequested = resumePlaybackRequested,
             pendingPauseJobActive = pendingPauseJob?.isActive == true,
@@ -1573,9 +1736,12 @@ internal fun PlayerManager.seekToImpl(
     val shouldRefreshYouTubeUrlBeforeSeek =
         YouTubeSeekRefreshPolicy.shouldRefreshUrlBeforeSeek(currentSong, currentUrl) ||
             shouldExpediteYouTubeSeekRecovery
+    val pendingLoadActive = isPendingMediaLoadActive()
     // 正在装载新媒体时交给现有 pending-load 流程，避免替旧媒体启动一条并行刷新
-    val shouldPreemptivelyRefreshYouTubeUrl =
-        shouldRefreshYouTubeUrlBeforeSeek && !isPendingMediaLoadActive()
+    val seekExecutionAction = resolveSeekExecutionAction(
+        pendingLoadActive = pendingLoadActive,
+        urlRefreshRequested = shouldRefreshYouTubeUrlBeforeSeek
+    )
     if (shouldRefreshYouTubeUrlBeforeSeek) {
         rememberPendingSeekPosition(resolvedPositionMs)
         expeditedYouTubeSeekRecoveryPending = shouldExpediteYouTubeSeekRecovery
@@ -1583,12 +1749,12 @@ internal fun PlayerManager.seekToImpl(
         clearPendingSeekPosition()
     }
     val pendingSeekAction = resolvePendingSeekAction(
-        pendingLoadActive = isPendingMediaLoadActive(),
+        pendingLoadActive = pendingLoadActive,
         requestedPositionMs = resolvedPositionMs
     )
     pendingSeekAction.pendingSeekPositionMs?.let(::rememberPendingSeekPosition)
     pendingMediaLoadPositionMs = pendingSeekAction.exposedPositionMs
-    if (pendingSeekAction.seekPlayerNow && !shouldPreemptivelyRefreshYouTubeUrl) {
+    if (seekExecutionAction.seekPlayerNow) {
         player.seekTo(resolvedPositionMs)
     }
     if (lyriconEnabled) {
@@ -1614,7 +1780,7 @@ internal fun PlayerManager.seekToImpl(
         positionMs = resolvedPositionMs,
         currentIndex = currentIndex
     )
-    if (shouldPreemptivelyRefreshYouTubeUrl) {
+    if (seekExecutionAction.refreshUrlInBackground) {
         refreshCurrentSongUrl(
             resumePositionMs = resolvedPositionMs,
             allowFallback = false,

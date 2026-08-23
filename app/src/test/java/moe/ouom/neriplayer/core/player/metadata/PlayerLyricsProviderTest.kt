@@ -1,7 +1,15 @@
 package moe.ouom.neriplayer.core.player.metadata
 
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.yield
 import moe.ouom.neriplayer.core.api.lyrics.EditableLyricMatchCandidate
+import moe.ouom.neriplayer.core.api.lyrics.EditableLyricMatchConfidence
+import moe.ouom.neriplayer.core.api.lyrics.EditableLyricMatchRequest
 import moe.ouom.neriplayer.core.api.lyrics.EditableLyricMatchSource
+import moe.ouom.neriplayer.core.api.lyrics.RankedEditableLyricMatch
+import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.ui.component.lyrics.LyricEntry
 import moe.ouom.neriplayer.ui.component.lyrics.parseNeteaseLyricsAuto
 import moe.ouom.neriplayer.util.network.isTransientHttp2StreamReset
@@ -14,6 +22,19 @@ import org.junit.Test
 import java.io.IOException
 
 class PlayerLyricsProviderTest {
+    private class TestLyricsCache : PlayerLyricsProvider.NeteaseLyricsCacheStore {
+        private val values = mutableMapOf<Long, NeteaseLyricsCacheEntry>()
+
+        override fun get(songId: Long): NeteaseLyricsCacheEntry? = values[songId]
+
+        override fun put(songId: Long, entry: NeteaseLyricsCacheEntry) {
+            values[songId] = entry
+        }
+
+        fun clear() {
+            values.clear()
+        }
+    }
 
     @Test
     fun `resolveLocalLyricOverrideState keeps blank local override as cleared`() {
@@ -57,6 +78,38 @@ class PlayerLyricsProviderTest {
                 downloadedLyric = "[00:01.00]downloaded"
             )
         )
+    }
+
+    @Test
+    fun `local songs never load remote lyrics`() {
+        val song = SongItem(
+            id = 1L,
+            name = "Local",
+            artist = "Artist",
+            album = "Local Files",
+            albumId = 0L,
+            durationMs = 180_000L,
+            coverUrl = null,
+            mediaUri = "/tmp/local.mp3"
+        )
+
+        assertFalse(shouldLoadRemoteLyrics(song))
+    }
+
+    @Test
+    fun `remote songs keep remote lyric loading enabled`() {
+        val song = SongItem(
+            id = 2L,
+            name = "Remote",
+            artist = "Artist",
+            album = "Album",
+            albumId = 1L,
+            durationMs = 180_000L,
+            coverUrl = null,
+            mediaUri = "https://example.com/audio.mp3"
+        )
+
+        assertTrue(shouldLoadRemoteLyrics(song))
     }
 
     @Test
@@ -208,6 +261,56 @@ class PlayerLyricsProviderTest {
     }
 
     @Test
+    fun `cold NetEase lyric loads are deduplicated per song`() = runTest {
+        val cache = TestLyricsCache()
+        val releaseLoader = CompletableDeferred<Unit>()
+        var loadCount = 0
+        val loader: suspend (Long) -> String = {
+            loadCount += 1
+            releaseLoader.await()
+            """{"lrc":{"lyric":"[00:01.00]line"}}"""
+        }
+
+        val first = async {
+            PlayerLyricsProvider.getOrLoadNeteaseLyricsCacheEntry(11L, cache, loader)
+        }
+        val second = async {
+            PlayerLyricsProvider.getOrLoadNeteaseLyricsCacheEntry(11L, cache, loader)
+        }
+        yield()
+
+        assertEquals(1, loadCount)
+        releaseLoader.complete(Unit)
+        val firstEntry = first.await()
+        assertNotNull(cache.get(11L))
+        assertEquals(firstEntry, second.await())
+        assertEquals(1, loadCount)
+    }
+
+    @Test
+    fun `cold NetEase lyric load does not repopulate cache after clearing`() = runTest {
+        val cache = TestLyricsCache()
+        val loaderStarted = CompletableDeferred<Unit>()
+        val releaseLoader = CompletableDeferred<Unit>()
+        val loader: suspend (Long) -> String = {
+            loaderStarted.complete(Unit)
+            releaseLoader.await()
+            """{"lrc":{"lyric":"[00:01.00]line"}}"""
+        }
+
+        val request = async {
+            PlayerLyricsProvider.getOrLoadNeteaseLyricsCacheEntry(12L, cache, loader)
+        }
+        loaderStarted.await()
+        cache.clear()
+        PlayerLyricsProvider.clearLyricsCaches()
+        releaseLoader.complete(Unit)
+        request.await()
+
+        assertNull(cache.get(12L))
+    }
+
+    @Test
     fun buildNeteaseLyricsCacheEntryRejectsCollapsedTimedLyrics() {
         val payload = """
             {
@@ -274,6 +377,8 @@ class PlayerLyricsProviderTest {
     fun selectDurationMatchedExternalLyricsKeepsOriginalAndTranslationFromOneCandidate() {
         val selected = PlayerLyricsProvider.selectDurationMatchedExternalLyrics(
             expectedDurationMs = 240_000L,
+            expectedTitle = "Correct song",
+            expectedArtist = "Correct artist",
             candidates = listOf(
                 EditableLyricMatchCandidate(
                     id = "correct",
@@ -297,6 +402,246 @@ class PlayerLyricsProviderTest {
 
         assertEquals("Correct original", selected?.lyrics?.single()?.text)
         assertTrue(selected?.translatedLyrics.isNullOrEmpty())
+    }
+
+    @Test
+    fun selectDurationMatchedExternalLyricsRejectsSameDurationWrongSong() {
+        val selected = PlayerLyricsProvider.selectDurationMatchedExternalLyrics(
+            expectedDurationMs = 240_000L,
+            expectedTitle = "Signal",
+            expectedArtist = "Artist One",
+            candidates = listOf(
+                EditableLyricMatchCandidate(
+                    id = "wrong",
+                    source = EditableLyricMatchSource.CLOUD_MUSIC,
+                    title = "Average",
+                    artist = "Other Artist",
+                    durationMs = 240_000L,
+                    lyrics = "[00:01.00]Wrong song lyrics"
+                )
+            )
+        )
+
+        assertNull(selected)
+    }
+
+    @Test
+    fun selectRankedDurationMatchedExternalLyricsPrefersConfiguredSourceOrder() {
+        val selected = PlayerLyricsProvider.selectRankedDurationMatchedExternalLyrics(
+            expectedDurationMs = 240_000L,
+            expectedTitle = "Signal",
+            expectedArtist = "Artist One",
+            matches = listOf(
+                rankedCandidate(
+                    id = "lrclib",
+                    source = EditableLyricMatchSource.LRCLIB,
+                    score = 200,
+                    lyrics = "[00:01.00]LRCLIB original"
+                ),
+                rankedCandidate(
+                    id = "qq",
+                    source = EditableLyricMatchSource.QQ_MUSIC,
+                    score = 160,
+                    lyrics = "[00:01.00]QQ original"
+                ),
+                rankedCandidate(
+                    id = "kugou",
+                    source = EditableLyricMatchSource.KUGOU,
+                    score = 80,
+                    lyrics = "[00:01.00]Kugou original"
+                )
+            )
+        )
+
+        assertEquals(EditableLyricMatchSource.KUGOU, selected?.source)
+        assertEquals("Kugou original", selected?.lyrics?.single()?.text)
+    }
+
+    @Test
+    fun selectRankedDurationMatchedExternalLyricsSkipsLowConfidenceAutoCandidates() {
+        val selected = PlayerLyricsProvider.selectRankedDurationMatchedExternalLyrics(
+            expectedDurationMs = 240_000L,
+            expectedTitle = "Signal",
+            expectedArtist = "Artist One",
+            matches = listOf(
+                rankedCandidate(
+                    id = "low",
+                    source = EditableLyricMatchSource.KUGOU,
+                    confidence = EditableLyricMatchConfidence.LOW,
+                    lyrics = "[00:01.00]Low confidence"
+                ),
+                rankedCandidate(
+                    id = "medium",
+                    source = EditableLyricMatchSource.CLOUD_MUSIC,
+                    confidence = EditableLyricMatchConfidence.MEDIUM,
+                    lyrics = "[00:01.00]Medium confidence"
+                )
+            )
+        )
+
+        assertNull(selected)
+    }
+
+    @Test
+    fun selectRankedDurationMatchedExternalLyricsRejectsTitleAliasForAutomaticUse() {
+        val selected = PlayerLyricsProvider.selectRankedDurationMatchedExternalLyrics(
+            expectedDurationMs = 240_000L,
+            expectedTitle = "Signal",
+            expectedArtist = "Artist One",
+            matches = listOf(
+                rankedCandidate(
+                    id = "alias",
+                    source = EditableLyricMatchSource.KUGOU,
+                    title = "Signal performance",
+                    artist = "Artist One",
+                    lyrics = "[00:01.00]Alias lyrics"
+                )
+            )
+        )
+
+        assertNull(selected)
+    }
+
+    @Test
+    fun loadFirstUsableAutomaticExternalLyricsStopsAtFirstUsableSource() = runTest {
+        val visitedSources = mutableListOf<EditableLyricMatchSource>()
+
+        val selected = PlayerLyricsProvider.loadFirstUsableAutomaticExternalLyrics(
+            request = automaticLyricRequest(),
+            expectedDurationMs = 240_000L,
+            expectedTitle = "Signal",
+            expectedArtist = "Artist One"
+        ) { source ->
+            visitedSources += source
+            when (source) {
+                EditableLyricMatchSource.KUGOU -> listOf(
+                    rankedCandidate(
+                        id = "kugou",
+                        source = source,
+                        lyrics = "[00:01.00]Kugou original"
+                    )
+                )
+                else -> error("lower priority source should not be queried: $source")
+            }
+        }
+
+        assertEquals(EditableLyricMatchSource.KUGOU, selected?.source)
+        assertEquals(listOf(EditableLyricMatchSource.KUGOU), visitedSources)
+        assertEquals("Kugou original", selected?.lyrics?.single()?.text)
+    }
+
+    @Test
+    fun loadFirstUsableAutomaticExternalLyricsContinuesPastUnusableSources() = runTest {
+        val visitedSources = mutableListOf<EditableLyricMatchSource>()
+
+        val selected = PlayerLyricsProvider.loadFirstUsableAutomaticExternalLyrics(
+            request = automaticLyricRequest(),
+            expectedDurationMs = 240_000L,
+            expectedTitle = "Signal",
+            expectedArtist = "Artist One"
+        ) { source ->
+            visitedSources += source
+            when (source) {
+                EditableLyricMatchSource.KUGOU -> listOf(
+                    rankedCandidate(
+                        id = "low",
+                        source = source,
+                        confidence = EditableLyricMatchConfidence.LOW,
+                        lyrics = "[00:01.00]Low confidence"
+                    )
+                )
+                EditableLyricMatchSource.CLOUD_MUSIC -> listOf(
+                    rankedCandidate(
+                        id = "broken",
+                        source = source,
+                        lyrics = "<broken>"
+                    )
+                )
+                EditableLyricMatchSource.QQ_MUSIC -> listOf(
+                    rankedCandidate(
+                        id = "qq",
+                        source = source,
+                        lyrics = "[00:01.00]QQ original"
+                    )
+                )
+                else -> error("LRCLIB should not be queried after QQ succeeds")
+            }
+        }
+
+        assertEquals(EditableLyricMatchSource.QQ_MUSIC, selected?.source)
+        assertEquals(
+            listOf(
+                EditableLyricMatchSource.KUGOU,
+                EditableLyricMatchSource.CLOUD_MUSIC,
+                EditableLyricMatchSource.QQ_MUSIC
+            ),
+            visitedSources
+        )
+        assertEquals("QQ original", selected?.lyrics?.single()?.text)
+    }
+
+    @Test
+    fun resolveCachedYouTubeExternalLyricMatchRestoresMatchedResult() {
+        val song = youtubeSong(name = "Signal")
+        val cacheKey = PlayerLyricsProvider.buildYouTubeMusicExternalLyricMatchCacheKey(song)
+        val cached = YouTubeMusicLyricsCacheEntry(
+            lyrics = listOf(
+                LyricEntry(
+                    text = "Cached original",
+                    startTimeMs = 1_000L,
+                    endTimeMs = 2_000L
+                )
+            ),
+            translatedLyrics = listOf(
+                LyricEntry(
+                    text = "Cached translation",
+                    startTimeMs = 1_000L,
+                    endTimeMs = 2_000L
+                )
+            ),
+            translationLookupComplete = true,
+            externalMatchCacheKey = cacheKey,
+            externalMatchSource = EditableLyricMatchSource.CLOUD_MUSIC,
+            externalMatchDurationDeltaMs = 1_500L
+        )
+
+        val resolved = PlayerLyricsProvider.resolveCachedYouTubeExternalLyricMatch(
+            cached = cached,
+            externalMatchCacheKey = cacheKey
+        )
+
+        assertEquals(EditableLyricMatchSource.CLOUD_MUSIC, resolved?.source)
+        assertEquals(1_500L, resolved?.durationDeltaMs)
+        assertEquals("Cached original", resolved?.lyrics?.single()?.text)
+        assertEquals("Cached translation", resolved?.translatedLyrics?.single()?.text)
+    }
+
+    @Test
+    fun resolveCachedYouTubeExternalLyricMatchRejectsStaleMetadataKey() {
+        val originalSong = youtubeSong(name = "Signal")
+        val renamedSong = youtubeSong(name = "Different signal")
+        val originalCacheKey = PlayerLyricsProvider.buildYouTubeMusicExternalLyricMatchCacheKey(originalSong)
+        val renamedCacheKey = PlayerLyricsProvider.buildYouTubeMusicExternalLyricMatchCacheKey(renamedSong)
+        val cached = YouTubeMusicLyricsCacheEntry(
+            lyrics = listOf(
+                LyricEntry(
+                    text = "Cached original",
+                    startTimeMs = 1_000L,
+                    endTimeMs = 2_000L
+                )
+            ),
+            translationLookupComplete = true,
+            externalMatchCacheKey = originalCacheKey,
+            externalMatchSource = EditableLyricMatchSource.KUGOU
+        )
+
+        assertTrue(originalCacheKey != renamedCacheKey)
+        assertNull(
+            PlayerLyricsProvider.resolveCachedYouTubeExternalLyricMatch(
+                cached = cached,
+                externalMatchCacheKey = renamedCacheKey
+            )
+        )
     }
 
     @Test
@@ -345,6 +690,59 @@ class PlayerLyricsProviderTest {
             shouldBlockExternalYouTubeMusicTranslation(
                 "[00:00.00]First\n[00:00.00]Second\n[00:00.00]Third"
             )
+        )
+    }
+
+    private fun automaticLyricRequest(): EditableLyricMatchRequest {
+        return EditableLyricMatchRequest(
+            keyword = "Signal Artist One",
+            trackName = "Signal",
+            artistName = "Artist One",
+            durationMs = 240_000L,
+            sources = setOf(
+                EditableLyricMatchSource.KUGOU,
+                EditableLyricMatchSource.CLOUD_MUSIC,
+                EditableLyricMatchSource.QQ_MUSIC,
+                EditableLyricMatchSource.LRCLIB
+            )
+        )
+    }
+
+    private fun rankedCandidate(
+        id: String,
+        source: EditableLyricMatchSource,
+        title: String = "Signal",
+        artist: String = "Artist One",
+        durationMs: Long = 240_000L,
+        lyrics: String,
+        score: Int = 120,
+        confidence: EditableLyricMatchConfidence = EditableLyricMatchConfidence.HIGH
+    ): RankedEditableLyricMatch {
+        return RankedEditableLyricMatch(
+            candidate = EditableLyricMatchCandidate(
+                id = id,
+                source = source,
+                title = title,
+                artist = artist,
+                durationMs = durationMs,
+                lyrics = lyrics
+            ),
+            score = score,
+            durationDeltaMs = kotlin.math.abs(240_000L - durationMs),
+            confidence = confidence
+        )
+    }
+
+    private fun youtubeSong(name: String): SongItem {
+        return SongItem(
+            id = 42L,
+            name = name,
+            artist = "Artist One",
+            album = "Album One",
+            albumId = 0L,
+            durationMs = 240_000L,
+            coverUrl = null,
+            mediaUri = "https://music.youtube.com/watch?v=video42"
         )
     }
 }
