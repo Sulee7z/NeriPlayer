@@ -21,9 +21,9 @@ class NeriAppPlaybackTransitionPolicyTest {
     }
 
     @Test
-    fun `cover seed warmup is immediate when now playing is already visible`() {
+    fun `cover seed warmup is deferred past the now playing open animation`() {
         assertEquals(
-            0L,
+            450L,
             resolveCoverSeedWarmupDelayMillis(
                 showNowPlaying = true,
                 dynamicColorEnabled = true,

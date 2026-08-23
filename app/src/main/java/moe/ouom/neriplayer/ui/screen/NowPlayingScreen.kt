@@ -2353,7 +2353,7 @@ fun NowPlayingScreen(
             )
             val shouldDelayOnlineLyrics =
                 song != null &&
-                    extractYouTubeMusicVideoId(song.mediaUri) != null &&
+                    !song.isLocalSong() &&
                     currentMediaUrl.isNullOrBlank()
             val resolvedLyrics = when {
                 localRawLyrics != null && song != null -> {

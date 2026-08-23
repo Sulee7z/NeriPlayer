@@ -1218,6 +1218,7 @@ private suspend fun awaitStableDraw(view: View) {
 }
 
 private const val COVER_SEED_WARMUP_DELAY_MS = 180L
+private const val COVER_SEED_OPEN_WARMUP_DELAY_MS = 450L
 
 private data class PlaybackCoverSeed(
     val coverUrl: String,
@@ -1239,10 +1240,12 @@ internal fun resolveCoverSeedWarmupDelayMillis(
     dynamicColorEnabled: Boolean,
     hasCachedSample: Boolean
 ): Long {
-    if (!dynamicColorEnabled || showNowPlaying || hasCachedSample) {
+    if (!dynamicColorEnabled || hasCachedSample) {
         return 0L
     }
-    return COVER_SEED_WARMUP_DELAY_MS
+    // 播放页滑入动画(约300ms)进行中时不要立刻做封面解码/取色,
+    // 新歌曲首次加载还要抢 URL 解析与歌词的网络/CPU, 等动画结束再预热
+    return if (showNowPlaying) COVER_SEED_OPEN_WARMUP_DELAY_MS else COVER_SEED_WARMUP_DELAY_MS
 }
 
 /**
@@ -1271,6 +1274,10 @@ private fun NowPlayingAccentBackdrop(
         if (cached != null) {
             target = Color(adjustedAccentColorArgb(cached.baseColorArgb, isDark))
             onAccentChanged(cached.seedHex)
+        } else {
+            // 未缓存的封面(新歌曲)等播放页滑入动画结束后再解码取色,
+            // 避免位图解码与调色板分析在动画期间抢占主线程之外的资源
+            delay(COVER_SEED_OPEN_WARMUP_DELAY_MS)
         }
         val sample = CoverArtColorCache.getOrLoad(context, coverUrl, offlineMode)
         if (sample != null) {
