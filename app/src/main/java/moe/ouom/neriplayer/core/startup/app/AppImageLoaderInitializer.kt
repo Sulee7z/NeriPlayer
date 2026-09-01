@@ -18,7 +18,7 @@ internal object AppImageLoaderInitializer {
             .diskCache {
                 DiskCache.Builder()
                     .directory(app.cacheDir.resolve("image_cache"))
-                    .maxSizePercent(0.02)
+                    .maxSizePercent(0.10)
                     .build()
             }
             .memoryCache {

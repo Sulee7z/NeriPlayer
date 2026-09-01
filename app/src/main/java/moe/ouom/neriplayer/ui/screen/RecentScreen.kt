@@ -422,9 +422,12 @@ fun RecentScreen(
                 ) {
                     itemsIndexed(
                         items = displayedSongs,
-                        key = { index, s -> s.id to index }
+                        key = { _, s -> "recent-${s.stableKey()}" },
+                        contentType = { _, _ -> "RecentRowRich" }
                     ) { index, song ->
-                        val isFavoriteSong = favoriteSongs.any { it.sameIdentityAs(song) }
+                        val isFavoriteSong = remember(favoriteSongs, song) {
+                            favoriteSongs.any { it.sameIdentityAs(song) }
+                        }
                         RecentRowRich(
                             index = index + 1,
                             song = song,
@@ -686,7 +689,7 @@ private fun RecentRowRich(
                     context = ctx,
                     data = coverUrl,
                     sizePx = 192,
-                    allowHardware = false,
+                    allowHardware = true,
                     offlineMode = offlineMode
                 ),
                 contentDescription = null,
