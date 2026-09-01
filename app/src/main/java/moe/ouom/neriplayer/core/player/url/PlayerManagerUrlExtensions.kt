@@ -45,6 +45,7 @@ import moe.ouom.neriplayer.core.player.playback.advanceAfterPlaybackFailure
 import moe.ouom.neriplayer.core.player.playback.BiliSponsorBlockPlaybackController
 import moe.ouom.neriplayer.core.player.playback.BiliVideoSkipPlaybackController
 import moe.ouom.neriplayer.core.player.playback.preparePlayerForManagedStart
+import moe.ouom.neriplayer.core.player.playback.startProgressUpdates
 import moe.ouom.neriplayer.core.player.prefetch.consumeGenericUrlPrefetch
 import moe.ouom.neriplayer.core.player.quality.effectiveBiliQuality
 import moe.ouom.neriplayer.core.player.quality.effectiveNeteaseQuality
@@ -844,6 +845,7 @@ private fun PlayerManager.resumePlaybackFallback(
         if (resumePlaybackAfterRefresh) {
             applyAudioFocusPolicyOnMainThread()
             player.play()
+            startProgressUpdates()
             schedulePlaybackStartupWatchdog(reason = "refresh_fallback")
         } else {
             player.pause()
@@ -1092,6 +1094,7 @@ private suspend fun PlayerManager.handleRefreshResult(
                         if (semantics.resumePlaybackAfterRefresh) {
                             applyAudioFocusPolicyOnMainThread()
                             player.play()
+                            startProgressUpdates()
                         } else {
                             player.pause()
                         }
@@ -1183,7 +1186,8 @@ private suspend fun PlayerManager.applyResolvedMediaItem(
         result = result,
         resumePositionMs = resumePositionMs,
         commandSource = semantics.resumedPlaybackCommandSource ?: PlaybackCommandSource.LOCAL,
-        resetRecoveryAttempts = !semantics.reason.startsWith("startup_stall_")
+        resetRecoveryAttempts = !semantics.reason.startsWith("startup_stall_") &&
+            !semantics.reason.startsWith("runtime_stall_")
     )
     val selectedCandidate = currentPlaybackCandidate()
     val selectedUrl = selectedCandidate?.url ?: result.url
@@ -1261,6 +1265,7 @@ private suspend fun PlayerManager.applyResolvedMediaItem(
                 if (resumePlaybackAfterRefresh) {
                     applyAudioFocusPolicyOnMainThread()
                     player.play()
+                    startProgressUpdates()
                     schedulePlaybackStartupWatchdog(reason = "refresh_applied")
                 } else {
                     player.pause()

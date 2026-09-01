@@ -47,10 +47,13 @@ import androidx.media3.exoplayer.ExoPlayer
 import com.google.gson.Gson
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -79,6 +82,7 @@ import moe.ouom.neriplayer.core.player.lifecycle.initializeImpl
 import moe.ouom.neriplayer.core.player.lifecycle.releaseImpl
 import moe.ouom.neriplayer.core.player.lifecycle.scheduleUsbAudioSinkReconfiguration
 import moe.ouom.neriplayer.core.player.lifecycle.updateAudioOffloadPreferences
+import moe.ouom.neriplayer.core.player.lyrics.LyriconUpdateCoordinator
 import moe.ouom.neriplayer.core.player.lyrics.syncExternalBluetoothLyrics
 import moe.ouom.neriplayer.core.player.model.AudioDevice
 import moe.ouom.neriplayer.core.player.model.DEFAULT_PLAYBACK_LOUDNESS_GAIN_MB
@@ -224,6 +228,7 @@ import moe.ouom.neriplayer.data.settings.DEFAULT_CLOUD_MUSIC_LYRIC_OFFSET_MS
 import moe.ouom.neriplayer.data.settings.DEFAULT_QQ_MUSIC_LYRIC_OFFSET_MS
 import moe.ouom.neriplayer.data.settings.PlaybackPreferenceSnapshot
 import moe.ouom.neriplayer.data.settings.UsbExclusivePreferences
+import moe.ouom.neriplayer.data.settings.resolveEffectiveLyricOffsetMs
 import moe.ouom.neriplayer.listentogether.mapping.buildStableTrackKey
 import moe.ouom.neriplayer.listentogether.mapping.resolvedAudioId
 import moe.ouom.neriplayer.listentogether.mapping.resolvedChannelId
@@ -324,7 +329,10 @@ object PlayerManager {
     internal var ioScope = newIoScope()
     internal var mainScope = newMainScope()
     internal var progressJob: Job? = null
-    internal var lyriconUpdateJob: Job? = null
+    internal var playbackRuntimeWatchdogJob: Job? = null
+    @Volatile
+    internal var playbackRuntimeWatchdogToken = 0L
+    private val lyriconUpdateCoordinator = LyriconUpdateCoordinator()
     internal var externalBluetoothLyricsLoadJob: Job? = null
     internal var externalBluetoothTranslationLoadJob: Job? = null
     internal var volumeFadeJob: Job? = null
@@ -674,6 +682,9 @@ object PlayerManager {
     internal var startupStallRecoveryAttempts = 0
     internal var playbackProgressBaselinePositionMs = 0L
     internal var playbackProgressAdvanceReported = false
+    internal var playbackRuntimeStallRecoveryAttempts = 0
+    internal var playbackRuntimeLastProgressPositionMs = 0L
+    internal var playbackRuntimeLastProgressAtElapsedRealtimeMs = 0L
     internal var lastHandledTrackEndKey: String? = null
     internal var lastTrackEndHandledAtMs = 0L
     val audioLevelFlow get() = AudioReactive.level
@@ -807,27 +818,82 @@ object PlayerManager {
         )
     }
 
-    internal fun syncLyriconSong(song: SongItem?) {
-        lyriconUpdateJob?.cancel()
-        if (!lyriconEnabled) {
-            lyriconUpdateJob = null
-            LyriconManager.setPlaybackState(false)
-            return
-        }
-        if (song == null) {
-            lyriconUpdateJob = null
-            LyriconManager.setPlaybackState(false)
-            LyriconManager.setPosition(0L)
-            return
-        }
-        LyriconManager.updateSong(song, lyrics = null, translatedLyrics = null)
-        lyriconUpdateJob = ioScope.launch {
-            val lyrics = getLyrics(song)
-            val translatedLyrics = getTranslatedLyrics(song)
-            if (_currentSongFlow.value?.sameIdentityAs(song) == true) {
-                LyriconManager.updateSong(song, lyrics, translatedLyrics)
-            }
-        }
+    internal fun syncLyriconSong(
+        song: SongItem?,
+        lyricOffsetOverrideMs: Long? = null,
+    ) {
+        val request = lyriconUpdateCoordinator.replace(
+            createJob = { updateGeneration ->
+                if (!lyriconEnabled || song == null) {
+                    null
+                } else {
+                    ioScope.launch(start = CoroutineStart.LAZY) lyriconUpdate@{
+                        val lyrics = getLyrics(song)
+                        currentCoroutineContext().ensureActive()
+                        val translatedLyrics = getTranslatedLyrics(song)
+                        currentCoroutineContext().ensureActive()
+                        val updateJob = currentCoroutineContext()[Job] ?: return@lyriconUpdate
+                        lyriconUpdateCoordinator.runIfCurrent(
+                            generation = updateGeneration,
+                            job = updateJob,
+                        ) {
+                            val currentSong = _currentSongFlow.value
+                            if (currentSong?.sameIdentityAs(song) == true) {
+                                LyriconManager.updateSong(
+                                    song = currentSong,
+                                    lyrics = lyrics,
+                                    translatedLyrics = translatedLyrics,
+                                    lyricOffsetMs = lyricOffsetOverrideMs
+                                        ?: resolveLyriconLyricOffsetMs(currentSong),
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            onPublished = {
+                when {
+                    !lyriconEnabled -> LyriconManager.setPlaybackState(false)
+                    song == null -> {
+                        LyriconManager.setPlaybackState(false)
+                        updateLyriconLyricOffset(null)
+                        LyriconManager.setPosition(0L)
+                    }
+                    else -> LyriconManager.updateSong(
+                        song = song,
+                        lyrics = null,
+                        translatedLyrics = null,
+                        lyricOffsetMs = lyricOffsetOverrideMs
+                            ?: resolveLyriconLyricOffsetMs(song),
+                    )
+                }
+            },
+        )
+        request.job?.start()
+    }
+
+    internal fun cancelLyriconUpdate() {
+        lyriconUpdateCoordinator.cancelActive()
+    }
+
+    internal fun hasPendingLyriconUpdate(): Boolean {
+        return lyriconUpdateCoordinator.hasPendingJob()
+    }
+
+    internal fun updateLyriconLyricOffset(song: SongItem? = _currentSongFlow.value) {
+        if (!lyriconEnabled) return
+        val lyricOffsetMs = song?.let { resolveLyriconLyricOffsetMs(it) } ?: 0L
+        LyriconManager.setLyricOffset(lyricOffsetMs)
+        LyriconManager.setPosition(song?.let { _playbackPositionMs.value } ?: 0L)
+    }
+
+    private fun resolveLyriconLyricOffsetMs(song: SongItem): Long {
+        return resolveEffectiveLyricOffsetMs(
+            lyricSource = song.matchedLyricSource,
+            cloudMusicDefaultOffsetMs = cloudMusicLyricDefaultOffsetMs,
+            qqMusicDefaultOffsetMs = qqMusicLyricDefaultOffsetMs,
+            userLyricOffsetMs = song.userLyricOffsetMs,
+        )
     }
 
     internal fun isApplicationInitialized(): Boolean = this::application.isInitialized
@@ -2490,14 +2556,22 @@ object PlayerManager {
         allowCustomCacheKey: Boolean = true
     ): MediaItem {
         val mediaUrl = stripListenTogetherStreamQualityMetadata(url)
+        val mediaUri = mediaUrl.toUri()
         val isLocalFile =
             mediaUrl.startsWith("file://") ||
-                mediaUrl.startsWith("content://") ||
-                mediaUrl.startsWith("android.resource://") ||
-                mediaUrl.startsWith("/")
+            mediaUrl.startsWith("content://") ||
+            mediaUrl.startsWith("android.resource://") ||
+            mediaUrl.startsWith("/")
+        if (mediaUri.path?.endsWith(".flac", ignoreCase = true) == true) {
+            NPLogger.d(
+                "NERI-PlayerManager",
+                "build FLAC media item: songId=${song.id}, host=${mediaUri.host ?: "local"}, " +
+                    "declaredMimeType=${mimeType ?: "missing"}, cacheKey=$cacheKey"
+            )
+        }
         return MediaItem.Builder()
             .setMediaId("${song.id}|${song.album}|${song.mediaUri.orEmpty()}")
-            .setUri(mediaUrl.toUri())
+            .setUri(mediaUri)
             .apply {
                 if (!mimeType.isNullOrBlank()) {
                     setMimeType(mimeType)
