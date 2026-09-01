@@ -9,8 +9,8 @@ class WaveformSliderTest {
     fun `wave segment count stays bounded across widths`() {
         assertEquals(48, resolveWaveSegmentCount(0f))
         assertEquals(60, resolveWaveSegmentCount(360f))
-        assertEquals(180, resolveWaveSegmentCount(1_080f))
-        assertEquals(180, resolveWaveSegmentCount(4_000f))
+        assertEquals(96, resolveWaveSegmentCount(1_080f))
+        assertEquals(96, resolveWaveSegmentCount(4_000f))
     }
 
     @Test

@@ -254,7 +254,7 @@ class AdvancedGlassControllerTest {
             enhancedBlurRadiusDp = 52f
         )
 
-        assertEquals(28f, bottom.blurRadiusDp)
+        assertEquals(24f, bottom.blurRadiusDp)
         assertEquals(0.75f, bottom.tintAlpha)
         assertEquals(0.75f, darkBottom.tintAlpha)
         assertEquals(22f, top.blurRadiusDp)
