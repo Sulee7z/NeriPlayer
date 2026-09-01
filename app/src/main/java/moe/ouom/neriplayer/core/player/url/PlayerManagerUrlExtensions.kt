@@ -76,33 +76,6 @@ internal const val OFFLINE_CACHE_URL_PREFIX = "http://offline.cache/"
 internal const val YOUTUBE_PLAYBACK_PREFER_M4A = false
 internal const val YOUTUBE_STABLE_RECOVERY_QUALITY = "high"
 
-// 会话级音质封锁缓存：高音质档返回需要登录/无权限时短期记住，
-// 避免每首歌都重新逐档探测，重复串行 HTTP 往返。
-private val neteaseBlockedQualityEntries =
-    java.util.concurrent.ConcurrentHashMap<String, Long>()
-private const val NETEASE_BLOCKED_QUALITY_TTL_MS = 10L * 60L * 1000L
-
-internal fun rememberNeteaseBlockedQuality(qualityKey: String, nowMs: Long = System.currentTimeMillis()) {
-    neteaseBlockedQualityEntries[qualityKey] = nowMs + NETEASE_BLOCKED_QUALITY_TTL_MS
-    if (neteaseBlockedQualityEntries.size > 16) {
-        val now = nowMs
-        neteaseBlockedQualityEntries.entries.removeIf { it.value <= now }
-    }
-}
-
-internal fun isNeteaseQualityBlocked(qualityKey: String, nowMs: Long = System.currentTimeMillis()): Boolean {
-    val expiresAt = neteaseBlockedQualityEntries[qualityKey] ?: return false
-    if (expiresAt <= nowMs) {
-        neteaseBlockedQualityEntries.remove(qualityKey, expiresAt)
-        return false
-    }
-    return true
-}
-
-internal fun clearNeteaseBlockedQualities() {
-    neteaseBlockedQualityEntries.clear()
-}
-
 internal data class CachedResourceIntegrity(
     val isComplete: Boolean,
     val requiresRepair: Boolean,
@@ -1561,11 +1534,7 @@ private suspend fun PlayerManager.getNeteaseSongUrl(
             resolveNeteaseCustomSource(song, effectiveQuality)?.let { return@withContext it }
         }
 
-        val fullQualityCandidates = buildNeteaseQualityCandidates(effectiveQuality)
-        // 跳过本会话已知需要登录/无权限的高音质档，避免每首歌重复探测；
-        // 全部被封时退回完整列表重新探测（结果会刷新缓存）。
-        val qualityCandidates = fullQualityCandidates.filter { !isNeteaseQualityBlocked(it) }
-            .ifEmpty { fullQualityCandidates }
+        val qualityCandidates = buildNeteaseQualityCandidates(effectiveQuality)
         var previewFallback: SongUrlResult.Success? = null
         var lastFailureReason: NeteasePlaybackResponseParser.FailureReason? = null
         var requiresLogin = false
@@ -1580,7 +1549,6 @@ private suspend fun PlayerManager.getNeteaseSongUrl(
             when (val parsed = NeteasePlaybackResponseParser.parsePlayback(resp, song.durationMs)) {
                 is NeteasePlaybackResponseParser.PlaybackResult.RequiresLogin -> {
                     requiresLogin = true
-                    rememberNeteaseBlockedQuality(quality)
                     if (shouldRetryNeteaseWithLowerQualityAfterLogin(
                             qualityIndex = index,
                             lastQualityIndex = qualityCandidates.lastIndex
@@ -1614,7 +1582,6 @@ private suspend fun PlayerManager.getNeteaseSongUrl(
                         }
                     }
                     if (parsed.notice != NeteasePlaybackResponseParser.Notice.PREVIEW_CLIP) {
-                        neteaseBlockedQualityEntries.remove(quality)
                         if (quality != effectiveQuality) {
                             NPLogger.w(
                                 "NERI-PlayerManager",
@@ -1636,9 +1603,6 @@ private suspend fun PlayerManager.getNeteaseSongUrl(
 
                 is NeteasePlaybackResponseParser.PlaybackResult.Failure -> {
                     lastFailureReason = parsed.reason
-                    if (parsed.reason == NeteasePlaybackResponseParser.FailureReason.NO_PERMISSION) {
-                        rememberNeteaseBlockedQuality(quality)
-                    }
                     if (index < qualityCandidates.lastIndex &&
                         shouldRetryNeteaseWithLowerQuality(parsed.reason)
                     ) {
