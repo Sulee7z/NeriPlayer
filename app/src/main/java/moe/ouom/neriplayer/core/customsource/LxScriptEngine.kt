@@ -32,7 +32,7 @@ package moe.ouom.neriplayer.core.customsource
 import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Handler
-import android.os.Looper
+import android.os.HandlerThread
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -62,13 +62,23 @@ import javax.crypto.spec.SecretKeySpec
 private const val TAG = "NERI-LxEngine"
 
 /**
+ * LX 脚本专用 WebView 线程。
+ * WebView 要求在其创建线程上访问;历史上脚本引擎把 WebView 创建、JS 派发和
+ * setTimeout 定时器全部投递到主线程,脚本繁忙时会直接拖累 UI 渲染。
+ * 现在全部落到这条专用 HandlerThread 上,与主线程彻底解耦。
+ */
+private val scriptWebViewThread: HandlerThread by lazy {
+    HandlerThread("LxScriptWebView").apply { start() }
+}
+private val scriptHandler: Handler by lazy { Handler(scriptWebViewThread.looper) }
+
+/**
  * 单个脚本对应一个引擎实例。引擎持有一个 WebView,生命周期跟随脚本的启用状态。
  */
 class LxScriptEngine(
     private val appContext: Context,
     private val script: String
 ) {
-    private val mainHandler = Handler(Looper.getMainLooper())
     private val http = OkHttpClient.Builder()
         .proxySelector(CustomSourceProxySelector)
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -130,11 +140,11 @@ class LxScriptEngine(
     /** 已完成的初始化结果(null 表示尚未 start 或仍在初始化)。 */
     fun initInfo(): InitResult? = initResult
 
-    /** 在主线程创建 WebView 并注入脚本;挂起直到脚本触发 inited 或超时。 */
+    /** 在脚本线程创建 WebView 并注入脚本;挂起直到脚本触发 inited 或超时。 */
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     suspend fun start(timeoutMs: Long = 22_000): InitResult {
         initResult?.let { return it }
-        mainHandler.post {
+        scriptHandler.post {
             try {
                 val wv = WebView(appContext)
                 wv.settings.javaScriptEnabled = true
@@ -248,8 +258,8 @@ class LxScriptEngine(
     }
 
     fun destroy() {
-        mainHandler.post {
-            timeoutTasks.values.forEach { task -> mainHandler.removeCallbacks(task) }
+        scriptHandler.post {
+            timeoutTasks.values.forEach { task -> scriptHandler.removeCallbacks(task) }
             timeoutTasks.clear()
             httpCalls.values.forEach { runCatching { it.cancel() } }
             httpCalls.clear()
@@ -267,7 +277,7 @@ class LxScriptEngine(
     }
 
     private fun runJs(js: String) {
-        mainHandler.post {
+        scriptHandler.post {
             webView?.evaluateJavascript(js, null)
         }
     }
@@ -316,12 +326,12 @@ class LxScriptEngine(
                 runJs("window.__neri_timeout($id);")
             }
             timeoutTasks[id] = task
-            mainHandler.postDelayed(task, delayMs.coerceAtLeast(0L))
+            scriptHandler.postDelayed(task, delayMs.coerceAtLeast(0L))
         }
 
         @JavascriptInterface
         fun clearTimeout(id: Int) {
-            timeoutTasks.remove(id)?.let { task -> mainHandler.removeCallbacks(task) }
+            timeoutTasks.remove(id)?.let { task -> scriptHandler.removeCallbacks(task) }
         }
 
         /** 由脚本发起 HTTP 请求;完成后回调 JS __neri_httpCallback。 */
