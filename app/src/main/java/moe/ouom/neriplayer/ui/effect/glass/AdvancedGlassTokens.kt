@@ -17,12 +17,12 @@ internal fun advancedGlassTokens(
     val adjustableRadiusDp = enhancedBlurRadiusDp?.let(EnhancedAdvancedBlurPreference::normalize)
     return when (role) {
         AdvancedGlassRole.MiniPlayer -> AdvancedGlassTokens(
-            blurRadiusDp = adjustableRadiusDp ?: 20f,
+            blurRadiusDp = adjustableRadiusDp ?: 24f,
             tintAlpha = if (isDarkTheme) 0.30f else 0.36f,
             edgeAlpha = 0.10f
         )
         AdvancedGlassRole.BottomNavigation -> AdvancedGlassTokens(
-            blurRadiusDp = adjustableRadiusDp ?: 24f,
+            blurRadiusDp = adjustableRadiusDp ?: 28f,
             tintAlpha = 0.75f,
             edgeAlpha = 0.12f
         )

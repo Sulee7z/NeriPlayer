@@ -1919,13 +1919,11 @@ private fun alphaForDistance(d: Int, near: Float, far: Float): Float =
         else -> (far - 0.08f * (d - 2)).coerceIn(0.16f, far)
     }
 
-private const val MAX_LYRIC_BLUR_PX = 24f
-
 private fun blurForDistance(d: Int, maxBlur: Float): Float =
-    (when (d) {
+    when (d) {
         1 -> maxBlur * 1.0f
         2 -> maxBlur * 1.5f
         3 -> maxBlur * 2.0f
         4 -> maxBlur * 2.5f
         else -> maxBlur * 4.0f
-    }).coerceAtMost(MAX_LYRIC_BLUR_PX)
+    }

@@ -85,8 +85,6 @@ public class BgEffectPainter {
     private final float[] uGlobalMotion = {0f, 0f};
     private final float[] uAnimatedPoints = new float[POINT_COUNT * POINT_STRIDE];
     private boolean reactiveUniformsDirty = true;
-    private RenderEffect mCachedRenderEffect;
-    private boolean mEffectDirty = true;
 
 
     public BgEffectPainter(Context context) {
@@ -126,11 +124,7 @@ public class BgEffectPainter {
     }
 
     public RenderEffect getRenderEffect() {
-        if (mEffectDirty || mCachedRenderEffect == null) {
-            mCachedRenderEffect = RenderEffect.createRuntimeShaderEffect(mBgRuntimeShader, "uTex");
-            mEffectDirty = false;
-        }
-        return mCachedRenderEffect;
+        return RenderEffect.createRuntimeShaderEffect(mBgRuntimeShader, "uTex");
     }
 
     public void setAnimTime(float f) {
