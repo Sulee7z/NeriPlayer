@@ -408,7 +408,8 @@ fun HomeScreen(
 
         wasOffline = false
         if (isInternational) {
-            vm.refreshYtMusicHome()
+            vm.refreshYtMusicPlaylists()
+            vm.refreshYtMusicHomeFeed()
         } else {
             vm.refreshNeteaseHome()
         }
@@ -431,7 +432,8 @@ fun HomeScreen(
                         enabled = !offlineMode,
                         onClick = {
                             if (isInternational) {
-                                vm.refreshYtMusicHome()
+                                vm.refreshYtMusicPlaylists()
+                                vm.refreshYtMusicHomeFeed()
                             } else {
                                 vm.refreshNeteaseHome()
                             }

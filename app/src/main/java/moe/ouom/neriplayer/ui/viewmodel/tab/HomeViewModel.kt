@@ -29,8 +29,6 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,9 +36,6 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.selects.select
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.netease.mergeNeteaseSessionCookies
@@ -63,8 +58,6 @@ private const val HOME_PRIVATE_FM_MAX_BATCHES = 10
 private const val HOME_MAX_FAILURE_BEFORE_WARNING = 3
 private const val HOME_YT_MUSIC_PLAYLIST_LIMIT = 24
 private const val HOME_INITIAL_LOAD_DEFER_MS = 250L
-private const val HOME_SECTION_LOAD_PARALLELISM = 6
-private const val HOME_SECTION_LOAD_PARALLELISM_PER_GROUP = 2
 
 private fun shouldFallbackRecommend(code: Int): Boolean = code == 301 || code == 50000005
 
@@ -92,90 +85,11 @@ internal fun shouldAcceptNeteaseRadarPlaylistLoadResult(
         requestRadarCacheContext == activeRadarCacheContext
 }
 
-internal fun shouldAcceptYouTubeMusicHomeLoadResult(
-    requestGeneration: Long,
-    activeGeneration: Long,
-    requestAuthFingerprint: String,
-    activeAuthFingerprint: String,
-    internationalizationEnabled: Boolean
-): Boolean {
-    return requestGeneration == activeGeneration &&
-        requestAuthFingerprint == activeAuthFingerprint &&
-        internationalizationEnabled
-}
-
-internal fun shouldScheduleYouTubeMusicHomeRefresh(
-    refreshPending: Boolean,
-    offlineMode: Boolean,
-    requestGeneration: Long,
-    activeGeneration: Long,
-    requestAuthFingerprint: String,
-    activeAuthFingerprint: String,
-    internationalizationEnabled: Boolean
-): Boolean {
-    return refreshPending &&
-        !offlineMode &&
-        shouldAcceptYouTubeMusicHomeLoadResult(
-            requestGeneration = requestGeneration,
-            activeGeneration = activeGeneration,
-            requestAuthFingerprint = requestAuthFingerprint,
-            activeAuthFingerprint = activeAuthFingerprint,
-            internationalizationEnabled = internationalizationEnabled
-        )
-}
-
 internal fun shouldHandleInitialNeteaseHomeCookieEmission(
     isFirstEmission: Boolean,
     initialCookies: Map<String, String>,
     emittedCookies: Map<String, String>
 ): Boolean = !isFirstEmission || initialCookies != emittedCookies
-
-internal enum class HomeSectionLoadGroup {
-    PLAYLISTS,
-    TRENDING_SONGS,
-    RADAR_SONGS
-}
-
-/** 让首页三类分区并行加载时保持公平的网络预算和完成顺序 */
-internal class HomeSectionLoadCoordinator(
-    maxConcurrentLoads: Int = HOME_SECTION_LOAD_PARALLELISM,
-    maxConcurrentLoadsPerGroup: Int = HOME_SECTION_LOAD_PARALLELISM_PER_GROUP
-) {
-    private val totalSemaphore = Semaphore(maxConcurrentLoads)
-    private val groupSemaphores = HomeSectionLoadGroup.values().associateWith { group ->
-        Semaphore(maxConcurrentLoadsPerGroup)
-    }
-
-    /** 在来源完成时立即交给状态层，避免慢来源阻塞已完成分区 */
-    suspend fun <S, T> load(
-        group: HomeSectionLoadGroup,
-        sources: List<S>,
-        fetch: suspend (S) -> T,
-        onResult: (T) -> Unit
-    ) {
-        coroutineScope {
-            val pending = sources.map { source ->
-                async {
-                    groupSemaphores.getValue(group).withPermit {
-                        totalSemaphore.withPermit {
-                            fetch(source)
-                        }
-                    }
-                }
-            }.toMutableList()
-            while (pending.isNotEmpty()) {
-                select<Unit> {
-                    pending.forEach { deferred ->
-                        deferred.onAwait { result ->
-                            pending.remove(deferred)
-                            onResult(result)
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 data class HomeSectionState<T>(
     val items: List<T> = emptyList(),
@@ -224,11 +138,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private var playlistJob: Job? = null
     private var hotSongsJob: Job? = null
     private var radarSongsJob: Job? = null
-    private val homeSectionLoadCoordinator = HomeSectionLoadCoordinator()
     private var radarPlaylistsJob: Job? = null
-    private var ytMusicHomeJob: Job? = null
-    private var ytMusicHomeRefreshPending = false
-    private var ytMusicHomeLoadGeneration: Long = 0L
+    private var ytMusicPlaylistJob: Job? = null
+    private var ytMusicHomeFeedJob: Job? = null
+    private var ytMusicPlaylistRefreshPending = false
+    private var ytMusicHomeFeedRefreshPending = false
     private var homeRecommendationsBootstrapped = false
     private var lastYouTubeAuthFingerprint: String? = null
     private var lastNeteaseRadarCacheContext = neteaseRadarCacheContext(repo.getCookiesOnce())
@@ -359,7 +273,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     internationalizationEnabled = useYouTubeHome
                 )
                 if (useYouTubeHome) {
-                    refreshYtMusicHome()
+                    refreshYtMusicPlaylists()
+                    refreshYtMusicHomeFeed()
                 } else {
                     cancelYouTubeHomeJobs()
                     _uiState.value = _uiState.value.copy(
@@ -384,7 +299,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 if (!_uiState.value.internationalizationEnabled) {
                     return@collect
                 }
-                cancelYouTubeHomeJobs()
                 if (!bundle.hasYouTubeMusicCookieContext()) {
                     NPLogger.d(TAG, "youtube auth cleared, reset home YouTube sections")
                     _uiState.value = _uiState.value.copy(
@@ -393,7 +307,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     return@collect
                 }
-                refreshYtMusicHome()
+                refreshYtMusicPlaylists()
+                refreshYtMusicHomeFeed()
             }
         }
 
@@ -476,14 +391,19 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         hotSongsJob?.cancel()
         radarSongsJob?.cancel()
         radarPlaylistsJob?.cancel()
-        cancelYouTubeHomeJobs()
+        ytMusicPlaylistJob?.cancel()
+        ytMusicHomeFeedJob?.cancel()
+        ytMusicPlaylistRefreshPending = false
+        ytMusicHomeFeedRefreshPending = false
     }
 
     private fun cancelYouTubeHomeJobs() {
-        ytMusicHomeLoadGeneration += 1L
-        ytMusicHomeJob?.cancel()
-        ytMusicHomeJob = null
-        ytMusicHomeRefreshPending = false
+        ytMusicPlaylistJob?.cancel()
+        ytMusicHomeFeedJob?.cancel()
+        ytMusicPlaylistJob = null
+        ytMusicHomeFeedJob = null
+        ytMusicPlaylistRefreshPending = false
+        ytMusicHomeFeedRefreshPending = false
     }
 
     fun refreshNeteaseHome() {
@@ -515,11 +435,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         playlistJob = viewModelScope.launch {
-            homeSectionLoadCoordinator.load(
-                group = HomeSectionLoadGroup.PLAYLISTS,
-                sources = sources,
-                fetch = ::fetchPlaylistSection
-            ) { section ->
+            sources.forEach { source ->
+                val section = fetchPlaylistSection(source)
                 _uiState.update { state ->
                     state.copy(
                         playlistSections = replacePlaylistSection(
@@ -548,7 +465,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         refreshHotSongs()
     }
 
-    /** 刷新首页热门歌曲板块，保留各来源独立的加载和错误状态 */
     private fun refreshHotSongs() {
         if (offlineMode) return
 
@@ -572,11 +488,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         hotSongsJob = viewModelScope.launch {
-            homeSectionLoadCoordinator.load(
-                group = HomeSectionLoadGroup.TRENDING_SONGS,
-                sources = sources,
-                fetch = { source -> fetchSongSection("refreshHotSongs", source) }
-            ) { section ->
+            sources.forEach { source ->
+                val section = fetchSongSection("refreshHotSongs", source)
                 _uiState.update { state ->
                     state.copy(
                         trendingSongSections = replaceSongSection(
@@ -589,7 +502,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** 刷新首页雷达歌曲板块，保留各来源独立的加载和错误状态 */
     private fun refreshRadarSongs() {
         if (offlineMode) return
 
@@ -613,11 +525,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         radarSongsJob = viewModelScope.launch {
-            homeSectionLoadCoordinator.load(
-                group = HomeSectionLoadGroup.RADAR_SONGS,
-                sources = sources,
-                fetch = { source -> fetchSongSection("refreshRadarSongs", source) }
-            ) { section ->
+            sources.forEach { source ->
+                val section = fetchSongSection("refreshRadarSongs", source)
                 _uiState.update { state ->
                     state.copy(
                         radarSongSections = replaceSongSection(
@@ -682,141 +591,126 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    /** 拉取一次 YouTube Music 首页快照并同时更新歌单和推荐栏 */
-    fun refreshYtMusicHome() {
-        requestYtMusicHomeRefresh(queueIfLoading = true)
-    }
-
-    /** 兼容旧调用，复用正在加载的首页快照 */
+    /** 拉取 YouTube Music 歌单 */
     fun refreshYtMusicPlaylists() {
-        requestYtMusicHomeRefresh(queueIfLoading = false)
-    }
-
-    /** 兼容旧调用，复用正在加载的首页快照 */
-    fun refreshYtMusicHomeFeed() {
-        requestYtMusicHomeRefresh(queueIfLoading = false)
-    }
-
-    private fun requestYtMusicHomeRefresh(queueIfLoading: Boolean) {
         if (offlineMode || !_uiState.value.internationalizationEnabled) return
 
-        if (ytMusicHomeJob?.isActive == true) {
-            if (queueIfLoading) {
-                ytMusicHomeRefreshPending = true
-                NPLogger.d(TAG, "refreshYtMusicHome coalesced while loading")
-            } else {
-                NPLogger.d(TAG, "refreshYtMusicHome reused while loading")
-            }
+        if (ytMusicPlaylistJob?.isActive == true) {
+            ytMusicPlaylistRefreshPending = true
+            NPLogger.d(TAG, "refreshYtMusicPlaylists coalesced while loading")
             return
         }
-        ytMusicHomeRefreshPending = false
-        val requestGeneration = ++ytMusicHomeLoadGeneration
-        val requestAuthFingerprint = buildYouTubeAuthFingerprint(youtubeAuthRepo.getAuthOnce())
-        NPLogger.d(TAG, "refreshYtMusicHome start")
-        _uiState.update { state ->
-            state.copy(
-                ytMusicPlaylists = state.ytMusicPlaylists.copy(loading = true, error = null),
-                ytMusicHomeShelves = state.ytMusicHomeShelves.copy(loading = true, error = null)
-            )
-        }
-        ytMusicHomeJob = viewModelScope.launch {
+        ytMusicPlaylistRefreshPending = false
+        NPLogger.d(TAG, "refreshYtMusicPlaylists start")
+        _uiState.value = _uiState.value.copy(
+            ytMusicPlaylists = _uiState.value.ytMusicPlaylists.copy(loading = true, error = null)
+        )
+        ytMusicPlaylistJob = viewModelScope.launch {
             try {
-                when (val result = fetchWithRetry("refreshYtMusicHome") {
-                    listOf(
-                        withContext(Dispatchers.IO) {
-                            loadYouTubeMusicHomeSnapshot(
-                                playlistLimit = HOME_YT_MUSIC_PLAYLIST_LIMIT,
-                                loadShelves = {
-                                    AppContainer.youtubeMusicClient.getHomeFeed(
-                                        fillShelfContinuations = false,
-                                        requireLogin = true
-                                    )
-                                }
-                            )
-                        }
-                    )
+                when (val result = fetchWithRetry("refreshYtMusicPlaylists") {
+                    val library = withContext(Dispatchers.IO) {
+                        AppContainer.youtubeMusicClient.getHomePlaylistRecommendations()
+                    }
+                    library.map { pl ->
+                        YouTubeMusicPlaylist(
+                            browseId = pl.browseId,
+                            playlistId = pl.playlistId,
+                            title = pl.title,
+                            subtitle = pl.subtitle,
+                            coverUrl = pl.coverUrl,
+                            trackCount = pl.trackCount ?: 0
+                        )
+                    }.take(HOME_YT_MUSIC_PLAYLIST_LIMIT)
                 }) {
                     is RetryLoadResult.Success -> {
-                        if (!isCurrentYouTubeMusicHomeLoad(
-                                requestGeneration = requestGeneration,
-                                requestAuthFingerprint = requestAuthFingerprint
-                            )
-                        ) {
-                            NPLogger.d(TAG, "refreshYtMusicHome discarded stale result")
-                            return@launch
-                        }
-                        val snapshot = result.items.single()
-                        NPLogger.d(
-                            TAG,
-                            "refreshYtMusicHome success: shelves=${snapshot.shelves.size}, playlists=${snapshot.playlists.size}"
+                        NPLogger.d(TAG, "refreshYtMusicPlaylists success: count=${result.items.size}")
+                        _uiState.value = _uiState.value.copy(
+                            ytMusicPlaylists = HomeSectionState(items = result.items)
                         )
-                        _uiState.update { state ->
-                            state.copy(
-                                ytMusicPlaylists = HomeSectionState(items = snapshot.playlists),
-                                ytMusicHomeShelves = HomeSectionState(items = snapshot.shelves)
-                            )
-                        }
                     }
                     is RetryLoadResult.Failure -> {
-                        if (!isCurrentYouTubeMusicHomeLoad(
-                                requestGeneration = requestGeneration,
-                                requestAuthFingerprint = requestAuthFingerprint
+                        NPLogger.e(TAG, "refreshYtMusicPlaylists failed", result.throwable)
+                        _uiState.value = _uiState.value.copy(
+                            ytMusicPlaylists = _uiState.value.ytMusicPlaylists.copy(
+                                loading = false,
+                                error = buildHomeErrorMessage(result.throwable)
                             )
-                        ) {
-                            NPLogger.d(TAG, "refreshYtMusicHome discarded stale failure")
-                            return@launch
-                        }
-                        NPLogger.e(TAG, "refreshYtMusicHome failed", result.throwable)
-                        val error = buildHomeErrorMessage(result.throwable)
-                        _uiState.update { state ->
-                            state.copy(
-                                ytMusicPlaylists = state.ytMusicPlaylists.copy(
-                                    loading = false,
-                                    error = error
-                                ),
-                                ytMusicHomeShelves = state.ytMusicHomeShelves.copy(
-                                    loading = false,
-                                    error = error
-                                )
-                            )
-                        }
+                        )
                     }
                 }
             } finally {
                 val completedJob = coroutineContext[Job]
-                if (ytMusicHomeJob === completedJob) {
-                    ytMusicHomeJob = null
-                    val shouldRefreshPendingLoad = shouldScheduleYouTubeMusicHomeRefresh(
-                        refreshPending = ytMusicHomeRefreshPending,
-                        offlineMode = offlineMode,
-                        requestGeneration = requestGeneration,
-                        activeGeneration = ytMusicHomeLoadGeneration,
-                        requestAuthFingerprint = requestAuthFingerprint,
-                        activeAuthFingerprint = buildYouTubeAuthFingerprint(
-                            youtubeAuthRepo.getAuthOnce()
-                        ),
-                        internationalizationEnabled = _uiState.value.internationalizationEnabled
-                    )
-                    ytMusicHomeRefreshPending = false
-                    if (shouldRefreshPendingLoad) {
-                        refreshYtMusicHome()
+                if (ytMusicPlaylistJob === completedJob) {
+                    ytMusicPlaylistJob = null
+                    if (
+                        ytMusicPlaylistRefreshPending &&
+                        !offlineMode &&
+                        _uiState.value.internationalizationEnabled
+                    ) {
+                        ytMusicPlaylistRefreshPending = false
+                        refreshYtMusicPlaylists()
                     }
                 }
             }
         }
     }
 
-    private fun isCurrentYouTubeMusicHomeLoad(
-        requestGeneration: Long,
-        requestAuthFingerprint: String
-    ): Boolean {
-        return shouldAcceptYouTubeMusicHomeLoadResult(
-            requestGeneration = requestGeneration,
-            activeGeneration = ytMusicHomeLoadGeneration,
-            requestAuthFingerprint = requestAuthFingerprint,
-            activeAuthFingerprint = buildYouTubeAuthFingerprint(youtubeAuthRepo.getAuthOnce()),
-            internationalizationEnabled = _uiState.value.internationalizationEnabled
+
+    /** 拉取 YouTube Music 首页推荐 */
+    fun refreshYtMusicHomeFeed() {
+        if (offlineMode || !_uiState.value.internationalizationEnabled) return
+
+        if (ytMusicHomeFeedJob?.isActive == true) {
+            ytMusicHomeFeedRefreshPending = true
+            NPLogger.d(TAG, "refreshYtMusicHomeFeed coalesced while loading")
+            return
+        }
+        ytMusicHomeFeedRefreshPending = false
+        NPLogger.d(TAG, "refreshYtMusicHomeFeed start")
+        _uiState.value = _uiState.value.copy(
+            ytMusicHomeShelves = _uiState.value.ytMusicHomeShelves.copy(loading = true, error = null)
         )
+        ytMusicHomeFeedJob = viewModelScope.launch {
+            try {
+                when (val result = fetchWithRetry("refreshYtMusicHomeFeed") {
+                    withContext(Dispatchers.IO) {
+                        AppContainer.youtubeMusicClient.getHomeFeed(
+                            fillShelfContinuations = false,
+                            requireLogin = true
+                        )
+                    }
+                }) {
+                    is RetryLoadResult.Success -> {
+                        NPLogger.d(TAG, "refreshYtMusicHomeFeed success: count=${result.items.size}")
+                        _uiState.value = _uiState.value.copy(
+                            ytMusicHomeShelves = HomeSectionState(items = result.items)
+                        )
+                    }
+                    is RetryLoadResult.Failure -> {
+                        NPLogger.e(TAG, "refreshYtMusicHomeFeed failed", result.throwable)
+                        _uiState.value = _uiState.value.copy(
+                            ytMusicHomeShelves = _uiState.value.ytMusicHomeShelves.copy(
+                                loading = false,
+                                error = buildHomeErrorMessage(result.throwable)
+                            )
+                        )
+                    }
+                }
+            } finally {
+                val completedJob = coroutineContext[Job]
+                if (ytMusicHomeFeedJob === completedJob) {
+                    ytMusicHomeFeedJob = null
+                    if (
+                        ytMusicHomeFeedRefreshPending &&
+                        !offlineMode &&
+                        _uiState.value.internationalizationEnabled
+                    ) {
+                        ytMusicHomeFeedRefreshPending = false
+                        refreshYtMusicHomeFeed()
+                    }
+                }
+            }
+        }
     }
 
     private suspend fun <T> fetchWithRetry(
@@ -969,7 +863,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         return parseSongsOnWorker(raw)
     }
 
-    /** 将首页来源的请求参数集中在一起，避免登录态契约在调用点分散 */
     private fun fetchSongSourceRaw(source: NeteaseHomeSongSource): String {
         return when (source) {
             NeteaseHomeSongSource.TOP_SOARING -> client.getPlaylistDetail(

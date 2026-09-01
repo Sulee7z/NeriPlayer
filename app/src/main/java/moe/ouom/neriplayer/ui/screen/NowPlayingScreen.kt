@@ -262,7 +262,7 @@ import moe.ouom.neriplayer.data.settings.MIN_LYRIC_FONT_SCALE
 import moe.ouom.neriplayer.data.settings.PlaybackControlLayoutPreferences
 import moe.ouom.neriplayer.data.settings.ThemeDefaults
 import moe.ouom.neriplayer.data.settings.normalizeLyricFontScale
-import moe.ouom.neriplayer.data.settings.resolveEffectiveLyricOffsetMs
+import moe.ouom.neriplayer.data.settings.resolveLyricDefaultOffsetMs
 import moe.ouom.neriplayer.data.settings.scaledLyricFontSize
 import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.component.lyrics.AdvancedLyricsView
@@ -2596,12 +2596,13 @@ fun NowPlayingScreen(
     )
 
     // 歌词偏移 (平台 + 用户自定义)
-    val totalOffset = resolveEffectiveLyricOffsetMs(
+    val platformOffset = resolveLyricDefaultOffsetMs(
         lyricSource = currentSong?.matchedLyricSource,
         cloudMusicDefaultOffsetMs = cloudMusicLyricDefaultOffsetMs,
-        qqMusicDefaultOffsetMs = qqMusicLyricDefaultOffsetMs,
-        userLyricOffsetMs = currentSong?.userLyricOffsetMs ?: 0L,
+        qqMusicDefaultOffsetMs = qqMusicLyricDefaultOffsetMs
     )
+    val userOffset = currentSong?.userLyricOffsetMs ?: 0L
+    val totalOffset = platformOffset + userOffset
     val progressInfoSegments = remember(
         currentPlaybackAudioInfo,
         showProgressQualitySwitch,

@@ -25,13 +25,6 @@ data class UsbExclusiveAudioPathState(
     }
 }
 
-internal fun sameUsbExclusiveAudioPathConfiguration(
-    previous: UsbExclusiveAudioPathState,
-    current: UsbExclusiveAudioPathState
-): Boolean {
-    return previous.copy(generation = 0L) == current.copy(generation = 0L)
-}
-
 object UsbExclusiveAudioPathTracker {
     private val _state = MutableStateFlow(UsbExclusiveAudioPathState())
     val state: StateFlow<UsbExclusiveAudioPathState> = _state.asStateFlow()

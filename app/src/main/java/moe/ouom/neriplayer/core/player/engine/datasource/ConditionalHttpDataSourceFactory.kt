@@ -42,6 +42,7 @@ import moe.ouom.neriplayer.data.platform.bili.isBiliStreamUrl
 import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeStreamRequestHeaders
 import moe.ouom.neriplayer.data.platform.youtube.isYouTubeGoogleVideoHost
 import moe.ouom.neriplayer.data.traffic.TrafficStatsRepository
+import moe.ouom.neriplayer.core.player.resolver.youtube.ConditionalChunkedHttpDataSource
 
 internal fun removeExplicitRangeHeader(headers: Map<String, String>): Map<String, String> {
     return LinkedHashMap<String, String>().apply {
@@ -93,7 +94,7 @@ class ConditionalHttpDataSourceFactory(
     }
 
     override fun createDataSource(): HttpDataSource {
-        val dataSource = ResumableChunkedHttpDataSource(
+        val dataSource = ConditionalChunkedHttpDataSource(
             upstreamFactory = baseFactory,
             transformDataSpec = { dataSpec ->
                 when {

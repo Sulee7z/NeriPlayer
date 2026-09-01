@@ -61,8 +61,7 @@ import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
 import moe.ouom.neriplayer.core.download.storage.ManagedDownloadAtomicFile
 import moe.ouom.neriplayer.core.download.policy.shouldUseIndexedSidecarLookup
 import moe.ouom.neriplayer.core.player.PlayerManager
-import moe.ouom.neriplayer.core.player.engine.datasource.ChunkRequestIOException
-import moe.ouom.neriplayer.core.player.engine.datasource.ResumableHttpRangeSupport
+import moe.ouom.neriplayer.core.player.resolver.youtube.ChunkRequestIOException
 import moe.ouom.neriplayer.core.player.resolver.netease.NeteasePlaybackResponseParser
 import moe.ouom.neriplayer.core.player.resolver.youtube.YouTubeGoogleVideoRangeSupport
 import moe.ouom.neriplayer.data.platform.bili.BiliAudioStreamInfo
@@ -453,7 +452,7 @@ object AudioDownloadManager {
         }
         return if (
             YouTubeGoogleVideoRangeSupport.shouldUseChunkedRangeForDownload(request) &&
-            !ResumableHttpRangeSupport.hasExplicitRangeHeader(headers)
+            !YouTubeGoogleVideoRangeSupport.hasExplicitRangeHeader(headers)
         ) {
             DownloadTransportKind.CHUNKED_RANGE
         } else {
@@ -538,7 +537,7 @@ object AudioDownloadManager {
         resumedBytes: Long,
         isPartialResponse: Boolean
     ): Long? {
-        val resolvedTotal = ResumableHttpRangeSupport.resolveTotalContentLength(
+        val resolvedTotal = YouTubeGoogleVideoRangeSupport.resolveTotalContentLength(
             requestUrl,
             headers
         )
@@ -3275,7 +3274,7 @@ object AudioDownloadManager {
         attemptId: Long? = null
     ): DownloadedPayloadSummary = withContext(Dispatchers.IO) {
         if (YouTubeGoogleVideoRangeSupport.shouldUseChunkedRangeForDownload(request) &&
-            !ResumableHttpRangeSupport.hasExplicitRangeHeader(
+            !YouTubeGoogleVideoRangeSupport.hasExplicitRangeHeader(
                 request.headers.names().associateWith { headerName ->
                     request.header(headerName).orEmpty()
                 }
@@ -3438,7 +3437,7 @@ object AudioDownloadManager {
         }
 
         var downloadedBytes = resumedBytes
-        var totalBytes = ResumableHttpRangeSupport.resolveQueryContentLength(request.url.toString()) ?: 0L
+        var totalBytes = YouTubeGoogleVideoRangeSupport.resolveQueryContentLength(request.url.toString()) ?: 0L
         FileOutputStream(destFile, resumedBytes > 0L).sink().buffer().use { sink ->
             while (true) {
                 ensureDownloadNotCancelled(songId, songKey, destFile, batchSessionId, attemptId)
@@ -3453,7 +3452,7 @@ object AudioDownloadManager {
                 }
 
                 try {
-                    val chunkResult = ResumableHttpRangeSupport.executeChunkLengthFallback(
+                    val chunkResult = YouTubeGoogleVideoRangeSupport.executeChunkLengthFallback(
                         requestLength = remainingRequestLength,
                         preferredChunkSize = YOUTUBE_DOWNLOAD_PREFERRED_CHUNK_SIZE_BYTES
                     ) { chunkLength ->
@@ -3480,7 +3479,7 @@ object AudioDownloadManager {
                     totalBytes = chunkResult.value.totalBytes
                     if (
                         chunkResult.chunkLength !=
-                        ResumableHttpRangeSupport.candidateChunkLengths(
+                        YouTubeGoogleVideoRangeSupport.candidateChunkLengths(
                             requestLength = remainingRequestLength,
                             preferredChunkSize = YOUTUBE_DOWNLOAD_PREFERRED_CHUNK_SIZE_BYTES
                         ).first()
@@ -3545,7 +3544,7 @@ object AudioDownloadManager {
         batchSessionId: Long? = null,
         attemptId: Long? = null
     ): ChunkDownloadResult {
-        val baseChunkRequest = ResumableHttpRangeSupport.buildChunkedRequest(
+        val baseChunkRequest = YouTubeGoogleVideoRangeSupport.buildChunkedRequest(
             request = request,
             start = start,
             length = requestedChunkLength
@@ -3584,7 +3583,7 @@ object AudioDownloadManager {
                     throw IOException("分块响应偏移不匹配: expected=$start, actual=$responseStart")
                 }
                 var downloadedBytes = currentDownloadedBytes
-                var totalBytes = ResumableHttpRangeSupport.resolveTotalContentLength(
+                var totalBytes = YouTubeGoogleVideoRangeSupport.resolveTotalContentLength(
                     uri = request.url.toString().toUri(),
                     headers = responseHeaders
                 ) ?: currentTotalBytes
@@ -3594,7 +3593,7 @@ object AudioDownloadManager {
                     headers = responseHeaders,
                     expectedContentLength = totalBytes.takeIf { it > 0L }
                 )
-                val actualChunkLength = ResumableHttpRangeSupport.resolveChunkResponseLength(
+                val actualChunkLength = YouTubeGoogleVideoRangeSupport.resolveChunkResponseLength(
                     requestedLength = requestedChunkLength,
                     headers = responseHeaders,
                     delegateOpenLength = response.body.contentLength()
