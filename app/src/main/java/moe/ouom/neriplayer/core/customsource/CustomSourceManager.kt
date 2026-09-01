@@ -32,6 +32,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import moe.ouom.neriplayer.core.logging.NPLogger
 import moe.ouom.neriplayer.data.model.SongItem
 import org.json.JSONArray
@@ -50,11 +52,16 @@ private const val URL_CACHE_TTL_MS = 15 * 60 * 1000L
 /** 音源整体判定失败后的冷却窗口: 冷却期内直接跳过该音源, 避免每次都白等超时 */
 private const val SOURCE_FAILURE_COOLDOWN_MS = 60 * 1000L
 
+/** 并发解析的最大引擎数: 每个引擎背后是一个 WebView(主线程创建+脚本定时器), 限制并发避免主线程被轰炸 */
+private const val MAX_CONCURRENT_RESOLVES = 1
+
 class CustomSourceManager(
     private val appContext: Context,
     val repository: CustomSourceRepository
 ) {
     private val engineMutex = Mutex()
+    /** 限制并发解析的引擎数, 避免多个 WebView 同时在主线程创建/跑脚本定时器 */
+    private val resolvePermits = Semaphore(MAX_CONCURRENT_RESOLVES)
     // 多源共存:每个启用音源各持有一个引擎,按 id 缓存
     private val engines = HashMap<String, LxScriptEngine>()
 
@@ -133,10 +140,14 @@ class CustomSourceManager(
 
         val resolvedUrl = coroutineScope {
             val now = System.currentTimeMillis()
-            // 冷却期内的音源直接跳过, 不为其启动并发任务
+            // 冷却期内的音源跳过(按平台粒度: 音源下所有可用平台都被冷时才跳过整个音源)
             val candidates = actives.filter { active ->
-                val cooldownUntil = failureCooldowns[active.id] ?: 0L
-                if (now < cooldownUntil) {
+                val platforms = resolvePlatformOrder(active)
+                val anyWarm = platforms.any { platform ->
+                    val cooldownUntil = failureCooldowns["${active.id}:$platform"] ?: 0L
+                    now >= cooldownUntil
+                }
+                if (!anyWarm) {
                     NPLogger.d(TAG, "跳过冷却中的音源: ${active.name}")
                     false
                 } else {
@@ -144,70 +155,84 @@ class CustomSourceManager(
                 }
             }
 
-            // 并发 fan-out: 所有启用音源同时开始解析, 谁先拿到 URL 谁赢
+            // 并发 fan-out: resolvePermits 限制同时活动的引擎数(每个引擎持一个 WebView),
+            // 避免多个 WebView 同时在主线程创建/跑脚本定时器导致掉帧
             val pending = candidates.map { active ->
                 async {
-                    val eng = ensureEngine(active) ?: return@async null
-                    val platforms = resolvePlatformOrder(active)
+                    resolvePermits.withPermit {
+                        val eng = ensureEngine(active) ?: return@async null
+                        val platforms = resolvePlatformOrder(active)
 
-                    var sawTransient = false
-                    for (platform in platforms) {
-                        // 网易云直接用源曲目自己的 ID;其它平台的 ID 命名空间跟网易云不通用,
-                        // 必须先按歌名+歌手在目标平台搜一次,换成该平台自己的原生 ID 再解析,
-                        // 否则脚本拿着网易云的数字 ID 去问酷我/QQ音乐/酷狗/咪咕必然 404。
-                        val musicInfo = if (platform == CustomAudioSource.LX_SOURCE_NETEASE) {
-                            baseMusicInfo
-                        } else {
-                            val match = PlatformSongMatcher.findNativeId(
-                                platform = platform,
-                                name = song.name,
-                                artist = song.artist,
-                                durationMs = song.durationMs
-                            )
-                            if (match == null) {
-                                NPLogger.d(TAG, "跨平台匹配未命中,跳过: ${active.name}/$platform name=${song.name}")
+                        for (platform in platforms) {
+                            // 检查该平台是否在冷却中(与写失败冷却的 resolveSongByPlatform 隔离)
+                            val pCooldownKey = "${active.id}:$platform"
+                            val pCooldownUntil = failureCooldowns[pCooldownKey] ?: 0L
+                            if (now < pCooldownUntil) {
+                                NPLogger.d(TAG, "跳过冷却中的平台: ${active.name}/$platform")
                                 continue
                             }
-                            JSONObject(baseMusicInfo.toString()).apply {
-                                put("songmid", match.songmid)
-                                put("id", match.songmid)
-                                put("source", platform)
-                                match.extra.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
+
+                            // 网易云直接用源曲目自己的 ID;其它平台的 ID 命名空间跟网易云不通用,
+                            // 必须先按歌名+歌手在目标平台搜一次,换成该平台自己的原生 ID 再解析,
+                            // 否则脚本拿着网易云的数字 ID 去问酷我/QQ音乐/酷狗/咪咕必然 404。
+                            val musicInfo = if (platform == CustomAudioSource.LX_SOURCE_NETEASE) {
+                                baseMusicInfo
+                            } else {
+                                val match = PlatformSongMatcher.findNativeId(
+                                    platform = platform,
+                                    name = song.name,
+                                    artist = song.artist,
+                                    durationMs = song.durationMs
+                                )
+                                if (match == null) {
+                                    NPLogger.d(TAG, "跨平台匹配未命中,跳过: ${active.name}/$platform name=${song.name}")
+                                    continue
+                                }
+                                JSONObject(baseMusicInfo.toString()).apply {
+                                    put("songmid", match.songmid)
+                                    put("id", match.songmid)
+                                    put("source", platform)
+                                    match.extra.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
+                                }
+                            }
+
+                            var testedPlatform = false
+                            var sawTransient = false
+                            var retries = 0
+                            while (true) {
+                                val result = try {
+                                    eng.resolve(source = platform, quality = lxQuality, musicInfo = musicInfo)
+                                } catch (e: Exception) {
+                                    NPLogger.w(TAG, "自定义音源解析异常(${active.name}/$platform/$lxQuality)", e)
+                                    LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
+                                }
+                                val url = result.url
+                                testedPlatform = true
+                                if (!url.isNullOrBlank()) {
+                                    writeUrlCache(songIdKey, url)
+                                    NPLogger.i(TAG, "自定义音源命中: ${active.name}/$platform quality=$lxQuality id=${song.id} retries=$retries")
+                                    return@async url
+                                }
+                                // 确定性失败(脚本明确说没有/无版权)再试多少次都一样, 不重试
+                                if (result.transient) sawTransient = true
+                                if (!result.transient || retries >= MAX_RESOLVE_RETRIES) {
+                                    NPLogger.d(TAG, "自定义音源放弃: ${active.name}/$platform transient=${result.transient}: ${result.detail}")
+                                    break
+                                }
+                                retries++
+                                val backoffMs = Random.nextLong(RETRY_DELAY_BASE_MS, RETRY_DELAY_MAX_MS)
+                                NPLogger.d(TAG, "自定义音源重试: ${active.name}/$platform retry=$retries backoffMs=$backoffMs name=${song.name}")
+                                delay(backoffMs)
+                            }
+
+                            // 该平台在脚本中确定性失败, 进入平台级冷却(不连坐其它平台)
+                            if (testedPlatform && !sawTransient) {
+                                failureCooldowns[pCooldownKey] = now + SOURCE_FAILURE_COOLDOWN_MS
                             }
                         }
 
-                        var retries = 0
-                        while (true) {
-                            val result = try {
-                                eng.resolve(source = platform, quality = lxQuality, musicInfo = musicInfo)
-                            } catch (e: Exception) {
-                                NPLogger.w(TAG, "自定义音源解析异常(${active.name}/$platform/$lxQuality)", e)
-                                LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
-                            }
-                            val url = result.url
-                            if (!url.isNullOrBlank()) {
-                                writeUrlCache(songIdKey, url)
-                                NPLogger.i(TAG, "自定义音源命中: ${active.name}/$platform quality=$lxQuality id=${song.id} retries=$retries")
-                                return@async url
-                            }
-                            // 确定性失败(脚本明确说没有/无版权)再试多少次都一样, 不重试
-                            if (result.transient) sawTransient = true
-                            if (!result.transient || retries >= MAX_RESOLVE_RETRIES) {
-                                NPLogger.d(TAG, "自定义音源放弃: ${active.name}/$platform transient=${result.transient}: ${result.detail}")
-                                break
-                            }
-                            retries++
-                            val backoffMs = Random.nextLong(RETRY_DELAY_BASE_MS, RETRY_DELAY_MAX_MS)
-                            NPLogger.d(TAG, "自定义音源重试: ${active.name}/$platform retry=$retries backoffMs=$backoffMs name=${song.name}")
-                            delay(backoffMs)
-                        }
+                        null
                     }
-
-                    // 该音源对这首歌全是确定性失败(没有超时/网络抖动迹象) → 进入冷却, 下次解析优先跳过
-                    if (!sawTransient) {
-                        failureCooldowns[active.id] = System.currentTimeMillis() + SOURCE_FAILURE_COOLDOWN_MS
-                    }
-                    null
                 }
             }.toMutableList()
 
@@ -287,41 +312,43 @@ class CustomSourceManager(
             extra.forEach { (k, v) -> if (v.isNotBlank()) put(k, v) }
         }
 
-        for (active in actives) {
-            val now = System.currentTimeMillis()
-            val cooldownUntil = failureCooldowns[active.id] ?: 0L
-            if (now < cooldownUntil) continue
+        return resolvePermits.withPermit {
+            for (active in actives) {
+                val now = System.currentTimeMillis()
+                val cooldownKey = "${active.id}:$platformKey"
+                val cooldownUntil = failureCooldowns[cooldownKey] ?: 0L
+                if (now < cooldownUntil) continue
 
-            val eng = ensureEngine(active) ?: continue
-            var sawTransient = false
-            var retries = 0
-            while (true) {
-                val result = try {
-                    eng.resolve(
-                        source = platformKey,
-                        quality = lxQuality,
-                        musicInfo = baseInfo
-                    )
-                } catch (e: Exception) {
-                    NPLogger.w(TAG, "自定义音源解析异常($platformKey/${active.name})", e)
-                    LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
+                val eng = ensureEngine(active) ?: continue
+                var sawTransient = false
+                var retries = 0
+                while (true) {
+                    val result = try {
+                        eng.resolve(
+                            source = platformKey,
+                            quality = lxQuality,
+                            musicInfo = baseInfo
+                        )
+                    } catch (e: Exception) {
+                        NPLogger.w(TAG, "自定义音源解析异常($platformKey/${active.name})", e)
+                        LxScriptEngine.ResolveResult(null, "异常: ${e.message}", transient = true)
+                    }
+                    if (!result.url.isNullOrBlank()) {
+                        writeUrlCache(cacheKey, result.url)
+                        NPLogger.i(TAG, "自定义音源命中($platformKey): ${active.name} id=${song.id}")
+                        return@withPermit result.url
+                    }
+                    if (result.transient) sawTransient = true
+                    if (!result.transient || retries >= MAX_RESOLVE_RETRIES) break
+                    retries++
+                    delay(Random.nextLong(RETRY_DELAY_BASE_MS, RETRY_DELAY_MAX_MS))
                 }
-                if (!result.url.isNullOrBlank()) {
-                    writeUrlCache(cacheKey, result.url)
-                    NPLogger.i(TAG, "自定义音源命中($platformKey): ${active.name} id=${song.id}")
-                    return result.url
+                if (!sawTransient) {
+                    failureCooldowns[cooldownKey] = System.currentTimeMillis() + SOURCE_FAILURE_COOLDOWN_MS
                 }
-                if (result.transient) sawTransient = true
-                if (!result.transient || retries >= MAX_RESOLVE_RETRIES) break
-                retries++
-                delay(Random.nextLong(RETRY_DELAY_BASE_MS, RETRY_DELAY_MAX_MS))
             }
-            if (!sawTransient) {
-                failureCooldowns[active.id] = System.currentTimeMillis() + SOURCE_FAILURE_COOLDOWN_MS
-            }
+            null
         }
-        NPLogger.w(TAG, "自定义音源 $platformKey 解析全部失败: id=${song.id} nativeId=$nativeId")
-        return null
     }
 
     /**
