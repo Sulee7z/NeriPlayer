@@ -135,4 +135,9 @@
 <string name="settings_qq_status_missing">No usable Cookie detected. Tap to sign in again or import one</string>
 <string name="settings_qq_status_saved_invalid">A saved Cookie was found, but it may be invalid. Tap to refresh or sign out</string>
 <string name="settings_qq_status_valid">Saved and last refreshed %1$s</string>
+<string name="custom_source_load_presets">Load presets</string>
+<string name="custom_source_presets_title">Load preset sources</string>
+<string name="custom_source_presets_confirm">Import</string>
+<string name="custom_source_presets_hint">The following presets will be imported:</string>
+<string name="custom_source_import_url_placeholder">Enter one URL per line, or paste the full LX script content</string>
 </resources>

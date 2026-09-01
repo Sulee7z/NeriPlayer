@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.core.api.bili.BiliSponsorBlockTarget
 import moe.ouom.neriplayer.core.api.bili.resolveBiliSong
+import moe.ouom.neriplayer.core.customsource.CustomAudioSource
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
 import moe.ouom.neriplayer.core.api.qq.QQMusicSongBuilder
@@ -1794,6 +1795,29 @@ private suspend fun PlayerManager.getKugouAudioUrl(
 ): SongUrlResult = withContext(Dispatchers.IO) {
     try {
         val hash = song.audioId?.takeIf { it.isNotBlank() } ?: return@withContext SongUrlResult.Failure
+
+        // 1. 自定义音源(LX 脚本 kg 平台)直接解析
+        val customManager = AppContainer.customSourceManager
+        if (customManager.hasActiveNeteaseSource()) {
+            val customUrl = runCatching {
+                customManager.resolveSongByPlatform(
+                    song = song,
+                    platformKey = CustomAudioSource.LX_SOURCE_KUGOU,
+                    nativeId = hash,
+                    qualityKey = effectiveNeteaseQuality(),
+                    cachePrefix = "kugou"
+                )
+            }.getOrNull()
+            if (customUrl != null && isDirectStreamUrl(customUrl)) {
+                NPLogger.d("NERI-PlayerManager", "自定义音源解析酷狗成功: id=${song.id} hash=$hash")
+                return@withContext SongUrlResult.Success(
+                    url = customUrl,
+                    durationMs = song.durationMs.takeIf { it > 0L }
+                )
+            }
+        }
+
+        // 2. 官方接口
         val url = AppContainer.kugouApi.resolvePlayUrl(hash)
         if (!url.isNullOrBlank()) {
             return@withContext SongUrlResult.Success(
@@ -1840,6 +1864,29 @@ private suspend fun PlayerManager.getKuwoAudioUrl(
 ): SongUrlResult = withContext(Dispatchers.IO) {
     try {
         val mid = song.audioId?.takeIf { it.isNotBlank() } ?: return@withContext SongUrlResult.Failure
+
+        // 1. 自定义音源(LX 脚本 kw 平台)直接解析
+        val customManager = AppContainer.customSourceManager
+        if (customManager.hasActiveNeteaseSource()) {
+            val customUrl = runCatching {
+                customManager.resolveSongByPlatform(
+                    song = song,
+                    platformKey = CustomAudioSource.LX_SOURCE_KUWO,
+                    nativeId = mid,
+                    qualityKey = effectiveNeteaseQuality(),
+                    cachePrefix = "kuwo"
+                )
+            }.getOrNull()
+            if (customUrl != null && isDirectStreamUrl(customUrl)) {
+                NPLogger.d("NERI-PlayerManager", "自定义音源解析酷我成功: id=${song.id} mid=$mid")
+                return@withContext SongUrlResult.Success(
+                    url = customUrl,
+                    durationMs = song.durationMs.takeIf { it > 0L }
+                )
+            }
+        }
+
+        // 2. 官方接口
         val url = AppContainer.kuwoApi.resolvePlayUrl(mid)
         if (!url.isNullOrBlank()) {
             return@withContext SongUrlResult.Success(

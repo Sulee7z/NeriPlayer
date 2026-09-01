@@ -135,4 +135,9 @@
 <string name="settings_qq_status_missing">未检测到可用 Cookie，点击重新登录或导入</string>
 <string name="settings_qq_status_saved_invalid">检测到已保存的 Cookie，但当前可能无效，点击可刷新或退出登录</string>
 <string name="settings_qq_status_valid">已保存，最近更新于 %1$s</string>
+<string name="custom_source_load_presets">加载预设</string>
+<string name="custom_source_presets_title">加载预设音源</string>
+<string name="custom_source_presets_confirm">确认导入</string>
+<string name="custom_source_presets_hint">将导入以下预设音源：</string>
+<string name="custom_source_import_url_placeholder">每行输入一个 URL 地址，或粘贴 LX 脚本完整内容</string>
 </resources>

@@ -99,36 +99,59 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
         }
     }
 
-    /** 从 URL 下载脚本后导入。 */
-    fun importScriptFromUrl(url: String) {
-        val trimmed = url.trim()
-        if (trimmed.isBlank()) return
+    /** 从 URL 下载脚本后导入。支持单行 URL 或多行批量导入。 */
+    fun importScriptFromUrl(input: String) {
+        val urls = input.replace(',', '\n').lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() && (it.startsWith("http://") || it.startsWith("https://")) }
+        if (urls.isEmpty()) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val result = runCatching {
-                val content = manager.fetchScriptFromUrl(trimmed)
-                    ?: return@runCatching "下载失败,请确认链接可访问(需以 http/https 开头)"
-                if (!manager.validateScriptContent(content)) {
-                    return@runCatching "下载的内容看起来不像 LX 音源脚本, 已取消导入"
-                }
-                val probe = manager.probeScript(content)
-                repo.importScript(
-                    scriptContent = content,
-                    supportedSources = if (probe.ok) probe.sources else emptyMap()
+            if (urls.size == 1) {
+                val result = importSingleUrl(urls[0])
+                manager.onActiveSourceChanged()
+                _uiState.value = _uiState.value.copy(
+                    busy = false,
+                    message = result.getOrElse { "导入失败: ${it.message}" }
                 )
-                if (!probe.ok) {
-                    "已导入,但脚本自检未通过: ${probe.error ?: "未知"}"
-                } else if (!probe.sources.containsKey(CustomAudioSource.LX_SOURCE_NETEASE)) {
-                    "已导入,但该脚本似乎不支持网易云(wy)"
-                } else {
-                    "导入成功"
+            } else {
+                var success = 0
+                var failed = 0
+                for (url in urls) {
+                    val result = importSingleUrl(url)
+                    if (result.isSuccess) {
+                        success++
+                    } else {
+                        failed++
+                    }
                 }
+                manager.onActiveSourceChanged()
+                _uiState.value = _uiState.value.copy(
+                    busy = false,
+                    message = "成功导入 $success 个" + if (failed > 0) "，失败 $failed 个" else ""
+                )
             }
-            manager.onActiveSourceChanged()
-            _uiState.value = _uiState.value.copy(
-                busy = false,
-                message = result.getOrElse { "导入失败: ${it.message}" }
-            )
+        }
+    }
+
+    private suspend fun importSingleUrl(url: String): Result<String> = runCatching {
+        val trimmed = url.trim()
+        val content = manager.fetchScriptFromUrl(trimmed)
+            ?: return@runCatching "下载失败,请确认链接可访问(需以 http/https 开头)"
+        if (!manager.validateScriptContent(content)) {
+            return@runCatching "下载的内容看起来不像 LX 音源脚本, 已取消导入"
+        }
+        val probe = manager.probeScript(content)
+        repo.importScript(
+            scriptContent = content,
+            supportedSources = if (probe.ok) probe.sources else emptyMap()
+        )
+        if (!probe.ok) {
+            "已导入,但脚本自检未通过: ${probe.error ?: "未知"}"
+        } else if (!probe.sources.containsKey(CustomAudioSource.LX_SOURCE_NETEASE)) {
+            "已导入,但该脚本似乎不支持网易云(wy)"
+        } else {
+            "导入成功"
         }
     }
 
@@ -174,5 +197,68 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
                 .getOrElse { "测试异常: ${it.message}" }
             _uiState.value = _uiState.value.copy(busy = false, message = msg)
         }
+    }
+
+    /** 返回内置预设音源列表(name 到 url),用于确认对话框展示。 */
+    fun loadPresets(): List<Pair<String, String>> {
+        return PRESET_SOURCE_URLS.map { url ->
+            val name = url.substringAfterLast("/").substringBeforeLast(".")
+            name to url
+        }
+    }
+
+    /** 导入所有内置预设音源,已导入过的(按内容 hash 匹配)跳过,失败不中断。 */
+    fun importPresets() {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(busy = true, message = null)
+            var success = 0
+            var skipped = 0
+            var failed = 0
+            for (presetUrl in PRESET_SOURCE_URLS) {
+                try {
+                    val content = manager.fetchScriptFromUrl(presetUrl)
+                    if (content == null) {
+                        failed++
+                        continue
+                    }
+                    val id = "cs_" + Integer.toHexString(content.hashCode()) + "_" + content.length
+                    if (_uiState.value.sources.any { it.id == id }) {
+                        skipped++
+                        continue
+                    }
+                    if (!manager.validateScriptContent(content)) {
+                        failed++
+                        continue
+                    }
+                    val probe = manager.probeScript(content)
+                    repo.importScript(
+                        scriptContent = content,
+                        supportedSources = if (probe.ok) probe.sources else emptyMap()
+                    )
+                    success++
+                } catch (e: Exception) {
+                    failed++
+                }
+            }
+            manager.onActiveSourceChanged()
+            _uiState.value = _uiState.value.copy(
+                busy = false,
+                message = buildString {
+                    append("成功导入 $success 个")
+                    if (skipped > 0) append("，$skipped 个已存在(跳过)")
+                    if (failed > 0) append("，失败 $failed 个")
+                }
+            )
+        }
+    }
+
+    companion object {
+        private val PRESET_SOURCE_URLS = listOf(
+            "https://raw.githubusercontent.com/6b0468/lx-music-source/main/sources/kg.js",
+            "https://raw.githubusercontent.com/6b0468/lx-music-source/main/sources/kw.js",
+            "https://raw.githubusercontent.com/6b0468/lx-music-source/main/sources/tx.js",
+            "https://raw.githubusercontent.com/6b0468/lx-music-source/main/sources/wy.js",
+            "https://raw.githubusercontent.com/6b0468/lx-music-source/main/sources/mg.js"
+        )
     }
 }

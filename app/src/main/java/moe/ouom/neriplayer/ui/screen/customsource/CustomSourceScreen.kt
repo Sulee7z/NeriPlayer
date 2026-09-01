@@ -102,6 +102,7 @@ fun CustomSourceScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showPasteDialog by remember { mutableStateOf(false) }
     var showUrlDialog by remember { mutableStateOf(false) }
+    var showPresetsDialog by remember { mutableStateOf(false) }
 
     // 结果/诊断信息用对话框显示(可多行,不会被截断)
     if (ui.message != null) {
@@ -185,6 +186,13 @@ fun CustomSourceScreen(
                         enabled = !ui.busy
                     ) { Text(stringResource(R.string.custom_source_import_url)) }
                 }
+            }
+            item {
+                OutlinedButton(
+                    onClick = { showPresetsDialog = true },
+                    enabled = !ui.busy,
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text(stringResource(R.string.custom_source_load_presets)) }
             }
             if (ui.busy) {
                 item {
@@ -282,6 +290,17 @@ fun CustomSourceScreen(
             onConfirm = { url ->
                 showUrlDialog = false
                 vm.importScriptFromUrl(url)
+            }
+        )
+    }
+
+    if (showPresetsDialog) {
+        PresetsConfirmDialog(
+            presets = vm.loadPresets(),
+            onDismiss = { showPresetsDialog = false },
+            onConfirm = {
+                showPresetsDialog = false
+                vm.importPresets()
             }
         )
     }
@@ -497,9 +516,9 @@ private fun UrlImportDialog(
                     value = url,
                     onValueChange = { url = it },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
+                    minLines = 4,
                     enabled = !busy,
-                    placeholder = { Text("https://example.com/source.js") }
+                    placeholder = { Text(stringResource(R.string.custom_source_import_url_placeholder)) }
                 )
                 Text(
                     stringResource(R.string.custom_source_import_url_desc),
@@ -527,6 +546,52 @@ private fun UrlImportDialog(
                 onClick = onDismiss,
                 enabled = !busy
             ) { Text(stringResource(R.string.custom_source_cancel)) }
+        }
+    )
+}
+
+@Composable
+private fun PresetsConfirmDialog(
+    presets: List<Pair<String, String>>,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.custom_source_presets_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    stringResource(R.string.custom_source_presets_hint),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                presets.forEach { (name, url) ->
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                        Text(
+                            name,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            url,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            OutlinedButton(onClick = onConfirm) {
+                Text(stringResource(R.string.custom_source_presets_confirm))
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text(stringResource(R.string.custom_source_cancel))
+            }
         }
     )
 }
