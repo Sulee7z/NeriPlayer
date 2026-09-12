@@ -273,7 +273,7 @@ fun HomeScreen(
     val localPlaylistRepo = remember(appContext) { LocalPlaylistRepository.getInstance(appContext) }
     var localPlaylists by remember { mutableStateOf<List<LocalPlaylist>>(emptyList()) }
     var localPlaylistsReady by remember { mutableStateOf(false) }
-    var showDailySheet by remember { mutableStateOf(false) }
+    var showSongListSource by remember { mutableStateOf<NeteaseHomeSongSource?>(null) }
     LaunchedEffect(appContext, localPlaylistRepo) {
         localPlaylistsReady = false
         val initializedRepo = withContext(Dispatchers.IO) {
@@ -747,7 +747,10 @@ fun HomeScreen(
                                         favoriteSongs = favoriteSongs,
                                         onFavoriteToggle = ::toggleHomeSongFavorite,
                                         onShowSnackbar = showHomeSnackbar,
-                                        offlineMode = offlineMode
+                                        offlineMode = offlineMode,
+                                        onHeaderClick = {
+                                            showSongListSource = sectionState.source
+                                        }
                                     )
                                 }
 
@@ -807,9 +810,15 @@ fun HomeScreen(
                                             onFavoriteToggle = ::toggleHomeSongFavorite,
                                             onShowSnackbar = showHomeSnackbar,
                                             offlineMode = offlineMode,
-                                            onHeaderClick = if (sectionState.source == NeteaseHomeSongSource.DAILY_RECOMMEND) {
-                                                { showDailySheet = true }
-                                            } else null
+                                            onHeaderClick = when (sectionState.source) {
+                                                NeteaseHomeSongSource.DAILY_RECOMMEND,
+                                                NeteaseHomeSongSource.PRIVATE_FM -> {
+                                                    {
+                                                        showSongListSource = sectionState.source
+                                                    }
+                                                }
+                                                else -> null
+                                            }
                                         )
                                     }
                             }
@@ -868,18 +877,19 @@ fun HomeScreen(
         )
     }
 
-    if (showDailySheet) {
-        val dailyRecommendSongs = ui.radarSongSections
-            .firstOrNull { it.source == NeteaseHomeSongSource.DAILY_RECOMMEND }
+    showSongListSource?.let { source ->
+        val sourceSongs = ui.radarSongSections
+            .firstOrNull { it.source == source }
             ?.section?.items
             .orEmpty()
-        DailySongsSheet(
-            songs = dailyRecommendSongs,
+        NeteaseSongListSheet(
+            source = source,
+            songs = sourceSongs,
             onSongClick = { list, index ->
-                showDailySheet = false
+                showSongListSource = null
                 onSongClick(list, index)
             },
-            onDismiss = { showDailySheet = false },
+            onDismiss = { showSongListSource = null },
             favoriteSongs = favoriteSongs,
             onFavoriteToggle = ::toggleHomeSongFavorite,
             onShowSnackbar = showHomeSnackbar,
@@ -890,7 +900,8 @@ fun HomeScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DailySongsSheet(
+private fun NeteaseSongListSheet(
+    source: NeteaseHomeSongSource,
     songs: List<SongItem>,
     onSongClick: (List<SongItem>, Int) -> Unit,
     onDismiss: () -> Unit,
@@ -905,7 +916,7 @@ private fun DailySongsSheet(
         sheetState = sheetState
     ) {
         Text(
-            text = stringResource(R.string.recommend_daily),
+            text = stringResource(source.titleRes),
             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.SemiBold),
             modifier = Modifier.padding(start = 20.dp, end = 20.dp, bottom = 8.dp)
         )
