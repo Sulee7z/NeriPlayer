@@ -67,13 +67,17 @@ internal object AudioDownloadSourceResolver {
 
     internal suspend fun resolveNeteaseWithCustom(song: SongItem, quality: String): AudioDownloadManager.ResolvedDownloadSource? {
         val manager = DownloadHosts.sources.customSourceManager
-        manager?.repository?.load()
+        try { manager?.repository?.load() }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (error: IOException) { NPLogger.w(TAG, "自定义音源索引不可用，继续官方解析", error) }
         suspend fun custom(): AudioDownloadManager.ResolvedDownloadSource? {
             val url = manager?.resolveNeteaseUrl(song, quality, forceRefresh = true) ?: return null
             return AudioDownloadManager.ResolvedDownloadSource(url, guessMimeFromUrl(url), fileExtensionHint = extFromUrl(url),
                 durationMs = song.durationMs.takeIf { it > 0L })
         }
-        if (manager?.repository?.priorityMode?.value == true) custom()?.let { return it }
+        val priority = runCatching { manager?.repository?.priorityMode?.value == true }
+            .getOrDefault(false)
+        if (priority) custom()?.let { return it }
         try { resolveNetease(song.id, quality)?.let { return it } }
         catch (refused: DownloadSourceUnavailableException) { return custom() ?: throw refused }
         return custom()

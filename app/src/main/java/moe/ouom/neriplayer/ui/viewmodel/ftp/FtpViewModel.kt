@@ -303,14 +303,11 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
                     output = output,
                     onProgress = { bytes, total ->
                         jobContext.ensureActive()
-                        _uiState.update {
-                            it.copy(
-                                downloading = FtpDownloadState(
-                                    fileName = entry.name,
-                                    bytesDownloaded = bytes,
-                                    totalBytes = total
-                                )
-                            )
+                        viewModelScope.launch {
+                            _uiState.update { state ->
+                                if (state.downloading?.fileName != entry.name) state
+                                else state.copy(downloading = FtpDownloadState(entry.name, bytes, total))
+                            }
                         }
                     }
                 )
@@ -349,11 +346,14 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
             .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
         val hostDir = hash("${config.host}:${config.port}:${config.username}")
         val extension = entry.name.substringAfterLast('.', "bin").takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "bin"
-        val safePath = hash("${entry.path}:${entry.size}:${entry.modifiedTime}") + ".$extension"
-        return File(
-            File(getApplication<Application>().cacheDir, "ftp/$hostDir"),
-            safePath
-        )
+        val safeComponents = entry.path.replace('\\', '/').split('/')
+            .filter { it.isNotBlank() && it != "." && it != ".." }
+            .map { component -> component.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").take(96) }
+        val relative = safeComponents.joinToString(File.separator)
+        val root = File(getApplication<Application>().cacheDir, "ftp/$hostDir").canonicalFile
+        val target = File(root, relative).canonicalFile
+        require(target.toPath().startsWith(root.toPath())) { "FTP 缓存路径超出根目录" }
+        return target
     }
 
     private fun parentPath(path: String): String {

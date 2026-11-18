@@ -36,8 +36,10 @@
   lost the full listening duration needed by scrobble. Snapshots carry cumulative
   listen time and a stable play-session identifier.
 - `startplay` is emitted on verified progress advance, not when play is merely
-  requested. `play` is queued after it. Events are ordered, account-bound,
-  idempotently receipted and held in an atomic bounded journal for retry.
+  requested. `play` is queued after it. Events are account-bound and held in an
+  atomic bounded journal; successful play sessions are recorded to suppress
+  duplicate counters. Retries are best-effort, not a server-side exactly-once
+  guarantee.
 - Cookie-only auth storage used asynchronous writes without checking persistence,
   and recovery could delete valid credentials after a key-storage fault. The
   added QQ/Kugou/Kuwo/FTP storage reuses account-safe fallback and checks durable

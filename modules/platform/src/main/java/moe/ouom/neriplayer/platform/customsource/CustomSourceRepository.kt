@@ -212,7 +212,7 @@ class CustomSourceRepository(private val appContext: Context) {
             }
             out
         } catch (e: Exception) {
-            NPLogger.e(TAG, "读取音源索引失败", e)
+            NPLogger.e(TAG, "读取音源索引失败，已保留原文件", e)
             throw IOException("读取音源索引失败，已保留原文件", e)
         }
     }

@@ -60,7 +60,6 @@ class NeteaseFeedbackRepository(
                 }
             } catch (error: Exception) {
                 NPLogger.w("NeteaseFeedback", "网易云回写队列读取失败，保留原文件", error)
-                return@launch
             }
             while (true) {
                 val event = withTimeoutOrNull(60_000L) { queue.receive() }
@@ -124,14 +123,14 @@ class NeteaseFeedbackRepository(
             if (isFavorite(event.song) != event.like) return
             val id = identities.resolve(event.song) ?: return
             if (event.account != accountKey() || isFavorite(event.song) != event.like) return
-            retry(event) { client.likeSongForAccount(id, event.like, event.account) }
+            if (!retry(event) { client.likeSongForAccount(id, event.like, event.account) }) return
             return
         }
         if (event.seconds == null) {
             if (started.containsKey(event.sessionId)) return
             val id = identities.resolve(event.song) ?: return
             if (event.account != accountKey()) return
-            retry(event) { client.notifyPlayStart(id, expectedAccountKey = event.account) }
+            if (!retry(event) { client.notifyPlayStart(id, expectedAccountKey = event.account) }) return
             if (started.size >= 128) started.remove(started.keys.first())
             started[event.sessionId] = Started(event.account, id)
             return
@@ -139,7 +138,7 @@ class NeteaseFeedbackRepository(
         val receipt = "${event.account}:${event.sessionId}"
         if (receipt in delivered) return
         val start = started[event.sessionId]?.takeIf { it.account == event.account } ?: return
-        retry(event) { client.scrobble(start.songId, event.seconds, expectedAccountKey = event.account) }
+        if (!retry(event) { client.scrobble(start.songId, event.seconds, expectedAccountKey = event.account) }) return
         delivered.add(receipt)
         while (delivered.size > 512) delivered.remove(delivered.first())
         if (!receipts.edit().putStringSet("events", delivered.toSet()).commit()) {
@@ -147,22 +146,24 @@ class NeteaseFeedbackRepository(
         }
     }
 
-    private suspend fun retry(event: Event, request: () -> String) {
+    private suspend fun retry(event: Event, request: () -> String): Boolean {
         for (attempt in 0..2) {
-            if (event.account != accountKey() || !client.hasLogin()) throw IOException("网易云账号已变化")
+            if (event.account != accountKey() || !client.hasLogin()) return false
             val setting = if (event.like == null) AutoSettingsSchema.playback.neteaseScrobbleEnabled
                 else AutoSettingsSchema.playback.neteaseAutoSyncLikeEnabled
-            if (!settings.settingFlow(setting).first()) return
-            if (event.like != null && isFavorite(event.song) != event.like) return
+            if (!settings.settingFlow(setting).first()) return false
+            if (event.like != null && isFavorite(event.song) != event.like) return false
             try {
                 val response = JSONObject(request())
+                if (event.account != accountKey() || response.optInt("code") == 301) return false
                 if (response.optInt("code") != 200) throw IOException("网易云接口返回 ${response.optInt("code")}")
-                return
+                return true
             } catch (error: IOException) {
                 if (attempt == 2) throw error
                 delay(1_000L shl attempt)
             }
         }
+        return false
     }
 
     private fun persist(pending: List<Event>) {

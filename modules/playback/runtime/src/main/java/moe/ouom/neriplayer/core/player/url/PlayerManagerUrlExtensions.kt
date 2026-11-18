@@ -1635,7 +1635,8 @@ private suspend fun PlayerManager.getNeteaseSongUrl(
     try {
         val effectiveQuality = effectiveNeteaseQuality()
         val customManager = PlayerDependencies.repositories.customSourceManager
-        customManager?.repository?.load()
+        runCatchingNonCancellation { customManager?.repository?.load() }
+            .onFailure { NPLogger.w("NERI-PlayerManager", "自定义音源索引不可用，继续网易云官方解析", it) }
         if (allowAutoBiliFallback && customManager?.repository?.priorityMode?.value == true) {
             resolveNeteaseCustomAudio(song, forceRefresh)?.let { return@withContext it }
         }

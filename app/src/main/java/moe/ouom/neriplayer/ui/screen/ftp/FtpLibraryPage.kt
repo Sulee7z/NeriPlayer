@@ -568,6 +568,3 @@ private fun FtpConfigForm(
         }
     }
 }
-
-
-
