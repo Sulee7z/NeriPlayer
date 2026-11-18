@@ -1,5 +1,6 @@
 package moe.ouom.neriplayer.ui.effect.glass
 
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.geometry.Rect
@@ -8,8 +9,19 @@ internal data class AdvancedGlassRegion(
     val role: AdvancedGlassRole,
     val boundsInWindow: Rect,
     val cornerRadiiPx: AdvancedGlassCornerRadii,
-    val navigationOwner: Any?
+    val navigationOwner: Any?,
+    val opacity: Float = 1f,
+    val regionProvider: (() -> AdvancedGlassRegion?)? = null,
+    /** Lets the host place the mask relative to its backdrop without going through the window. */
+    val layoutCoordinates: LayoutCoordinates? = null
 )
+
+internal fun resolveCurrentAdvancedGlassRegions(
+    regions: Collection<AdvancedGlassRegion>
+): List<AdvancedGlassRegion> = regions.mapNotNull { region ->
+    val provider = region.regionProvider
+    if (provider == null) region else provider()
+}
 
 internal data class AdvancedGlassCornerRadii(
     val topLeft: Float,

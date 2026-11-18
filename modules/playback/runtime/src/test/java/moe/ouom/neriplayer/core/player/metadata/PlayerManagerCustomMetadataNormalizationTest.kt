@@ -1,0 +1,511 @@
+package moe.ouom.neriplayer.core.player.metadata
+
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.core.player.persistence.EditableMetadataWriteMode
+import moe.ouom.neriplayer.core.player.persistence.resolveEditableMetadataWriteMode
+import moe.ouom.neriplayer.core.player.persistence.shouldPersistLyricsSidecarsSynchronously
+import moe.ouom.neriplayer.core.player.persistence.shouldSyncDownloadedMetadataAfterMetadataUpdate
+import moe.ouom.neriplayer.core.player.persistence.shouldSyncDownloadedMetadataAfterLyricsUpdate
+import moe.ouom.neriplayer.core.player.persistence.shouldSyncDownloadedMetadataAfterPlaybackHydration
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PlayerManagerCustomMetadataNormalizationTest {
+
+    @Test
+    fun `restore original title still needs custom value when base title was replaced`() {
+        val baseName = "搜索匹配后的标题"
+        val originalName = "原始标题"
+        val normalized = normalizeCustomMetadataValue(
+            desiredValue = originalName,
+            baseValue = baseName
+        )
+
+        assertEquals(originalName, normalized)
+    }
+
+    @Test
+    fun `matching base title clears custom value`() {
+        val normalized = normalizeCustomMetadataValue(
+            desiredValue = "当前标题",
+            baseValue = "当前标题"
+        )
+
+        assertNull(normalized)
+    }
+
+    @Test
+    fun `writing an unchanged base cover keeps its selected cover reference`() {
+        val baseCover = "file:///cache/embedded-cover.jpg"
+        val normalizedCustomCover = normalizeCustomMetadataValue(
+            desiredValue = baseCover,
+            baseValue = baseCover
+        )
+
+        assertNull(normalizedCustomCover)
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = false,
+                nextCustomCover = baseCover,
+                previousCustomCover = null
+            )
+        )
+        assertEquals(
+            baseCover,
+            resolveLocalCoverWriteReference(
+                restoreBaseCover = false,
+                requestedCoverReference = baseCover,
+                restoredBaseCoverReference = null
+            )
+        )
+    }
+
+    @Test
+    fun `local cover sidecar decision is independent from embedded metadata writeback`() {
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = false,
+                nextCustomCover = "content://local/covers/new.jpg",
+                previousCustomCover = null
+            )
+        )
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = true,
+                nextCustomCover = null,
+                previousCustomCover = "content://local/covers/old.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `restoring or replacing a custom cover requests cover write-back`() {
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = true,
+                nextCustomCover = null,
+                previousCustomCover = "file:///cache/custom-cover.jpg"
+            )
+        )
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = true,
+                nextCustomCover = null,
+                previousCustomCover = null
+            )
+        )
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = false,
+                nextCustomCover = "file:///cache/new-cover.jpg",
+                previousCustomCover = "file:///cache/old-cover.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `local restore materializes an explicit remote cover before write-back`() {
+        assertTrue(
+            shouldMaterializeRemoteLocalCover(
+                isLocalSong = true,
+                requestedCoverReference = "https://example.com/original-cover.jpg",
+                restoreBaseCover = true,
+                persistManualRemoteCover = false
+            )
+        )
+        assertFalse(
+            shouldMaterializeRemoteLocalCover(
+                isLocalSong = true,
+                requestedCoverReference = "https://example.com/original-cover.jpg",
+                restoreBaseCover = false,
+                persistManualRemoteCover = false
+            )
+        )
+        assertFalse(
+            shouldMaterializeRemoteLocalCover(
+                isLocalSong = false,
+                requestedCoverReference = "https://example.com/original-cover.jpg",
+                restoreBaseCover = true,
+                persistManualRemoteCover = false
+            )
+        )
+    }
+
+    @Test
+    fun `second metadata write skips an unchanged custom cover`() {
+        val customCover = "file:///cache/custom-cover.jpg"
+
+        assertFalse(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = false,
+                nextCustomCover = customCover,
+                previousCustomCover = customCover
+            )
+        )
+        assertEquals(
+            customCover,
+            resolveLocalCoverWriteReference(
+                restoreBaseCover = false,
+                requestedCoverReference = customCover,
+                restoredBaseCoverReference = null
+            )
+        )
+    }
+
+    @Test
+    fun `returning a custom cover to the displayed base keeps a replacement reference`() {
+        val baseCover = "file:///cache/original-cover.jpg"
+        val customCover = "file:///cache/custom-cover.jpg"
+        val nextCustomCover = normalizeCustomMetadataValue(
+            desiredValue = baseCover,
+            baseValue = baseCover
+        )
+
+        assertNull(nextCustomCover)
+        assertTrue(
+            shouldWriteLocalCoverMetadata(
+                restoreBaseCover = false,
+                nextCustomCover = nextCustomCover,
+                previousCustomCover = customCover
+            )
+        )
+        assertEquals(
+            baseCover,
+            resolveLocalCoverWriteReference(
+                restoreBaseCover = false,
+                requestedCoverReference = baseCover,
+                restoredBaseCoverReference = null
+            )
+        )
+    }
+
+    @Test
+    fun `restoring a custom cover uses the preserved original cover`() {
+        assertEquals(
+            "file:///cache/original-cover.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "file:///cache/original-cover.jpg",
+                baseCoverUrl = "file:///cache/current-base.jpg",
+                currentCustomCoverUrl = "file:///cache/custom-cover.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `restoring a custom cover keeps it when no other base reference exists`() {
+        assertEquals(
+            "file:///cache/custom-cover.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "file:///cache/custom-cover.jpg",
+                baseCoverUrl = "file:///cache/custom-cover.jpg",
+                currentCustomCoverUrl = "file:///cache/custom-cover.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `restoring without a known original cover keeps the visible cover`() {
+        assertEquals(
+            "file:///cache/custom-cover.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = null,
+                baseCoverUrl = null,
+                currentCustomCoverUrl = "file:///cache/custom-cover.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `restoring an explicitly empty original cover clears edited fallback covers`() {
+        for (localOnly in listOf(false, true)) {
+            assertNull(
+                resolveRestoredBaseCoverUrl(
+                    originalCoverUrl = "",
+                    baseCoverUrl = "file:///cache/edited-base.jpg",
+                    currentCustomCoverUrl = "file:///cache/edited-custom.jpg",
+                    preferredLocalCoverUrl = "file:///music/Covers/edited.jpg",
+                    localOnly = localOnly
+                )
+            )
+        }
+    }
+
+    @Test
+    fun `restoring a remote base cover keeps it for display`() {
+        assertEquals(
+            "https://example.com/original-cover.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = null,
+                baseCoverUrl = "https://example.com/original-cover.jpg",
+                currentCustomCoverUrl = "file:///cache/custom-cover.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `restoring a local cover keeps the local reference over remote metadata`() {
+        assertEquals(
+            "file:///storage/emulated/0/neriplayer-download/Covers/Song.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "https://example.com/original-cover.jpg",
+                baseCoverUrl = "https://example.com/current-cover.jpg",
+                currentCustomCoverUrl = "https://example.com/custom-cover.jpg",
+                preferredLocalCoverUrl =
+                    "file:///storage/emulated/0/neriplayer-download/Covers/Song.jpg"
+            )
+        )
+    }
+
+    @Test
+    fun `restoring a local cover prefers the explicit restored reference over an old sidecar`() {
+        assertEquals(
+            "file:///cache/restored-from-provider.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "file:///cache/original-cover.jpg",
+                baseCoverUrl = "file:///cache/current-base.jpg",
+                currentCustomCoverUrl = "file:///cache/custom-cover.jpg",
+                preferredLocalCoverUrl = "file:///cache/old-sidecar.jpg",
+                requestedRestoreCoverUrl = "file:///cache/restored-from-provider.jpg",
+                localOnly = true
+            )
+        )
+    }
+
+    @Test
+    fun `restoring a local song without a local cover does not keep a remote url`() {
+        assertNull(
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "https://example.com/original-cover.jpg",
+                baseCoverUrl = "https://example.com/current-cover.jpg",
+                currentCustomCoverUrl = "file:///cache/custom-cover.jpg",
+                localOnly = true
+            )
+        )
+    }
+
+    @Test
+    fun `restoring a local song with only shared album artwork clears the cover`() {
+        assertNull(
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "content://media/external/audio/albumart/17",
+                baseCoverUrl = "content://media/external_primary/audio/albumart/17",
+                currentCustomCoverUrl = "content://media/0123-4567/audio/albumart/17",
+                localOnly = true
+            )
+        )
+    }
+
+    @Test
+    fun `restoring ignores a requested shared thumbnail and keeps the song's own cover`() {
+        assertEquals(
+            "file:///music/Covers/B.jpg",
+            resolveRestoredBaseCoverUrl(
+                originalCoverUrl = "file:///music/Covers/B.jpg",
+                baseCoverUrl = "content://media/external/audio/albumart/17",
+                currentCustomCoverUrl = null,
+                preferredLocalCoverUrl = "content://media/external_primary/audio/albumart/17",
+                requestedRestoreCoverUrl = "content://media/0123-4567/audio/albumart/17",
+                localOnly = true
+            )
+        )
+    }
+
+    @Test
+    fun `local cover writes never embed a shared album thumbnail as a replacement or restore`() {
+        assertNull(
+            resolveLocalCoverWriteReference(
+                restoreBaseCover = false,
+                requestedCoverReference = "content://media/external/audio/albumart/17",
+                restoredBaseCoverReference = null
+            )
+        )
+        assertNull(
+            resolveLocalCoverWriteReference(
+                restoreBaseCover = true,
+                requestedCoverReference = null,
+                restoredBaseCoverReference = "content://media/external_primary/audio/albumart/17"
+            )
+        )
+    }
+
+    @Test
+    fun `playing current song is released and resumed during embedded metadata writes`() {
+        assertEquals(
+            LocalMetadataWritePlaybackAction.RELEASE_AND_RESUME,
+            resolveLocalMetadataWritePlaybackAction(
+                isCurrentSong = true,
+                hasActiveMedia = true,
+                shouldResumePlayback = true
+            )
+        )
+    }
+
+    @Test
+    fun `unchanged song metadata save can skip the expensive persistence fanout`() {
+        val song = SongItem(
+            id = 1L,
+            name = "Song",
+            artist = "Artist",
+            album = "Album",
+            albumId = 0L,
+            durationMs = 1_000L,
+            coverUrl = null
+        )
+
+        assertTrue(shouldSkipSongMetadataMutation(song, song, writeLyrics = false))
+        assertFalse(shouldSkipSongMetadataMutation(song, song, writeLyrics = true))
+        assertFalse(shouldSkipSongMetadataMutation(song, song, writeLyrics = false, writeLocalMetadata = true))
+    }
+
+    @Test
+    fun `local cover lookup stops before later audio probes after a usable source`() {
+        var laterProbeCount = 0
+
+        val cover = firstUsableLocalCoverReference(
+            { "file:///selected-cover.png" },
+            { laterProbeCount++; null }
+        )
+
+        assertEquals("file:///selected-cover.png", cover)
+        assertEquals(0, laterProbeCount)
+    }
+
+    @Test
+    fun `local cover lookup skips remote and media store album artwork`() {
+        var acceptedProbeCount = 0
+
+        val cover = firstUsableLocalCoverReference(
+            { "https://example.com/remote.jpg" },
+            { "content://media/external/audio/albumart/7" },
+            { acceptedProbeCount++; "file:///original.png" }
+        )
+
+        assertEquals("file:///original.png", cover)
+        assertEquals(1, acceptedProbeCount)
+    }
+
+    @Test
+    fun `paused current song releases its open audio source during embedded metadata writes`() {
+        assertEquals(
+            LocalMetadataWritePlaybackAction.RELEASE_ONLY,
+            resolveLocalMetadataWritePlaybackAction(
+                isCurrentSong = true,
+                hasActiveMedia = true,
+                shouldResumePlayback = false
+            )
+        )
+    }
+
+    @Test
+    fun `editing another song does not interrupt the current playback`() {
+        assertEquals(
+            LocalMetadataWritePlaybackAction.NONE,
+            resolveLocalMetadataWritePlaybackAction(
+                isCurrentSong = false,
+                hasActiveMedia = true,
+                shouldResumePlayback = true
+            )
+        )
+    }
+
+    @Test
+    fun `editing an unloaded song does not start playback`() {
+        assertEquals(
+            LocalMetadataWritePlaybackAction.NONE,
+            resolveLocalMetadataWritePlaybackAction(
+                isCurrentSong = true,
+                hasActiveMedia = false,
+                shouldResumePlayback = false
+            )
+        )
+    }
+
+    @Test
+    fun `local metadata writes use the background persistence path`() {
+        assertEquals(
+            EditableMetadataWriteMode.BACKGROUND_LOCAL_WRITE,
+            resolveEditableMetadataWriteMode(writeLocalMetadata = true)
+        )
+        assertEquals(
+            EditableMetadataWriteMode.APP_ONLY,
+            resolveEditableMetadataWriteMode(writeLocalMetadata = false)
+        )
+    }
+
+    @Test
+    fun `local metadata write skips the synchronous lyric sidecar path`() {
+        assertTrue(
+            shouldPersistLyricsSidecarsSynchronously(
+                writeLocalMetadata = false,
+                persistLocalSidecars = true
+            )
+        )
+        assertFalse(
+            shouldPersistLyricsSidecarsSynchronously(
+                writeLocalMetadata = true,
+                persistLocalSidecars = true
+            )
+        )
+        assertFalse(
+            shouldPersistLyricsSidecarsSynchronously(
+                writeLocalMetadata = false,
+                persistLocalSidecars = false
+            )
+        )
+    }
+
+    @Test
+    fun `local lyric update syncs downloaded catalog after embedded write`() {
+        assertTrue(
+            shouldSyncDownloadedMetadataAfterLyricsUpdate(
+                writeLocalMetadata = false,
+                isLocalSong = true,
+                syncDownloadedMetadata = true
+            )
+        )
+        assertTrue(
+            shouldSyncDownloadedMetadataAfterLyricsUpdate(
+                writeLocalMetadata = true,
+                isLocalSong = true,
+                syncDownloadedMetadata = true
+            )
+        )
+        assertFalse(
+            shouldSyncDownloadedMetadataAfterLyricsUpdate(
+                writeLocalMetadata = false,
+                isLocalSong = true,
+                syncDownloadedMetadata = false
+            )
+        )
+    }
+
+    @Test
+    fun `local embedded metadata write still syncs downloaded catalog`() {
+        assertTrue(
+            shouldSyncDownloadedMetadataAfterMetadataUpdate(
+                writeLocalMetadata = true,
+                isLocalSong = true
+            )
+        )
+        assertTrue(
+            shouldSyncDownloadedMetadataAfterMetadataUpdate(
+                writeLocalMetadata = false,
+                isLocalSong = true
+            )
+        )
+        assertFalse(
+            shouldSyncDownloadedMetadataAfterMetadataUpdate(
+                writeLocalMetadata = true,
+                isLocalSong = false
+            )
+        )
+    }
+
+    @Test
+    fun `playback hydration never syncs downloaded metadata`() {
+        assertFalse(shouldSyncDownloadedMetadataAfterPlaybackHydration())
+    }
+}

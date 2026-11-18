@@ -41,13 +41,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 
 enum class PlaybackSourceType {
     NETEASE,
     BILIBILI,
     YOUTUBE_MUSIC,
-    LOCAL
+    LOCAL,
+    SUBSONIC
 }
 
 @Composable
@@ -68,13 +69,13 @@ fun PlaybackSourceBadge(
         when (source) {
             PlaybackSourceType.NETEASE -> {
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_netease_cloud_music),
-                    contentDescription = stringResource(R.string.cd_netease),
+                    painter = painterResource(id = CoreCommonR.drawable.ic_netease_cloud_music),
+                    contentDescription = stringResource(CoreCommonR.string.cd_netease),
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = stringResource(R.string.nowplaying_netease_cloud),
+                    text = stringResource(CoreCommonR.string.nowplaying_netease_cloud),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -82,13 +83,13 @@ fun PlaybackSourceBadge(
 
             PlaybackSourceType.BILIBILI -> {
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_bilibili),
-                    contentDescription = stringResource(R.string.cd_bilibili),
+                    painter = painterResource(id = CoreCommonR.drawable.ic_bilibili),
+                    contentDescription = stringResource(CoreCommonR.string.cd_bilibili),
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = stringResource(R.string.nowplaying_bilibili),
+                    text = stringResource(CoreCommonR.string.nowplaying_bilibili),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -96,27 +97,33 @@ fun PlaybackSourceBadge(
 
             PlaybackSourceType.YOUTUBE_MUSIC -> {
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_youtube),
-                    contentDescription = stringResource(R.string.common_youtube),
+                    painter = painterResource(id = CoreCommonR.drawable.ic_youtube),
+                    contentDescription = stringResource(CoreCommonR.string.common_youtube),
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = stringResource(R.string.nowplaying_youtube_music),
+                    text = stringResource(CoreCommonR.string.nowplaying_youtube_music),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
 
+            PlaybackSourceType.SUBSONIC -> {
+                Icon(imageVector = Icons.Outlined.LibraryMusic,
+                    contentDescription = null, modifier = Modifier.size(16.dp))
+                Text(stringResource(CoreCommonR.string.server_source),
+                    style = MaterialTheme.typography.labelSmall)
+            }
             PlaybackSourceType.LOCAL -> {
                 Icon(
                     imageVector = Icons.Outlined.LibraryMusic,
-                    contentDescription = stringResource(R.string.local_files),
+                    contentDescription = stringResource(CoreCommonR.string.local_files),
                     tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = stringResource(R.string.local_files),
+                    text = stringResource(CoreCommonR.string.local_files),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )

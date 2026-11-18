@@ -1,13 +1,39 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <activity
+            android:name="moe.ouom.neriplayer.testing.DocumentsFixtureActivity"
+            android:launchMode="singleTask"
+            android:taskAffinity="moe.ouom.neriplayer.test.documentsfixture"
+            android:excludeFromRecents="true"
+            android:exported="true" />
+        <provider
+            android:name="moe.ouom.neriplayer.core.download.ManagedDownloadDelayedDocumentsProvider"
+            android:authorities="${applicationId}.delayeddocuments"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+        <provider
+            android:name="moe.ouom.neriplayer.core.download.execution.DownloadPreflightTestProvider"
+            android:authorities="${applicationId}.downloadpreflight"
+            android:exported="true"
+            android:grantUriPermissions="true" />
         <provider
             android:name="moe.ouom.neriplayer.data.local.media.StagedMetadataTestProvider"
-            android:authorities="moe.ouom.neriplayer.test.stagedmetadataprovider"
+            android:authorities="${applicationId}.stagedmetadataprovider"
             android:exported="true"
             android:grantUriPermissions="true" />
         <provider
             android:name="moe.ouom.neriplayer.data.local.media.Issue339LyricsTestDocumentProvider"
-            android:authorities="moe.ouom.neriplayer.test.issue339lyrics"
+            android:authorities="${applicationId}.issue339lyrics"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+        <provider
+            android:name="moe.ouom.neriplayer.core.download.ManagedDownloadMigrationTestDocumentProvider"
+            android:authorities="${applicationId}.manageddownloadmigration"
             android:exported="true"
             android:grantUriPermissions="true" />
     </application>

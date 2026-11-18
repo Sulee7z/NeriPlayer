@@ -44,6 +44,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import moe.ouom.neriplayer.ui.i18n.UiText
+import moe.ouom.neriplayer.ui.i18n.asString
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,10 +54,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.activity.auth.BiliQrLoginActivity
 import moe.ouom.neriplayer.activity.auth.YouTubeWebLoginActivity
 import moe.ouom.neriplayer.core.di.AppContainer
@@ -67,14 +69,15 @@ import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextButton
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextField
 import moe.ouom.neriplayer.ui.viewmodel.auth.BiliAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.YouTubeAuthViewModel
+import moe.ouom.neriplayer.R as AppR
 
 @Composable
 internal fun SettingsBiliAuthDialogs(
     showSheet: Boolean,
     initialTab: Int,
     onDismissSheet: () -> Unit,
-    inlineMsg: String?,
-    onInlineMsgChange: (String?) -> Unit,
+    inlineMsg: UiText?,
+    onInlineMsgChange: (UiText?) -> Unit,
     vm: BiliAuthViewModel,
     showSavedCookieDialog: Boolean = false,
     onDismissSavedCookieDialog: () -> Unit = {},
@@ -83,12 +86,11 @@ internal fun SettingsBiliAuthDialogs(
     onBrowserLogin: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val composeResources = LocalResources.current
 
     if (showSavedCookieDialog) {
         SavedCookieActionDialog(
-            title = stringResource(R.string.settings_bili_saved_cookie_title),
-            message = stringResource(R.string.settings_bili_saved_cookie_message),
+            title = stringResource(CoreCommonR.string.settings_bili_saved_cookie_title),
+            message = stringResource(CoreCommonR.string.settings_bili_saved_cookie_message),
             onDismiss = onDismissSavedCookieDialog,
             onContinueLogin = {
                 onDismissSavedCookieDialog()
@@ -102,6 +104,7 @@ internal fun SettingsBiliAuthDialogs(
     }
 
     if (showSheet) {
+        val authStorage = rememberAuthLoginStorageStatus(SettingsAccountPlatform.Bilibili)
         val launchBrowserLogin: () -> Unit = onBrowserLogin?.let { injectedBrowserLogin ->
             {
                 onInlineMsgChange(null)
@@ -115,7 +118,7 @@ internal fun SettingsBiliAuthDialogs(
                     val json = result.data?.getStringExtra(BiliQrLoginActivity.RESULT_COOKIE) ?: "{}"
                     vm.importCookiesFromMap(vm.parseJsonToMap(json))
                 } else {
-                    onInlineMsgChange(composeResources.getString(R.string.settings_cookie_cancelled))
+                    onInlineMsgChange(UiText.Resource(CoreCommonR.string.settings_cookie_cancelled))
                 }
             }
             val defaultBrowserLogin: () -> Unit = {
@@ -127,29 +130,32 @@ internal fun SettingsBiliAuthDialogs(
         }
 
         SettingsCookieLoginSheet(
-            title = stringResource(R.string.platform_bilibili),
+            title = stringResource(AppR.string.platform_bilibili),
             initialTab = initialTab,
-            inlineMsg = inlineMsg,
-            onInlineMsgChange = onInlineMsgChange,
+            inlineMsg = inlineMsg?.asString(),
+            onInlineMsgChange = { onInlineMsgChange(null) },
             onDismiss = onDismissSheet,
-            browserTabLabel = stringResource(R.string.login_qr),
-            browserButtonLabel = stringResource(R.string.login_start_bili_qr),
+            browserTabLabel = stringResource(CoreCommonR.string.login_qr),
+            browserButtonLabel = stringResource(CoreCommonR.string.login_start_bili_qr),
             browserHintContent = {
                 Text(
-                    stringResource(R.string.settings_bili_login_browser_hint),
+                    stringResource(CoreCommonR.string.settings_bili_login_browser_hint),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             },
-            cookieLabel = stringResource(R.string.login_paste_bili_cookie_hint),
+            cookieLabel = stringResource(CoreCommonR.string.login_paste_bili_cookie_hint),
             onBrowserLogin = launchBrowserLogin,
             onSaveCookie = { rawCookie ->
                 if (rawCookie.isBlank()) {
-                    onInlineMsgChange(composeResources.getString(R.string.auth_cookie_empty))
+                    onInlineMsgChange(UiText.Resource(CoreCommonR.string.auth_cookie_empty))
                 } else {
                     vm.importCookiesFromRaw(rawCookie)
                 }
-            }
+            },
+            requiresCompatibilityStorageWarning = authStorage?.requiresCompatibilityWarning ?: false,
+            isAuthStoragePersistent = authStorage?.isPersistent ?: false,
+            isAuthStorageReady = authStorage != null
         )
     }
 
@@ -160,8 +166,8 @@ internal fun SettingsYouTubeAuthDialogs(
     showSheet: Boolean,
     initialTab: Int,
     onDismissSheet: () -> Unit,
-    inlineMsg: String?,
-    onInlineMsgChange: (String?) -> Unit,
+    inlineMsg: UiText?,
+    onInlineMsgChange: (UiText?) -> Unit,
     vm: YouTubeAuthViewModel,
     showSavedCookieDialog: Boolean = false,
     onDismissSavedCookieDialog: () -> Unit = {},
@@ -170,12 +176,11 @@ internal fun SettingsYouTubeAuthDialogs(
     onBrowserLogin: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val composeResources = LocalResources.current
 
     if (showSavedCookieDialog) {
         SavedCookieActionDialog(
-            title = stringResource(R.string.settings_youtube_saved_cookie_title),
-            message = stringResource(R.string.settings_youtube_saved_cookie_message),
+            title = stringResource(CoreCommonR.string.settings_youtube_saved_cookie_title),
+            message = stringResource(CoreCommonR.string.settings_youtube_saved_cookie_message),
             onDismiss = onDismissSavedCookieDialog,
             onContinueLogin = {
                 onDismissSavedCookieDialog()
@@ -189,6 +194,7 @@ internal fun SettingsYouTubeAuthDialogs(
     }
 
     if (showSheet) {
+        val authStorage = rememberAuthLoginStorageStatus(SettingsAccountPlatform.YouTube)
         val launchBrowserLogin: () -> Unit = onBrowserLogin?.let { injectedBrowserLogin ->
             {
                 onInlineMsgChange(null)
@@ -202,7 +208,7 @@ internal fun SettingsYouTubeAuthDialogs(
                     val json = result.data?.getStringExtra(YouTubeWebLoginActivity.RESULT_AUTH_JSON) ?: "{}"
                     vm.importAuthFromJson(json)
                 } else {
-                    onInlineMsgChange(composeResources.getString(R.string.settings_cookie_cancelled))
+                    onInlineMsgChange(UiText.Resource(CoreCommonR.string.settings_cookie_cancelled))
                 }
             }
             val defaultBrowserLogin: () -> Unit = {
@@ -214,34 +220,37 @@ internal fun SettingsYouTubeAuthDialogs(
         }
 
         SettingsCookieLoginSheet(
-            title = stringResource(R.string.common_youtube),
+            title = stringResource(CoreCommonR.string.common_youtube),
             initialTab = initialTab,
-            inlineMsg = inlineMsg,
-            onInlineMsgChange = onInlineMsgChange,
+            inlineMsg = inlineMsg?.asString(),
+            onInlineMsgChange = { onInlineMsgChange(null) },
             onDismiss = onDismissSheet,
-            browserTabLabel = stringResource(R.string.login_browser),
-            browserButtonLabel = stringResource(R.string.login_start_browser),
+            browserTabLabel = stringResource(CoreCommonR.string.login_browser),
+            browserButtonLabel = stringResource(CoreCommonR.string.login_start_browser),
             browserHintContent = {
                 Text(
-                    stringResource(R.string.settings_youtube_login_browser_hint),
+                    stringResource(CoreCommonR.string.settings_youtube_login_browser_hint),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    stringResource(R.string.settings_youtube_login_browser_warning),
+                    stringResource(CoreCommonR.string.settings_youtube_login_browser_warning),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             },
-            cookieLabel = stringResource(R.string.login_paste_youtube_cookie_hint),
+            cookieLabel = stringResource(CoreCommonR.string.login_paste_youtube_cookie_hint),
             onBrowserLogin = launchBrowserLogin,
             onSaveCookie = { rawCookie ->
                 if (rawCookie.isBlank()) {
-                    onInlineMsgChange(composeResources.getString(R.string.auth_cookie_empty))
+                    onInlineMsgChange(UiText.Resource(CoreCommonR.string.auth_cookie_empty))
                 } else {
                     vm.importCookiesFromRaw(rawCookie)
                 }
-            }
+            },
+            requiresCompatibilityStorageWarning = authStorage?.requiresCompatibilityWarning ?: false,
+            isAuthStoragePersistent = authStorage?.isPersistent ?: false,
+            isAuthStorageReady = authStorage != null
         )
     }
 
@@ -259,11 +268,26 @@ internal fun SettingsCookieLoginSheet(
     browserHintContent: @Composable ColumnScope.() -> Unit,
     cookieLabel: String,
     onBrowserLogin: () -> Unit,
-    onSaveCookie: (String) -> Unit
+    onSaveCookie: (String) -> Unit,
+    requiresCompatibilityStorageWarning: Boolean = false,
+    isAuthStoragePersistent: Boolean = true,
+    isAuthStorageReady: Boolean = true
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selectedTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 1)) }
     var rawCookie by remember { mutableStateOf("") }
+    val storageGate = remember { AuthLoginStorageGate() }
+    LaunchedEffect(inlineMsg, storageGate.submitted) {
+        if (inlineMsg != null) storageGate.allowRetry()
+    }
+
+    fun requestLogin(action: () -> Unit) {
+        if (!isAuthStorageReady) return
+        storageGate.request(requiresCompatibilityStorageWarning, isAuthStoragePersistent) {
+            onInlineMsgChange(null)
+            action()
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -287,7 +311,7 @@ internal fun SettingsCookieLoginSheet(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        stringResource(R.string.login_title),
+                        stringResource(CoreCommonR.string.login_title),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -303,11 +327,19 @@ internal fun SettingsCookieLoginSheet(
                 MiuixSettingsSegmentedTabs(
                     labels = listOf(
                         browserTabLabel,
-                        stringResource(R.string.login_paste_cookie)
+                        stringResource(CoreCommonR.string.login_paste_cookie)
                     ),
                     selectedIndex = selectedTab,
                     onSelectedIndexChange = { selectedTab = it }
                 )
+
+                if (!isAuthStorageReady) {
+                    Text(
+                        text = stringResource(CoreCommonR.string.auth_storage_checking),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
 
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -324,7 +356,8 @@ internal fun SettingsCookieLoginSheet(
                             0 -> {
                                 browserHintContent()
                                 MiuixSettingsButton(
-                                    onClick = onBrowserLogin,
+                                    onClick = { requestLogin(onBrowserLogin) },
+                                    enabled = isAuthStorageReady && !storageGate.submitted,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Text(browserButtonLabel)
@@ -341,10 +374,11 @@ internal fun SettingsCookieLoginSheet(
                                     modifier = Modifier.fillMaxWidth()
                                 )
                                 MiuixSettingsButton(
-                                    onClick = { onSaveCookie(rawCookie) },
+                                    onClick = { requestLogin { onSaveCookie(rawCookie) } },
+                                    enabled = isAuthStorageReady && !storageGate.submitted,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Text(stringResource(R.string.login_save_cookie))
+                                    Text(stringResource(CoreCommonR.string.login_save_cookie))
                                 }
                             }
                         }
@@ -352,6 +386,7 @@ internal fun SettingsCookieLoginSheet(
                 }
             }
         }
+        AuthLoginStorageDialogs(storageGate, isAuthStorageReady && isAuthStoragePersistent)
     }
 }
 
@@ -369,12 +404,12 @@ internal fun SavedCookieActionDialog(
         text = { Text(message) },
         confirmButton = {
             MiuixSettingsTextButton(onClick = onContinueLogin) {
-                Text(stringResource(R.string.settings_saved_cookie_continue))
+                Text(stringResource(CoreCommonR.string.settings_saved_cookie_continue))
             }
         },
         dismissButton = {
             MiuixSettingsTextButton(onClick = onLogout) {
-                Text(stringResource(R.string.settings_saved_cookie_logout))
+                Text(stringResource(CoreCommonR.string.settings_saved_cookie_logout))
             }
         }
     )
@@ -390,7 +425,7 @@ internal fun LoginSuccessDialog(
         title = { Text(title) },
         confirmButton = {
             MiuixSettingsTextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.action_ok))
+                Text(stringResource(CoreCommonR.string.action_ok))
             }
         }
     )

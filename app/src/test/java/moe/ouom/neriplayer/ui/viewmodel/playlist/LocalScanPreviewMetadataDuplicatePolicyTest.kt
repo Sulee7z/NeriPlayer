@@ -1,5 +1,7 @@
 package moe.ouom.neriplayer.ui.viewmodel.playlist
 
+import moe.ouom.neriplayer.data.identity.stableKey
+
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.data.model.stableKey
 import org.junit.Assert.assertEquals
@@ -47,6 +49,27 @@ class LocalScanPreviewMetadataDuplicatePolicyTest {
             emptySet<String>(),
             duplicateScannedSongKeysByMetadata(
                 listOf(base, differentAlbum, differentDuration, missingAlbum)
+            )
+        )
+    }
+
+    @Test
+    fun `keeps a selected scan song selected when metadata changes its stable key`() {
+        val quickSong = scannedSong(
+            id = 7L,
+            name = "Artist - Song",
+            artist = "Artist",
+            album = "Local Files",
+            durationMs = 0L
+        )
+        val hydratedSong = quickSong.copy(album = "Album")
+
+        assertEquals(
+            setOf(hydratedSong.stableKey()),
+            remapScanPreviewKeySet(
+                keys = setOf(quickSong.stableKey()),
+                previousSong = quickSong,
+                updatedSong = hydratedSong
             )
         )
     }

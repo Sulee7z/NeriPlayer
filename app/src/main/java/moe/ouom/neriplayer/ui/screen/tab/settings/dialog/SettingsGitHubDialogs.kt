@@ -23,6 +23,8 @@ package moe.ouom.neriplayer.ui.screen.tab.settings.dialog
  * Updated: 2026/3/23
  */
 
+import moe.ouom.neriplayer.ui.i18n.asString
+import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -36,10 +38,14 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -47,7 +53,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.lifecycle.viewmodel.compose.viewModel
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.ui.feedback.AppFeedback
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsButton
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsChoiceRow
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsDialog
@@ -56,6 +63,41 @@ import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextButton
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextField
 import moe.ouom.neriplayer.ui.screen.tab.settings.state.collectAsStateWithLifecycleCompat
 import moe.ouom.neriplayer.ui.viewmodel.GitHubSyncViewModel
+import moe.ouom.neriplayer.ui.sync.upgrade.syncProtocolStartupConfigurationGate
+import moe.ouom.neriplayer.util.platform.tryStartActivity
+
+internal const val GITHUB_TOKEN_CREATION_URL =
+    "https://github.com/settings/tokens/new?scopes=repo&description=NeriPlayer%20Backup"
+
+internal fun openGitHubTokenCreationPage(context: Context) {
+    val intent = Intent(Intent.ACTION_VIEW, GITHUB_TOKEN_CREATION_URL.toUri())
+    if (!context.tryStartActivity(intent)) {
+        AppFeedback.showToast(
+            context = context,
+            message = context.getString(CoreCommonR.string.sync_create_token_open_failed)
+        )
+    }
+}
+
+@Stable
+internal class GitHubConfigDraft(
+    val token: MutableState<String>,
+    val newRepoName: MutableState<String>,
+    val useExistingRepo: MutableState<Boolean>,
+    val existingRepoName: MutableState<String>
+)
+
+/** The token is deliberately kept out of saved instance state. */
+@Composable
+internal fun rememberGitHubConfigDraft(): GitHubConfigDraft {
+    val token = remember { mutableStateOf("") }
+    val newRepoName = rememberSaveable { mutableStateOf("neriplayer-backup") }
+    val useExistingRepo = rememberSaveable { mutableStateOf(false) }
+    val existingRepoName = rememberSaveable { mutableStateOf("") }
+    return remember(token, newRepoName, useExistingRepo, existingRepoName) {
+        GitHubConfigDraft(token, newRepoName, useExistingRepo, existingRepoName)
+    }
+}
 
 @Composable
 internal fun SettingsGitHubDialogs(
@@ -71,23 +113,36 @@ internal fun SettingsGitHubDialogs(
         githubVm.initialize(context)
     }
 
+    if (syncProtocolStartupConfigurationGate(
+            dialogRequested = showGitHubConfigDialog || showClearGitHubConfigDialog,
+            onDismiss = {
+                onShowGitHubConfigDialogChange(false)
+                onShowClearGitHubConfigDialogChange(false)
+            }
+        )) return
+
     if (showGitHubConfigDialog) {
         val githubState by githubVm.uiState.collectAsStateWithLifecycleCompat()
-        var githubToken by remember(showGitHubConfigDialog) { mutableStateOf("") }
-        var githubRepoName by remember(showGitHubConfigDialog) {
-            mutableStateOf("neriplayer-backup")
+        val draft = rememberGitHubConfigDraft()
+        var githubToken by draft.token
+        var githubRepoName by draft.newRepoName
+        var useExistingRepo by draft.useExistingRepo
+        var existingRepoName by draft.existingRepoName
+
+        DisposableEffect(githubVm, context) {
+            githubVm.resetTokenValidation()
+            githubVm.initialize(context)
+            onDispose { githubVm.resetTokenValidation() }
         }
-        var useExistingRepo by remember(showGitHubConfigDialog) { mutableStateOf(false) }
-        var existingRepoName by remember(showGitHubConfigDialog) { mutableStateOf("") }
 
         val dismissConfigDialog = {
-            githubVm.clearMessages()
+            githubVm.resetTokenValidation()
             onShowGitHubConfigDialogChange(false)
         }
 
         MiuixSettingsDialog(
             onDismissRequest = dismissConfigDialog,
-            title = { Text(stringResource(R.string.sync_config)) },
+            title = { Text(stringResource(CoreCommonR.string.sync_config)) },
             text = {
                 Column(
                     modifier = Modifier
@@ -97,55 +152,52 @@ internal fun SettingsGitHubDialogs(
                 ) {
                     githubState.errorMessage?.let { error ->
                         MiuixSettingsInlineMessage(
-                            message = error,
+                            message = error.asString(),
                             isSuccess = false,
                             onClose = githubVm::clearMessages
                         )
                     }
                     githubState.successMessage?.let { message ->
                         MiuixSettingsInlineMessage(
-                            message = message,
+                            message = message.asString(),
                             isSuccess = true,
                             onClose = githubVm::clearMessages
                         )
                     }
                     Text(
-                        stringResource(R.string.sync_step1_token),
+                        stringResource(CoreCommonR.string.sync_step1_token),
                         style = MaterialTheme.typography.titleSmall
                     )
                     MiuixSettingsTextField(
                         value = githubToken,
-                        onValueChange = { githubToken = it },
-                        label = { Text(stringResource(R.string.settings_github_token_label)) },
-                        placeholder = { Text(stringResource(R.string.settings_github_token_placeholder)) },
+                        onValueChange = {
+                            githubToken = it
+                            githubVm.resetTokenValidation()
+                        },
+                        label = { Text(stringResource(CoreCommonR.string.settings_github_token_label)) },
+                        placeholder = { Text(stringResource(CoreCommonR.string.settings_github_token_placeholder)) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     Text(
-                        stringResource(R.string.settings_github_token_permission),
+                        stringResource(CoreCommonR.string.settings_github_token_permission),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     MiuixSettingsTextButton(
-                        onClick = {
-                            val intent = Intent(
-                                Intent.ACTION_VIEW,
-                                "https://github.com/settings/tokens/new?scopes=repo&description=NeriPlayer%20Backup".toUri()
-                            )
-                            context.startActivity(intent)
-                        }
+                        onClick = { openGitHubTokenCreationPage(context) }
                     ) {
-                        Text(stringResource(R.string.sync_create_token))
+                        Text(stringResource(CoreCommonR.string.sync_create_token))
                     }
 
-                    if (githubState.tokenValid) {
+                    if (githubState.tokenValid && !githubState.isConfigured) {
                         Text(
-                            stringResource(R.string.sync_step2_repo),
+                            stringResource(CoreCommonR.string.sync_step2_repo),
                             style = MaterialTheme.typography.titleSmall
                         )
 
                         MiuixSettingsChoiceRow(
-                            title = stringResource(R.string.sync_create_new_repo),
+                            title = stringResource(CoreCommonR.string.sync_create_new_repo),
                             selected = !useExistingRepo,
                             onClick = { useExistingRepo = false }
                         )
@@ -154,14 +206,14 @@ internal fun SettingsGitHubDialogs(
                             MiuixSettingsTextField(
                                 value = githubRepoName,
                                 onValueChange = { githubRepoName = it },
-                                label = { Text(stringResource(R.string.sync_repo_name)) },
+                                label = { Text(stringResource(CoreCommonR.string.sync_repo_name)) },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
 
                         MiuixSettingsChoiceRow(
-                            title = stringResource(R.string.sync_use_existing_repo),
+                            title = stringResource(CoreCommonR.string.sync_use_existing_repo),
                             selected = useExistingRepo,
                             onClick = { useExistingRepo = true }
                         )
@@ -170,8 +222,8 @@ internal fun SettingsGitHubDialogs(
                             MiuixSettingsTextField(
                                 value = existingRepoName,
                                 onValueChange = { existingRepoName = it },
-                                label = { Text(stringResource(R.string.sync_repo_full_name)) },
-                                placeholder = { Text(stringResource(R.string.settings_sync_repo_placeholder)) },
+                                label = { Text(stringResource(CoreCommonR.string.sync_repo_full_name)) },
+                                placeholder = { Text(stringResource(CoreCommonR.string.settings_sync_repo_placeholder)) },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -181,9 +233,9 @@ internal fun SettingsGitHubDialogs(
             },
             confirmButton = {
                 when {
-                    githubState.isConfigured -> {
+                    githubState.isConfigured && (githubToken.isBlank() || githubState.tokenValid) -> {
                         MiuixSettingsButton(onClick = dismissConfigDialog) {
-                            Text(stringResource(R.string.action_close))
+                            Text(stringResource(CoreCommonR.string.action_close))
                         }
                     }
                     !githubState.tokenValid -> {
@@ -198,7 +250,7 @@ internal fun SettingsGitHubDialogs(
                                 )
                                 Spacer(Modifier.width(8.dp))
                             }
-                            Text(stringResource(R.string.sync_verify_token))
+                            Text(stringResource(CoreCommonR.string.sync_verify_token))
                         }
                     }
                     else -> {
@@ -219,14 +271,14 @@ internal fun SettingsGitHubDialogs(
                                 )
                                 Spacer(Modifier.width(8.dp))
                             }
-                            Text(stringResource(R.string.action_done))
+                            Text(stringResource(CoreCommonR.string.action_done))
                         }
                     }
                 }
             },
             dismissButton = {
                 MiuixSettingsTextButton(onClick = dismissConfigDialog) {
-                    Text(stringResource(R.string.action_cancel))
+                    Text(stringResource(CoreCommonR.string.action_cancel))
                 }
             }
         )
@@ -235,8 +287,8 @@ internal fun SettingsGitHubDialogs(
     if (showClearGitHubConfigDialog) {
         MiuixSettingsDialog(
             onDismissRequest = { onShowClearGitHubConfigDialogChange(false) },
-            title = { Text(stringResource(R.string.sync_clear_config)) },
-            text = { Text(stringResource(R.string.sync_clear_config_desc)) },
+            title = { Text(stringResource(CoreCommonR.string.sync_clear_config)) },
+            text = { Text(stringResource(CoreCommonR.string.sync_clear_config_desc)) },
             confirmButton = {
                 MiuixSettingsTextButton(
                     onClick = {
@@ -245,14 +297,14 @@ internal fun SettingsGitHubDialogs(
                     }
                 ) {
                     Text(
-                        stringResource(R.string.action_confirm_clear),
+                        stringResource(CoreCommonR.string.action_confirm_clear),
                         color = MaterialTheme.colorScheme.error
                     )
                 }
             },
             dismissButton = {
                 MiuixSettingsTextButton(onClick = { onShowClearGitHubConfigDialogChange(false) }) {
-                    Text(stringResource(R.string.action_cancel))
+                    Text(stringResource(CoreCommonR.string.action_cancel))
                 }
             }
         )

@@ -23,10 +23,13 @@ package moe.ouom.neriplayer.ui.viewmodel.tab
  * Created: 2025/8/11
  */
 
+import moe.ouom.neriplayer.platform.youtube.api.auth.hasSavedAuthMaterial
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -34,24 +37,25 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.bili.BiliClient
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicLibraryPlaylist
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.bilibili.collection.FavFolder
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicLibraryPlaylist
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
-import moe.ouom.neriplayer.data.auth.youtube.buildRefreshObserverFingerprint
-import moe.ouom.neriplayer.data.platform.youtube.YouTubeFeatureGate
-import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
+import moe.ouom.neriplayer.platform.youtube.auth.buildRefreshObserverFingerprint
+import moe.ouom.neriplayer.platform.youtube.config.YouTubeFeatureGate
+import moe.ouom.neriplayer.data.model.playlist.LocalPlaylist
 import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
-import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistDeleteResult
+import moe.ouom.neriplayer.data.model.playlist.LocalPlaylistDeleteResult
 import moe.ouom.neriplayer.data.local.playlist.runLocalPlaylistMutationSafely
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.logging.NPLogger
+import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
 
 private const val BILI_DETAIL_BATCH_SIZE = 6
 private const val BILI_RESOURCE_TYPE_COLLECTION = 21
@@ -61,20 +65,15 @@ data class LibraryUiState(
     val localPlaylists: List<LocalPlaylist> = emptyList(),
     val neteasePlaylists: List<PlaylistSummary> = emptyList(),
     val neteaseAlbums: List<AlbumSummary> = emptyList(),
+    val neteaseLoggedIn: Boolean = false,
     val neteaseError: String? = null,
     val youtubeMusicPlaylists: List<YouTubeMusicPlaylist> = emptyList(),
     val youtubeMusicError: String? = null,
     val biliPlaylists: List<BiliPlaylist> = emptyList(),
     val biliError: String? = null,
-    val qqMusicPlaylists: List<PlaylistSummary> = emptyList(),
-    val qqMusicError: String? = null,
-    val qqMusicLoggedIn: Boolean = false,
-    val kugouPlaylists: List<PlaylistSummary> = emptyList(),
-    val kugouError: String? = null,
-    val kugouLoggedIn: Boolean = false,
-    val kuwoPlaylists: List<PlaylistSummary> = emptyList(),
-    val kuwoError: String? = null,
-    val kuwoLoggedIn: Boolean = false
+    val neteaseRefreshing: Boolean = false,
+    val youtubeMusicRefreshing: Boolean = false,
+    val biliRefreshing: Boolean = false
 )
 
 @Suppress("unused")
@@ -90,14 +89,43 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
 
 
     private val _uiState = MutableStateFlow(
-        LibraryUiState(localPlaylists = localRepo.playlists.value)
+        LibraryUiState(
+            localPlaylists = localRepo.playlists.value,
+            neteaseLoggedIn = neteaseCookieRepo.getCookiesOnce()["MUSIC_U"]
+                ?.takeIf { it.isNotBlank() } != null
+        )
     )
     val uiState: StateFlow<LibraryUiState> = _uiState
     private var lastYouTubeAuthFingerprint: String? = null
-    private var youtubeMusicPlaylistsJob: Job? = null
-    private var youtubeMusicPlaylistsPending = false
     private var youtubeEnabled = YouTubeFeatureGate.isEnabled()
     private var lastObservedYouTubeEnabled: Boolean? = null
+    private val neteaseRefreshOwner = LibraryNeteaseRefreshOwner(
+        scope = viewModelScope,
+        state = _uiState,
+        loadUserId = { withContext(Dispatchers.IO) { neteaseClient.getCurrentUserId() } },
+        loadPlaylists = { userId ->
+            withContext(Dispatchers.IO) {
+                parseNeteaseLibraryPlaylists(neteaseClient.getUserPlaylists(userId))
+            }
+        },
+        loadAlbums = { userId ->
+            withContext(Dispatchers.IO) {
+                parseNeteaseLibraryAlbums(neteaseClient.getUserStaredAlbums(userId))
+            }
+        }
+    )
+    private val biliRefreshOwner = LibraryBilibiliRefreshOwner(
+        scope = viewModelScope,
+        state = _uiState,
+        currentCookies = biliCookieRepo::getCookiesOnce,
+        load = ::loadBilibiliPlaylists
+    )
+    private val youtubeRefreshOwner = LibraryYouTubeRefreshOwner(
+        scope = viewModelScope,
+        state = _uiState,
+        isEnabled = { youtubeEnabled },
+        load = ::loadYouTubeMusicPlaylists
+    )
 
     init {
         // 本地歌单
@@ -108,33 +136,29 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
-        // 网易云 歌单
+        // 网易云歌单和专辑共用一次刷新，避免各自提前结束 loading
         viewModelScope.launch {
+            var observedSession: String? = null
             neteaseCookieRepo.cookieFlow.collect { cookies ->
-                val mutable = cookies.toMutableMap()
-                mutable.putIfAbsent("os", "pc")
-                if (!cookies["MUSIC_U"].isNullOrBlank()) {
-                    refreshNeteasePlaylists()
-                } else {
-                    _uiState.value = _uiState.value.copy(
-                        neteasePlaylists = emptyList(),
-                        neteaseError = null
-                    )
+                val nextSession = cookies["MUSIC_U"]?.takeIf { it.isNotBlank() }
+                val loggedIn = nextSession != null
+                if (_uiState.value.neteaseLoggedIn != loggedIn) {
+                    _uiState.update { it.copy(neteaseLoggedIn = loggedIn) }
                 }
-            }
-        }
-        // 网易云 专辑
-        viewModelScope.launch {
-            neteaseCookieRepo.cookieFlow.collect { cookies ->
-                val mutable = cookies.toMutableMap()
-                mutable.putIfAbsent("os", "pc")
-                if (!cookies["MUSIC_U"].isNullOrBlank()) {
-                    refreshNeteaseAlbums()
+                if (nextSession != observedSession || nextSession == null) {
+                    neteaseRefreshOwner.cancel()
+                }
+                observedSession = nextSession
+                if (nextSession != null) {
+                    refreshNeteaseLibrary()
                 } else {
-                    _uiState.value = _uiState.value.copy(
-                        neteaseAlbums = emptyList(),
-                        neteaseError = null
-                    )
+                    _uiState.update {
+                        it.copy(
+                            neteasePlaylists = emptyList(),
+                            neteaseAlbums = emptyList(),
+                            neteaseError = null
+                        )
+                    }
                 }
             }
         }
@@ -157,13 +181,9 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 lastYouTubeAuthFingerprint = nextFingerprint
                 lastObservedYouTubeEnabled = enabled
                 if (!enabled || !bundle.hasYouTubeMusicCookieContext()) {
-                    youtubeMusicPlaylistsJob?.cancel()
-                    youtubeMusicPlaylistsJob = null
-                    youtubeMusicPlaylistsPending = false
-                    _uiState.value = _uiState.value.copy(
-                        youtubeMusicPlaylists = emptyList(),
-                        youtubeMusicError = null
-                    )
+                    youtubeRefreshOwner.clear()
+                } else if (authChanged) {
+                    youtubeRefreshOwner.onSessionChanged()
                 } else {
                     refreshYouTubeMusicPlaylists()
                 }
@@ -176,87 +196,67 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
                 if (!cookies["SESSDATA"].isNullOrBlank()) {
                     refreshBilibili()
                 } else {
-                    _uiState.value = _uiState.value.copy(
-                        biliPlaylists = emptyList(),
-                        biliError = null
-                    )
+                    biliRefreshOwner.clear()
                 }
-            }
-        }
-
-        // QQ音乐: 登录态变化时刷新(登录显示"我的歌单", 退出显示热门歌单)
-        viewModelScope.launch {
-            AppContainer.qqCookieRepo.authHealthFlow.collect { health ->
-                refreshQqMusicPlaylists()
-            }
-        }
-
-        // 酷狗音乐
-        viewModelScope.launch {
-            AppContainer.kugouCookieRepo.cookieFlow.collect { cookies ->
-                refreshKugouPlaylists()
-            }
-        }
-
-        // 酷我音乐
-        viewModelScope.launch {
-            AppContainer.kuwoCookieRepo.cookieFlow.collect { cookies ->
-                refreshKuwoPlaylists()
             }
         }
     }
 
     fun refreshBilibili() {
-        viewModelScope.launch {
-            try {
-                val mid = biliCookieRepo.getCookiesOnce()["DedeUserID"]?.toLongOrNull() ?: 0L
-                if (mid == 0L) {
-                    _uiState.value = _uiState.value.copy(biliError = getApplication<Application>().getString(R.string.error_get_user_id))
-                    return@launch
-                }
-                val mapped = withContext(Dispatchers.IO) {
-                    val created = async { biliClient.getUserCreatedFavFolders(mid) }
-                    val collected = async {
-                        runCatching { biliClient.getUserCollectedFavFolders(mid) }
-                            .onFailure { error ->
-                                NPLogger.w(
-                                    "LibraryViewModel-Bili",
-                                    "Failed to fetch collected fav folders",
-                                    error
-                                )
-                            }
-                            .getOrDefault(emptyList())
-                    }
+        biliRefreshOwner.refresh()
+    }
 
-                    val createdPlaylists = mapBiliFolders(
-                        folders = created.await(),
-                        kind = BiliPlaylistKind.CREATED_FAVORITE,
-                        currentMid = mid
-                    )
-                    val collectedPlaylists = mapBiliFolders(
-                        folders = collected.await(),
-                        kind = BiliPlaylistKind.COLLECTED_FAVORITE,
-                        currentMid = mid
-                    )
-
-                    (createdPlaylists + collectedPlaylists)
-                        .filter { it.mediaId != 0L && it.title.isNotBlank() }
-                        .distinctBy { "${it.kind}:${it.mediaId}" }
-                }
-
-                NPLogger.d("LibraryViewModel-Bili", mapped)
-
-                _uiState.value = _uiState.value.copy(biliPlaylists = mapped, biliError = null)
-            } catch (e: IOException) {
-                _uiState.value = _uiState.value.copy(biliError = e.message)
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(biliError = e.message)
+    private suspend fun loadBilibiliPlaylists(cookies: Map<String, String>): LibraryBilibiliLoadResult {
+        val account = resolveLibraryBiliMid(
+            cookies = cookies,
+            fetchLoginMid = biliClient::fetchLoginMid,
+            saveUserMid = biliCookieRepo::saveUserMid
+        )
+        val mid = when (account) {
+            is LibraryBiliMid.Ready -> account.mid
+            LibraryBiliMid.Persisted, LibraryBiliMid.Superseded -> return LibraryBilibiliLoadResult.Unchanged
+            LibraryBiliMid.Missing -> {
+                return LibraryBilibiliLoadResult.Failed(
+                    getApplication<Application>().getString(CoreCommonR.string.error_get_user_id)
+                )
             }
         }
+        val mapped = withContext(Dispatchers.IO) {
+            val created = async { biliClient.getUserCreatedFavFolders(mid) }
+            val collected = async {
+                runCatching { biliClient.getUserCollectedFavFolders(mid) }
+                    .onFailure { error ->
+                        NPLogger.w(
+                            "LibraryViewModel-Bili",
+                            "Failed to fetch collected fav folders",
+                            error
+                        )
+                    }
+                    .getOrDefault(emptyList())
+            }
+
+            val createdPlaylists = mapBiliFolders(
+                folders = created.await(),
+                kind = BiliPlaylistKind.CREATED_FAVORITE,
+                currentMid = mid
+            )
+            val collectedPlaylists = mapBiliFolders(
+                folders = collected.await(),
+                kind = BiliPlaylistKind.COLLECTED_FAVORITE,
+                currentMid = mid
+            )
+
+            (createdPlaylists + collectedPlaylists)
+                .filter { it.mediaId != 0L && it.title.isNotBlank() }
+                .distinctBy { "${it.kind}:${it.mediaId}" }
+        }
+
+        NPLogger.d("LibraryViewModel-Bili", mapped)
+        return LibraryBilibiliLoadResult.Loaded(mapped)
     }
 
     private suspend fun mapBiliFolders(
-        folders: List<BiliClient.FavFolder>,
+        folders: List<FavFolder>,
         kind: BiliPlaylistKind,
         currentMid: Long
     ): List<BiliPlaylist> = coroutineScope {
@@ -266,277 +266,43 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             .flatMap { batch ->
                 batch.map { folder ->
                     async(Dispatchers.IO) {
-                        mapBiliFolder(folder, kind, currentMid)
+                        mapLibraryBiliFolder(
+                            folder = folder,
+                            kind = kind,
+                            currentMid = currentMid,
+                            onDetailFailure = ::logBiliFolderDetailFailure,
+                            loadDetail = biliClient::getFavFolderInfo
+                        )
                     }
                 }.awaitAll()
             }
             .filterNotNull()
     }
 
-    private suspend fun mapBiliFolder(
-        folder: BiliClient.FavFolder,
-        kind: BiliPlaylistKind,
-        currentMid: Long
-    ): BiliPlaylist? {
-        val resolvedKind = when {
-            folder.itemType == BILI_RESOURCE_TYPE_COLLECTION -> BiliPlaylistKind.COLLECTION
-            else -> kind
-        }
-
-        val detail = if (resolvedKind == BiliPlaylistKind.COLLECTION) {
-            null
-        } else {
-            runCatching { biliClient.getFavFolderInfo(folder.mediaId) }
-                .onFailure { error ->
-                    NPLogger.e(
-                        "LibraryViewModel-Bili",
-                        getApplication<Application>().getString(R.string.music_get_detail_failed),
-                        error
-                    )
-                }
-                .getOrNull()
-        }
-        val source = detail ?: folder
-        val ownerLabel = source.upperName.ifBlank {
-            if (source.mid != 0L && source.mid != currentMid) source.mid.toString() else ""
-        }
-
-        return BiliPlaylist(
-            mediaId = source.mediaId,
-            fid = source.fid,
-            mid = source.mid,
-            title = source.title.takeIf { it.isNotBlank() } ?: return null,
-            count = source.count,
-            coverUrl = source.coverUrl.replace("http://", "https://"),
-            kind = resolvedKind,
-            subtitle = ownerLabel
+    private fun logBiliFolderDetailFailure(error: Throwable) {
+        NPLogger.e(
+            "LibraryViewModel-Bili",
+            getApplication<Application>().getString(CoreCommonR.string.music_get_detail_failed),
+            error
         )
     }
 
 
-    fun refreshNeteasePlaylists() {
-        viewModelScope.launch {
-            try {
-                val uid = withContext(Dispatchers.IO) { neteaseClient.getCurrentUserId() }
-                val raw = withContext(Dispatchers.IO) { neteaseClient.getUserPlaylists(uid) }
-                val mapped = parseNeteasePlaylists(raw)
-                _uiState.value = _uiState.value.copy(
-                    neteasePlaylists = mapped,
-                    neteaseError = null
-                )
-            } catch (e: IOException) {
-                _uiState.value = _uiState.value.copy(neteaseError = e.message)
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(neteaseError = e.message)
-            }
-        }
-    }
-    
-    fun refreshNeteaseAlbums() {
-        viewModelScope.launch {
-            try {
-                val uid = withContext(Dispatchers.IO) { neteaseClient.getCurrentUserId() }
-                val raw = withContext(Dispatchers.IO) { neteaseClient.getUserStaredAlbums(uid) }
-                val mapped = parseNeteaseAlbums(raw)
-                _uiState.value = _uiState.value.copy(
-                    neteaseAlbums = mapped,
-                    neteaseError = null
-                )
-            } catch (e: IOException) {
-                _uiState.value = _uiState.value.copy(neteaseError = e.message)
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(neteaseError = e.message)
-            }
-        }
-    }
-
-    fun refreshQqMusicPlaylists() {
-        viewModelScope.launch {
-            try {
-                val qqCookies = AppContainer.qqCookieRepo.getCookiesOnce()
-                val qqUin = qqCookies["uin"]?.trim().orEmpty()
-                val loggedIn = AppContainer.qqCookieRepo.getAuthHealthOnce().state ==
-                    SavedCookieAuthState.Valid && qqUin.isNotBlank()
-                val playlists = withContext(Dispatchers.IO) {
-                    if (loggedIn) {
-                        // 已登录: 优先"我的歌单"; 失败或为空时回退热门歌单, 避免空白
-                        val mine = runCatching {
-                            AppContainer.qqMusicApi.getUserPlaylists(qqUin, num = 30)
-                        }.getOrElse { error ->
-                            NPLogger.w("LibraryViewModel", "QQ 我的歌单加载失败: ${error.message}")
-                            emptyList()
-                        }
-                        if (mine.isNotEmpty()) {
-                            mine
-                        } else {
-                            NPLogger.w("LibraryViewModel", "QQ 我的歌单为空, 回退热门歌单")
-                            AppContainer.qqMusicApi.getHotPlaylists(count = 50)
-                        }
-                    } else {
-                        AppContainer.qqMusicApi.getHotPlaylists(count = 50)
-                    }
-                }
-                _uiState.value = _uiState.value.copy(
-                    qqMusicPlaylists = playlists.map { summary ->
-                        PlaylistSummary(
-                            id = summary.dissId,
-                            name = summary.title,
-                            picUrl = summary.picUrl.orEmpty(),
-                            playCount = summary.listenCount,
-                            trackCount = summary.songCount,
-                            source = "qq"
-                        )
-                    },
-                    qqMusicLoggedIn = loggedIn,
-                    qqMusicError = null
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    qqMusicError = e.message
-                )
-            }
-        }
-    }
-
-    fun refreshKugouPlaylists() {
-        viewModelScope.launch {
-            try {
-                val cookies = AppContainer.kugouCookieRepo.getCookiesOnce()
-                val loggedIn = cookies.isNotEmpty()
-                val playlists = withContext(Dispatchers.IO) {
-                    if (loggedIn) {
-                        val mine = runCatching {
-                            AppContainer.kugouApi.getUserPlaylists(
-                                cookies["openid"]?.takeIf { it.isNotBlank() }
-                                    ?: cookies["userid"].orEmpty()
-                            )
-                        }.getOrElse { error ->
-                            NPLogger.w("LibraryViewModel", "酷狗我的歌单加载失败: ${error.message}")
-                            emptyList()
-                        }
-                        if (mine.isNotEmpty()) {
-                            mine
-                        } else {
-                            AppContainer.kugouApi.getHotPlaylists(count = 30)
-                        }
-                    } else {
-                        AppContainer.kugouApi.getHotPlaylists(count = 30)
-                    }
-                }
-                _uiState.value = _uiState.value.copy(
-                    kugouPlaylists = playlists.map { summary ->
-                        PlaylistSummary(
-                            id = summary.specialId,
-                            name = summary.title,
-                            picUrl = summary.picUrl.orEmpty(),
-                            playCount = summary.listenCount,
-                            trackCount = summary.songCount,
-                            source = "kugou"
-                        )
-                    },
-                    kugouLoggedIn = loggedIn,
-                    kugouError = null
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(kugouError = e.message)
-            }
-        }
-    }
-
-    fun refreshKuwoPlaylists() {
-        viewModelScope.launch {
-            try {
-                val cookies = AppContainer.kuwoCookieRepo.getCookiesOnce()
-                val loggedIn = cookies.isNotEmpty()
-                val playlists = withContext(Dispatchers.IO) {
-                    if (loggedIn) {
-                        val mine = runCatching {
-                            AppContainer.kuwoApi.getUserPlaylists(
-                                cookies["kwpp_userid"]?.takeIf { it.isNotBlank() }
-                                    ?: cookies["uid"].orEmpty()
-                            )
-                        }.getOrElse { error ->
-                            NPLogger.w("LibraryViewModel", "酷我我的歌单加载失败: ${error.message}")
-                            emptyList()
-                        }
-                        if (mine.isNotEmpty()) {
-                            mine
-                        } else {
-                            AppContainer.kuwoApi.getHotPlaylists(count = 30)
-                        }
-                    } else {
-                        AppContainer.kuwoApi.getHotPlaylists(count = 30)
-                    }
-                }
-                _uiState.value = _uiState.value.copy(
-                    kuwoPlaylists = playlists.map { summary ->
-                        PlaylistSummary(
-                            id = summary.playlistId,
-                            name = summary.title,
-                            picUrl = summary.picUrl.orEmpty(),
-                            playCount = summary.listenCount,
-                            trackCount = summary.songCount,
-                            source = "kuwo"
-                        )
-                    },
-                    kuwoLoggedIn = loggedIn,
-                    kuwoError = null
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(kuwoError = e.message)
-            }
-        }
+    fun refreshNeteaseLibrary() {
+        neteaseRefreshOwner.refresh()
     }
 
     fun refreshYouTubeMusicPlaylists() {
-        if (!youtubeEnabled) return
-        val runningJob = youtubeMusicPlaylistsJob
-        if (runningJob?.isActive == true) {
-            youtubeMusicPlaylistsPending = true
-            NPLogger.d("LibraryViewModel", "refreshYouTubeMusicPlaylists coalesced while loading")
-            return
+        youtubeRefreshOwner.refresh()
+    }
+
+    private suspend fun loadYouTubeMusicPlaylists(): List<YouTubeMusicPlaylist> {
+        val playlists = withContext(Dispatchers.IO) {
+            AppContainer.youtubeMusicClient.getLibraryPlaylists(
+                resolveMissingTrackCounts = false
+            )
         }
-        youtubeMusicPlaylistsPending = false
-        youtubeMusicPlaylistsJob = viewModelScope.launch {
-            try {
-                val playlists = withContext(Dispatchers.IO) {
-                    AppContainer.youtubeMusicClient.getLibraryPlaylists(
-                        resolveMissingTrackCounts = false
-                    )
-                }
-                _uiState.value = _uiState.value.copy(
-                    youtubeMusicPlaylists = playlists.map(::mapYouTubeMusicPlaylist),
-                    youtubeMusicError = null
-                )
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: IOException) {
-                _uiState.value = _uiState.value.copy(
-                    youtubeMusicPlaylists = emptyList(),
-                    youtubeMusicError = e.message
-                )
-            } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    youtubeMusicPlaylists = emptyList(),
-                    youtubeMusicError = e.message
-                )
-            } finally {
-                val completedJob = coroutineContext[Job]
-                if (youtubeMusicPlaylistsJob === completedJob) {
-                    youtubeMusicPlaylistsJob = null
-                    if (youtubeMusicPlaylistsPending && youtubeEnabled) {
-                        youtubeMusicPlaylistsPending = false
-                        refreshYouTubeMusicPlaylists()
-                    }
-                }
-            }
-        }
+        return playlists.map(::mapYouTubeMusicPlaylist)
     }
 
     fun createLocalPlaylist(name: String) {
@@ -586,46 +352,7 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    private fun parseNeteasePlaylists(raw: String): List<PlaylistSummary> {
-        val result = mutableListOf<PlaylistSummary>()
-        val root = JSONObject(raw)
-        if (root.optInt("code", -1) != 200) return emptyList()
-        val arr = root.optJSONArray("playlist") ?: return emptyList()
-        val size = arr.length()
-        for (i in 0 until size) {
-            val obj = arr.optJSONObject(i) ?: continue
-            val id = obj.optLong("id", 0L)
-            val name = obj.optString("name", "")
-            val cover = obj.optString("coverImgUrl", "").replaceFirst("http://", "https://")
-            val playCount = obj.optLong("playCount", 0L)
-            val trackCount = obj.optInt("trackCount", 0)
-            if (id != 0L && name.isNotBlank()) {
-                result.add(PlaylistSummary(id, name, cover, playCount, trackCount))
-            }
-        }
-        return result
-    }
-    
-    private fun parseNeteaseAlbums(raw: String): List<AlbumSummary> {
-        val result = mutableListOf<AlbumSummary>()
-        val root = JSONObject(raw)
-        if (root.optInt("code", -1) != 200) return emptyList()
-        val arr = root.optJSONArray("playlist") ?: return emptyList()
-        val size = arr.length()
-        for (i in 0 until size) {
-            val obj = arr.optJSONObject(i)?.optJSONObject("dataInfo")?.optJSONObject("data") ?: continue
-            val id = obj.optLong("id", 0L)
-            val name = obj.optString("name", "")
-            val cover = arr.optJSONObject(i)?.optJSONObject("dataInfo")?.optString("picUrl", "")?.replaceFirst("http://", "https://") ?: continue
-            val songSize = obj.optInt("size", 0)
-            if (id != 0L && name.isNotBlank()) {
-                result.add(AlbumSummary(id, name, cover, songSize))
-            }
-        }
-        return result
-    }
-
-    private fun moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthBundle.hasYouTubeMusicCookieContext(): Boolean {
+    private fun moe.ouom.neriplayer.data.model.youtube.auth.YouTubeAuthBundle.hasYouTubeMusicCookieContext(): Boolean {
         return hasSavedAuthMaterial()
     }
 
@@ -641,4 +368,156 @@ class LibraryViewModel(application: Application) : AndroidViewModel(application)
             trackCount = playlist.trackCount ?: 0
         )
     }
+}
+
+internal class LibraryNeteaseRefreshOwner(
+    private val scope: CoroutineScope,
+    private val state: MutableStateFlow<LibraryUiState>,
+    private val loadUserId: suspend () -> Long,
+    private val loadPlaylists: suspend (Long) -> List<PlaylistSummary>,
+    private val loadAlbums: suspend (Long) -> List<AlbumSummary>
+) {
+    private var refreshJob: Job? = null
+
+    fun refresh() {
+        if (refreshJob?.isActive == true || !scope.isActive) return
+        state.update { it.copy(neteaseRefreshing = true) }
+        val nextJob = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val userId = loadUserId()
+                coroutineScope {
+                    val playlists = async { loadResult { loadPlaylists(userId) } }
+                    val albums = async { loadResult { loadAlbums(userId) } }
+                    val playlistResult = playlists.await()
+                    val albumResult = albums.await()
+                    state.update {
+                        it.copy(
+                            neteasePlaylists = playlistResult.getOrDefault(it.neteasePlaylists),
+                            neteaseAlbums = albumResult.getOrDefault(it.neteaseAlbums),
+                            neteaseError = playlistResult.exceptionOrNull()?.message
+                                ?: albumResult.exceptionOrNull()?.message
+                        )
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                state.update { it.copy(neteaseError = error.message) }
+            } finally {
+                if (refreshJob === coroutineContext[Job]) {
+                    refreshJob = null
+                    state.update { it.copy(neteaseRefreshing = false) }
+                }
+            }
+        }
+        refreshJob = nextJob
+        nextJob.start()
+    }
+
+    fun cancel() {
+        val previousJob = refreshJob
+        refreshJob = null
+        previousJob?.cancel()
+        state.update { it.copy(neteaseRefreshing = false) }
+    }
+
+    private suspend fun <T> loadResult(load: suspend () -> T): Result<T> = try {
+        Result.success(load())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        Result.failure(error)
+    }
+}
+
+/** 合集不需要再请求收藏夹详情, 详情请求失败时退回列表里的摘要 */
+internal suspend fun mapLibraryBiliFolder(
+    folder: FavFolder,
+    kind: BiliPlaylistKind,
+    currentMid: Long,
+    onDetailFailure: (Throwable) -> Unit,
+    loadDetail: suspend (mediaId: Long) -> FavFolder?
+): BiliPlaylist? {
+    val resolvedKind = if (folder.itemType == BILI_RESOURCE_TYPE_COLLECTION) BiliPlaylistKind.COLLECTION else kind
+    val detail = if (resolvedKind == BiliPlaylistKind.COLLECTION) {
+        null
+    } else {
+        loadLibraryBiliFolderDetail(folder.mediaId, onDetailFailure, loadDetail)
+    }
+    val source = detail ?: folder
+    val title = source.title.takeIf { it.isNotBlank() } ?: return null
+    return BiliPlaylist(
+        mediaId = source.mediaId,
+        fid = source.fid,
+        mid = source.mid,
+        title = title,
+        count = source.count,
+        coverUrl = source.coverUrl.replace("http://", "https://"),
+        kind = resolvedKind,
+        subtitle = source.libraryOwnerLabel(currentMid)
+    )
+}
+
+/** 详情只用于补全列表字段, 失败时记录日志并回退到列表数据 */
+private suspend fun loadLibraryBiliFolderDetail(
+    mediaId: Long,
+    onFailure: (Throwable) -> Unit,
+    loadDetail: suspend (mediaId: Long) -> FavFolder?
+): FavFolder? {
+    return runCatching { loadDetail(mediaId) }
+        .onFailure(onFailure)
+        .getOrNull()
+}
+
+private fun FavFolder.libraryOwnerLabel(currentMid: Long): String {
+    return upperName.ifBlank {
+        if (mid != 0L && mid != currentMid) mid.toString() else ""
+    }
+}
+
+internal fun parseNeteaseLibraryPlaylists(raw: String): List<PlaylistSummary> {
+    val items = neteaseLibraryItems(raw) ?: return emptyList()
+    return (0 until items.length()).mapNotNull { index ->
+        items.optJSONObject(index)?.toNeteaseLibraryPlaylist()
+    }
+}
+
+internal fun parseNeteaseLibraryAlbums(raw: String): List<AlbumSummary> {
+    val items = neteaseLibraryItems(raw) ?: return emptyList()
+    return (0 until items.length()).mapNotNull { index ->
+        items.optJSONObject(index)?.toNeteaseLibraryAlbum()
+    }
+}
+
+private fun neteaseLibraryItems(raw: String): JSONArray? {
+    val root = JSONObject(raw)
+    if (root.optInt("code", -1) != 200) return null
+    return root.optJSONArray("playlist")
+}
+
+private fun JSONObject.toNeteaseLibraryPlaylist(): PlaylistSummary? {
+    val id = optLong("id", 0L)
+    val name = optString("name", "")
+    if (id == 0L || name.isBlank()) return null
+    return PlaylistSummary(
+        id,
+        name,
+        optString("coverImgUrl", "").replaceFirst("http://", "https://"),
+        optLong("playCount", 0L),
+        optInt("trackCount", 0)
+    )
+}
+
+private fun JSONObject.toNeteaseLibraryAlbum(): AlbumSummary? {
+    val dataInfo = optJSONObject("dataInfo") ?: return null
+    val album = dataInfo.optJSONObject("data") ?: return null
+    val id = album.optLong("id", 0L)
+    val name = album.optString("name", "")
+    if (id == 0L || name.isBlank()) return null
+    return AlbumSummary(
+        id,
+        name,
+        dataInfo.optString("picUrl", "").replaceFirst("http://", "https://"),
+        album.optInt("size", 0)
+    )
 }

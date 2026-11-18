@@ -40,11 +40,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.enableEdgeToEdge
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
@@ -53,16 +50,18 @@ import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.color.MaterialColors
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.launch
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.data.auth.web.ForegroundWebLoginGuard
+import moe.ouom.neriplayer.network.weblogin.ForegroundWebLoginGuard
 import moe.ouom.neriplayer.data.auth.web.clearWebViewLoginState
 import moe.ouom.neriplayer.data.auth.web.normalizeNeteaseWebLoginCookies
 import moe.ouom.neriplayer.data.auth.web.shouldAutoCompleteNeteaseWebLogin
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.logging.NPLogger
 import moe.ouom.neriplayer.ui.feedback.showNeriViewSnackbar
-import moe.ouom.neriplayer.util.network.hostMatchesAnyDomain
-import moe.ouom.neriplayer.util.network.isAllowedMainFrameRequest
+import moe.ouom.neriplayer.network.security.hostMatchesAnyDomain
+import moe.ouom.neriplayer.network.security.isAllowedMainFrameRequest
 import moe.ouom.neriplayer.util.platform.lockPortraitIfPhone
+import moe.ouom.neriplayer.activity.enableNeriEdgeToEdge
 
 class NeteaseWebLoginActivity : ComponentActivity() {
 
@@ -77,6 +76,10 @@ class NeteaseWebLoginActivity : ComponentActivity() {
     }
 
     private lateinit var webView: WebView
+    private val webBackNavigation = WebLoginBackNavigation(
+        canGoBack = { this::webView.isInitialized && webView.canGoBack() },
+        goBack = { webView.goBack() }
+    )
     private lateinit var toolbar: MaterialToolbar
     private var foregroundWebLoginToken: AutoCloseable? = null
     private var hasReturned = false
@@ -86,9 +89,9 @@ class NeteaseWebLoginActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (finishIfWebViewUnavailable()) return
         lockPortraitIfPhone()
-        enableEdgeToEdge()
-        WindowCompat.setDecorFitsSystemWindows(window, false)
+        enableNeriEdgeToEdge()
         foregroundWebLoginToken = ForegroundWebLoginGuard.enter("netease")
         val webLoginSettings = resolveNeteaseWebLoginWebSettings(
             smallestScreenWidthDp = resources.configuration.smallestScreenWidthDp,
@@ -120,7 +123,7 @@ class NeteaseWebLoginActivity : ComponentActivity() {
             )
         }
         toolbar = MaterialToolbar(this).apply {
-            title = getString(R.string.netease_web_login)
+            title = getString(CoreCommonR.string.netease_web_login)
             setNavigationIcon(R.drawable.ic_arrow_back_24)
             setNavigationOnClickListener { finish() }
             inflateMenu(R.menu.menu_netease_web_login)
@@ -171,18 +174,7 @@ class NeteaseWebLoginActivity : ComponentActivity() {
             insets
         }
 
-        onBackPressedDispatcher.addCallback(
-            this,
-            object : OnBackPressedCallback(true) {
-                override fun handleOnBackPressed() {
-                    if (this@NeteaseWebLoginActivity::webView.isInitialized && webView.canGoBack()) {
-                        webView.goBack()
-                    } else {
-                        finish()
-                    }
-                }
-            }
-        )
+        onBackPressedDispatcher.addCallback(this, webBackNavigation.callback)
 
         lifecycleScope.launch {
             // 登录页位于独立进程，打开时先清掉上一次的浏览器会话
@@ -241,7 +233,7 @@ class NeteaseWebLoginActivity : ComponentActivity() {
             if (map.isEmpty()) {
                 showNeriViewSnackbar(
                     webView,
-                    getString(R.string.snackbar_cookie_empty),
+                    getString(CoreCommonR.string.snackbar_cookie_empty),
                     Snackbar.LENGTH_SHORT
                 )
                 return
@@ -253,7 +245,7 @@ class NeteaseWebLoginActivity : ComponentActivity() {
         } catch (e: Throwable) {
             showNeriViewSnackbar(
                 webView,
-                getString(R.string.snackbar_read_failed, e.message ?: e.javaClass.simpleName),
+                getString(CoreCommonR.string.snackbar_read_failed, e.message ?: e.javaClass.simpleName),
                 Snackbar.LENGTH_LONG
             )
         }
@@ -289,6 +281,11 @@ class NeteaseWebLoginActivity : ComponentActivity() {
     }
 
     private inner class InnerClient : WebViewClient() {
+        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+            super.doUpdateVisitedHistory(view, url, isReload)
+            webBackNavigation.refresh()
+        }
+
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val currentRequest = request ?: return false
             val uri = currentRequest.url

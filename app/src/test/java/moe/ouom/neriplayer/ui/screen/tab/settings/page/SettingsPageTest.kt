@@ -1,11 +1,11 @@
 package moe.ouom.neriplayer.ui.screen.tab.settings.page
 
-import android.content.Context
+import android.content.res.Resources
 import moe.ouom.neriplayer.data.settings.AutoSettingsSchema
 import moe.ouom.neriplayer.data.settings.generated.AutoSettingsMetadata
 import moe.ouom.neriplayer.data.settings.generated.AutoSettingsSections
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.util.search.SearchTextMatcher
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.common.search.SearchTextMatcher
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -15,6 +15,17 @@ import org.mockito.Mockito
 import org.mockito.stubbing.Answer
 
 class SettingsPageTest {
+    @Test
+    fun colorOsLyricsSearchOpensExternalLyricsConfigurationCard() {
+        val setting = AutoSettingsMetadata.settings.first {
+            it.keyName == "coloros_lockscreen_lyrics_enabled"
+        }
+        assertEquals(SettingsPage.ExternalLyrics, setting.settingsPage())
+        assertEquals("setting:coloros_lockscreen_lyrics_enabled", setting.searchTargetId())
+        assertEquals(2, settingsSearchScrollAnchor(SettingsPage.ExternalLyrics, setting.searchTargetId()).itemIndex)
+        assertTrue(setting.searchTokens("", "").any { it.equals("shizuku", ignoreCase = true) })
+    }
+
     @Test
     fun settingsHomePageGroupsDoNotCaptureNullDuringEnumInitialization() {
         @Suppress("UNCHECKED_CAST")
@@ -34,16 +45,35 @@ class SettingsPageTest {
     }
 
     @Test
-    fun usbExclusiveBackTargetReturnsPlaybackPage() {
-        assertEquals(SettingsPage.Playback, SettingsPage.UsbExclusive.backTargetPage())
+    fun usbExclusiveIsATopLevelPageInThePlaybackGroup() {
+        assertEquals(null, SettingsPage.UsbExclusive.backTargetPage())
         assertEquals(null, SettingsPage.Playback.backTargetPage())
+        assertTrue(SettingsHomePageGroups.first { SettingsPage.Playback in it }.contains(SettingsPage.UsbExclusive))
     }
-
     @Test
     fun displaySectionSettingsOpenPersonalizationPage() {
         assertEquals(SettingsPage.Personalization, settingsPageForSection(AutoSettingsSections.display))
     }
 
+    @Test
+    fun lyricSourceSettingsOpenPreferenceCardWithinLyricsPage() {
+        assertEquals(SettingsPage.Lyrics, settingsPageForSection(AutoSettingsSections.lyricSource))
+        assertEquals(
+            2,
+            settingsSearchScrollAnchor(SettingsPage.Lyrics, "setting:prefer_word_timed_lyrics").itemIndex
+        )
+        assertEquals(
+            2,
+            settingsSearchScrollAnchor(SettingsPage.Lyrics, "setting:default_lyric_source").itemIndex
+        )
+        assertEquals(
+            3,
+            settingsSearchScrollAnchor(
+                SettingsPage.Lyrics,
+                "setting:cloud_music_lyric_default_offset_ms"
+            ).itemIndex
+        )
+    }
     @Test
     fun lyricAppearanceSettingsOpenLyricsPage() {
         listOf(
@@ -68,34 +98,47 @@ class SettingsPageTest {
     }
 
     @Test
-    fun themePersonalizationAndMotionStayInOneHomeGroup() {
+    fun accountSearchTargetsUseTheSinglePlatformCardsItem() {
+        listOf("page:Accounts", "manual:netease_login", "manual:bili_login", "manual:youtube_login")
+            .forEach { target ->
+                assertEquals(0, settingsSearchScrollAnchor(SettingsPage.Accounts, target).itemIndex)
+            }
+    }
+
+    @Test
+    fun appearancePagesStayInOneHomeGroup() {
         val visualGroup = SettingsHomePageGroups.first {
             SettingsPage.Theme in it
         }
 
         assertEquals(
-            listOf(SettingsPage.Theme, SettingsPage.Personalization, SettingsPage.Motion),
+            listOf(
+                SettingsPage.Theme,
+                SettingsPage.NowPlaying,
+                SettingsPage.Background,
+                SettingsPage.Personalization,
+                SettingsPage.Motion
+            ),
             visualGroup
         )
     }
-
     @Test
     fun homeCardSettingsUseConcreteTitlesForSearch() {
         fun titleRes(keyName: String): Int {
             return AutoSettingsMetadata.settings.first { it.keyName == keyName }.titleRes
         }
 
-        assertEquals(R.string.player_continue, titleRes("home_card_continue"))
+        assertEquals(CoreCommonR.string.player_continue, titleRes("home_card_continue"))
         assertEquals(
-            R.string.settings_home_card_netease_trending,
+            CoreCommonR.string.settings_home_card_netease_trending,
             titleRes("home_card_trending")
         )
         assertEquals(
-            R.string.settings_home_card_netease_radar,
+            CoreCommonR.string.settings_home_card_netease_radar,
             titleRes("home_card_radar")
         )
         assertEquals(
-            R.string.settings_home_card_netease_recommended,
+            CoreCommonR.string.settings_home_card_netease_recommended,
             titleRes("home_card_recommended")
         )
     }
@@ -125,16 +168,17 @@ class SettingsPageTest {
     }
 
     @Test
-    fun dynamicIslandLyricsSettingOpensLyricsPage() {
+    fun dynamicIslandLyricsSettingOpensExternalLyricsPage() {
         val dynamicIslandLyrics = AutoSettingsMetadata.settings.first {
             it.keyName == "dynamic_island_lyrics_enabled"
         }
 
         assertEquals(AutoSettingsSections.lyrics, dynamicIslandLyrics.section)
-        assertEquals(SettingsPage.Lyrics, dynamicIslandLyrics.settingsPage())
+        assertEquals(SettingsPage.ExternalLyrics, dynamicIslandLyrics.settingsPage())
         assertEquals("setting:dynamic_island_lyrics_enabled", dynamicIslandLyrics.searchTargetId())
+        val offset = AutoSettingsMetadata.settings.first { it.keyName == "kugou_lyric_default_offset_ms" }
+        assertEquals(SettingsPage.Lyrics, offset.settingsPage())
     }
-
     @Test
     fun dynamicColorOnlyRedirectsHiddenThemeColorHighlight() {
         fun themeEntry(targetId: String): SettingsSearchEntry {
@@ -173,25 +217,32 @@ class SettingsPageTest {
             1,
             settingsSearchScrollAnchor(
                 page = SettingsPage.Theme,
-                targetId = "manual:theme_mode"
+                targetId = "setting:ui_style"
             ).itemIndex
         )
         assertEquals(
             2,
             settingsSearchScrollAnchor(
                 page = SettingsPage.Theme,
-                targetId = "setting:dynamic_color"
+                targetId = "manual:theme_mode"
             ).itemIndex
         )
         assertEquals(
             3,
             settingsSearchScrollAnchor(
                 page = SettingsPage.Theme,
-                targetId = "manual:theme_palette_style"
+                targetId = "setting:dynamic_color"
             ).itemIndex
         )
         assertEquals(
             4,
+            settingsSearchScrollAnchor(
+                page = SettingsPage.Theme,
+                targetId = "manual:theme_palette_style"
+            ).itemIndex
+        )
+        assertEquals(
+            5,
             settingsSearchScrollAnchor(
                 page = SettingsPage.Theme,
                 targetId = "manual:theme_color_spec"
@@ -276,42 +327,45 @@ class SettingsPageTest {
             ).itemIndex
         )
         assertEquals(
-            3,
+            1,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Personalization,
+                page = SettingsPage.NowPlaying,
                 targetId = "setting:nowplaying_progress_show_audio_spec"
             ).itemIndex
         )
         assertEquals(
-            3,
+            1,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Personalization,
+                page = SettingsPage.NowPlaying,
                 targetId = "setting:nowplaying_song_title_marquee_enabled"
             ).itemIndex
         )
         assertEquals(
-            4,
+            2,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Personalization,
+                page = SettingsPage.NowPlaying,
                 targetId = "setting:nowplaying_toolbar_dock_enabled"
             ).itemIndex
         )
         assertEquals(
-            4,
+            2,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Personalization,
+                page = SettingsPage.NowPlaying,
                 targetId = "setting:lyrics_control_size"
             ).itemIndex
         )
         assertEquals(
-            5,
+            1,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Personalization,
+                page = SettingsPage.Background,
                 targetId = "setting:background_image_uri"
             ).itemIndex
         )
+        val marquee = AutoSettingsMetadata.settings.first { it.keyName == "nowplaying_song_title_marquee_enabled" }
+        assertEquals(SettingsPage.NowPlaying, marquee.settingsPage())
+        val background = AutoSettingsMetadata.settings.first { it.keyName == "background_image_uri" }
+        assertEquals(SettingsPage.Background, background.settingsPage())
     }
-
     @Test
     fun lyricsSearchUsesAppearanceCardAnchor() {
         listOf(
@@ -322,7 +376,7 @@ class SettingsPageTest {
             "setting:lyrics_page_translation_font_scale"
         ).forEach { targetId ->
             assertEquals(
-                4,
+                1,
                 settingsSearchScrollAnchor(
                     page = SettingsPage.Lyrics,
                     targetId = targetId
@@ -330,7 +384,6 @@ class SettingsPageTest {
             )
         }
     }
-
     @Test
     fun generalSearchUsesDefaultAnchorForUiScale() {
         assertEquals(
@@ -496,7 +549,7 @@ class SettingsPageTest {
 
     @Test
     fun backupImportExportActionsAreSearchable() {
-        val entries = manualSettingsSearchEntries(settingsStringContext())
+        val entries = manualSettingsSearchEntries(settingsStringResources())
 
         assertEquals(
             listOf("manual:playlist_export"),
@@ -518,7 +571,7 @@ class SettingsPageTest {
 
     @Test
     fun dynamicIslandLyricsSettingIsSearchable() {
-        val entries = buildSettingsSearchEntries(settingsStringContext())
+        val entries = buildSettingsSearchEntries(settingsStringResources())
 
         assertTrue(
             searchSettingsEntries(entries, "dynamic island").any {
@@ -529,7 +582,7 @@ class SettingsPageTest {
 
     @Test
     fun internationalHomeCardTitlesAreSearchable() {
-        val entries = buildSettingsSearchEntries(settingsStringContext())
+        val entries = buildSettingsSearchEntries(settingsStringResources())
         val expectedTargets = listOf(
             "guess you like" to "setting:home_card_trending",
             "猜你喜欢" to "setting:home_card_trending",
@@ -624,8 +677,15 @@ class SettingsPageTest {
         assertEquals(
             1,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Lyrics,
+                page = SettingsPage.ExternalLyrics,
                 targetId = "setting:floating_lyrics_enabled"
+            ).itemIndex
+        )
+        assertEquals(
+            2,
+            settingsSearchScrollAnchor(
+                page = SettingsPage.ExternalLyrics,
+                targetId = "setting:status_bar_lyrics_enabled"
             ).itemIndex
         )
         assertEquals(
@@ -636,21 +696,13 @@ class SettingsPageTest {
             ).itemIndex
         )
         assertEquals(
-            1,
+            3,
             settingsSearchScrollAnchor(
-                page = SettingsPage.Storage,
-                targetId = "setting:download_directory_uri"
-            ).itemIndex
-        )
-        assertEquals(
-            4,
-            settingsSearchScrollAnchor(
-                page = SettingsPage.Storage,
-                targetId = "manual:clear_cache"
+                page = SettingsPage.Lyrics,
+                targetId = "setting:amll_ttml_lyric_default_offset_ms"
             ).itemIndex
         )
     }
-
     @Test
     fun independentSliderSettingsKeepTheirOwnHighlightTargets() {
         fun targetId(keyName: String): String {
@@ -741,8 +793,8 @@ class SettingsPageTest {
         assertEquals(listOf("page:About"), results.map { it.id })
     }
 
-    private fun settingsStringContext(): Context {
-        return Mockito.mock(Context::class.java, Answer { invocation ->
+    private fun settingsStringResources(): Resources {
+        return Mockito.mock(Resources::class.java, Answer { invocation ->
             val resourceId = invocation.arguments.firstOrNull() as? Int
             if (invocation.method.name == "getString" && resourceId != null) {
                 TestSettingsStrings[resourceId] ?: "res:$resourceId"
@@ -754,16 +806,16 @@ class SettingsPageTest {
 
     private companion object {
         val TestSettingsStrings = mapOf(
-            R.string.playlist_export to "导出歌单",
-            R.string.playlist_import to "导入歌单",
-            R.string.playlist_export_desc to "将歌单导出为备份文件",
-            R.string.playlist_import_desc to "从备份文件恢复歌单",
-            R.string.settings_export_config to "导出配置文件",
-            R.string.settings_import_config to "导入配置文件",
-            R.string.settings_export_config_desc to "导出设置、登录信息和同步配置",
-            R.string.settings_import_config_desc to "从配置文件恢复设置、登录信息和同步配置",
-            R.string.settings_dynamic_island_lyrics_enabled to "灵动岛歌词",
-            R.string.settings_dynamic_island_lyrics_enabled_desc to "即使没有连接蓝牙设备，也会上传蓝牙歌词元数据"
+            CoreCommonR.string.playlist_export to "导出歌单",
+            CoreCommonR.string.playlist_import to "导入歌单",
+            CoreCommonR.string.playlist_export_desc to "将歌单导出为备份文件",
+            CoreCommonR.string.playlist_import_desc to "从备份文件恢复歌单",
+            CoreCommonR.string.settings_export_config to "导出配置文件",
+            CoreCommonR.string.settings_import_config to "导入配置文件",
+            CoreCommonR.string.settings_export_config_desc to "导出设置、登录信息和同步配置",
+            CoreCommonR.string.settings_import_config_desc to "从配置文件恢复设置、登录信息和同步配置",
+            CoreCommonR.string.settings_dynamic_island_lyrics_enabled to "灵动岛歌词",
+            CoreCommonR.string.settings_dynamic_island_lyrics_enabled_desc to "即使没有连接蓝牙设备，也会上传蓝牙歌词元数据"
         )
     }
 }

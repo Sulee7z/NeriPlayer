@@ -5,20 +5,371 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import moe.ouom.neriplayer.core.api.search.MusicPlatform
-import moe.ouom.neriplayer.core.download.DownloadStatus
-import moe.ouom.neriplayer.core.download.DownloadTask
-import moe.ouom.neriplayer.core.player.model.PlaybackAudioSource
-import moe.ouom.neriplayer.core.player.model.PlayerQueueDisplayItem
-import moe.ouom.neriplayer.data.settings.NowPlayingControlPlacement
+import moe.ouom.neriplayer.data.model.music.MusicPlatform
+import moe.ouom.neriplayer.data.model.download.DownloadStatus
+import moe.ouom.neriplayer.data.model.download.DownloadTask
+import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
+import moe.ouom.neriplayer.data.model.playback.PlaybackAudioSource
+import moe.ouom.neriplayer.data.model.playback.queue.PlayerQueueDisplayItem
+import moe.ouom.neriplayer.core.player.metadata.PreferredLyricSourceResult
+import moe.ouom.neriplayer.data.local.media.LocalLyricsScanMetadata
+import moe.ouom.neriplayer.data.model.settings.playback.NowPlayingControlPlacement
+import moe.ouom.neriplayer.data.model.settings.lyrics.LyricSourcePreference
 import moe.ouom.neriplayer.ui.component.playback.PlaybackSourceType
 import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.data.model.lyrics.LyricEntry
+import moe.ouom.neriplayer.ui.screen.nowplaying.NowPlayingLyricsSharedTransitionElement
+import moe.ouom.neriplayer.ui.screen.nowplaying.NowPlayingQueueReorderAutoScrollMaxPerFrame
+import moe.ouom.neriplayer.ui.screen.nowplaying.NowPlayingQueueReorderOwner
+import moe.ouom.neriplayer.ui.screen.nowplaying.NowPlayingQueueScrollCommand
+import moe.ouom.neriplayer.ui.screen.nowplaying.NowPlayingWideLyricsMode
+import moe.ouom.neriplayer.ui.screen.nowplaying.buildNowPlayingQueueEntries
+import moe.ouom.neriplayer.ui.screen.nowplaying.buildNowPlayingQueueEntriesFromDisplayItems
+import moe.ouom.neriplayer.ui.screen.nowplaying.cover.shouldOpenNowPlayingCoverPreviewOnLongPress
+import moe.ouom.neriplayer.ui.screen.nowplaying.cover.shouldOpenNowPlayingCoverPreviewOnTap
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.resolveEditSongInitialCoverUrl
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.resolveEditSongRestoredCoverUrl
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.shouldApplyResolvedEditSongCover
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.shouldConfirmLocalMetadataWriteBack
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.shouldPersistEditedSongLyricsLocally
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.shouldPublishPendingEmbeddedLyricsResult
+import moe.ouom.neriplayer.ui.screen.nowplaying.filterNowPlayingQueueIndexInput
+import moe.ouom.neriplayer.ui.screen.nowplaying.hasPublishedManagedDownload
+import moe.ouom.neriplayer.ui.screen.nowplaying.invertNowPlayingQueueSelection
+import moe.ouom.neriplayer.ui.screen.nowplaying.isBiliUploaderNavigationSource
+import moe.ouom.neriplayer.ui.screen.nowplaying.isNeteaseArtistNavigationSource
+import moe.ouom.neriplayer.ui.screen.nowplaying.isNowPlayingActiveIconReadable
+import moe.ouom.neriplayer.ui.screen.nowplaying.isNowPlayingQueueIndexInputError
+import moe.ouom.neriplayer.ui.screen.nowplaying.isNowPlayingQueueReorderEnabled
+import moe.ouom.neriplayer.ui.screen.nowplaying.isYouTubeMusicArtistNavigationSource
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.ManagedLyricVariant
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.buildNowPlayingFastLyricsState
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.buildNowPlayingImmediateLyricsState
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.buildNowPlayingInitialLyricsState
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.buildPreferredLyricSourceState
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.resolveManagedDownloadFastLyricText
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.resolveNowPlayingLyricsMediaReloadKey
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.shouldBackfillDownloadedLyricsAfterFastMiss
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.shouldBypassCollapsedStoredLyric
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.shouldReadEmbeddedLyricsForNowPlayingFastStage
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.shouldReplaceLyricsAfterRefresh
+import moe.ouom.neriplayer.ui.screen.nowplaying.moveNowPlayingQueueEntry
+import moe.ouom.neriplayer.ui.screen.nowplaying.planNowPlayingQueueScroll
+import moe.ouom.neriplayer.ui.screen.nowplaying.queueArtworkUrl
+import moe.ouom.neriplayer.ui.screen.nowplaying.queueRowClick
+import moe.ouom.neriplayer.ui.screen.nowplaying.queueRowContainerColor
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingActiveIconColor
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingMainControlsLayout
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingPlaybackSourceType
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingQueueCurrentIndexAfterReorder
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingQueueIndexInput
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingQueueScrollTarget
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingQueueSelectedSongs
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolveNowPlayingWideLyricsMode
+import moe.ouom.neriplayer.ui.screen.nowplaying.resolvePlaybackActionToolbarLayout
+import moe.ouom.neriplayer.ui.screen.nowplaying.selectAllNowPlayingQueueKeys
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldAutoLocateNowPlayingQueue
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldHideDownloadActionForSong
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldShowNowPlayingCoverLyrics
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldShowNowPlayingQueueDragHandle
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldShowNowPlayingQueueQuickActions
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldShowQueueCurrentMarker
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldUpdateNowPlayingQueueScroll
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldUseCompactNowPlayingPortraitLayout
+import moe.ouom.neriplayer.ui.screen.nowplaying.shouldUseNowPlayingToolbarDock
+import moe.ouom.neriplayer.ui.screen.nowplaying.syncNowPlayingQueueEntries
 import kotlin.math.pow
 
 class NowPlayingScreenTest {
+
+    @Test
+    fun `download presence only accepts a published catalog entry`() {
+        val song = SongItem(
+            id = 40L,
+            name = "Pending",
+            artist = "Artist",
+            album = "__local_files__",
+            albumId = 0L,
+            durationMs = 5_000L,
+            coverUrl = null,
+            mediaUri = "content://downloads/audio/pending.mp3"
+        )
+
+        assertFalse(
+            hasPublishedManagedDownload(song) { false }
+        )
+        assertTrue(
+            hasPublishedManagedDownload(song) { true }
+        )
+    }
+
+    @Test
+    fun `edit song cover uses resolved local fallback when metadata has no cover`() {
+        val song = SongItem(
+            id = 41L,
+            name = "Local song",
+            artist = "Artist",
+            album = "__local_files__",
+            albumId = 0L,
+            durationMs = 5_000L,
+            coverUrl = null,
+            mediaUri = "content://media/external/audio/media/41"
+        )
+
+        assertEquals(
+            "content://covers/41",
+            resolveEditSongInitialCoverUrl(song, "content://covers/41")
+        )
+    }
+
+    @Test
+    fun `edit song cover uses resolved fallback when stored cover is blank`() {
+        val song = SongItem(
+            id = 42L,
+            name = "Local song",
+            artist = "Artist",
+            album = "__local_files__",
+            albumId = 0L,
+            durationMs = 5_000L,
+            coverUrl = "   ",
+            mediaUri = "content://media/external/audio/media/42"
+        )
+
+        assertEquals(
+            "content://covers/42",
+            resolveEditSongInitialCoverUrl(song, "content://covers/42")
+        )
+        assertEquals(
+            "",
+            resolveEditSongInitialCoverUrl(song.copy(originalCoverUrl = ""), "content://covers/42")
+        )
+    }
+
+    @Test
+    fun `restore cover falls back to the durable baseline when fetched cover is blank`() {
+        assertEquals(
+            "content://covers/original",
+            resolveEditSongRestoredCoverUrl(
+                sourceCoverUrl = "   ",
+                baselineCoverUrl = "content://covers/original"
+            )
+        )
+        assertEquals(
+            "https://example.com/original.jpg",
+            resolveEditSongRestoredCoverUrl(
+                sourceCoverUrl = " https://example.com/original.jpg ",
+                baselineCoverUrl = "content://covers/original"
+            )
+        )
+    }
+
+    @Test
+    fun `restore cover clears the edited preview when no original cover exists`() {
+        assertEquals(
+            "",
+            resolveEditSongRestoredCoverUrl(
+                sourceCoverUrl = null,
+                baselineCoverUrl = ""
+            )
+        )
+    }
+
+    @Test
+    fun `resolved edit song cover never replaces manual input`() {
+        assertFalse(
+            shouldApplyResolvedEditSongCover(
+                userHasEdited = true,
+                currentCoverUrl = "https://example.com/manual.jpg",
+                resolvedDisplayCoverUrl = "content://covers/41"
+            )
+        )
+        assertTrue(
+            shouldApplyResolvedEditSongCover(
+                userHasEdited = false,
+                currentCoverUrl = "",
+                resolvedDisplayCoverUrl = "content://covers/41"
+            )
+        )
+    }
+
+    @Test
+    fun `late embedded lyric result is ignored after sidecar source was selected`() {
+        assertFalse(
+            shouldPublishPendingEmbeddedLyricsResult(
+                requestIsCurrent = true,
+                pendingSourceHasSidecar = false,
+                editorAlreadySelected = false
+            )
+        )
+        assertFalse(
+            shouldPublishPendingEmbeddedLyricsResult(
+                requestIsCurrent = true,
+                pendingSourceHasSidecar = true,
+                editorAlreadySelected = true
+            )
+        )
+        assertTrue(
+            shouldPublishPendingEmbeddedLyricsResult(
+                requestIsCurrent = true,
+                pendingSourceHasSidecar = true,
+                editorAlreadySelected = false
+            )
+        )
+    }
+
+    @Test
+    fun `local restore persists lyric sidecars unless metadata writeback is selected`() {
+        assertTrue(
+            shouldPersistEditedSongLyricsLocally(
+                isLocalSong = true,
+                writeLocalMetadata = false
+            )
+        )
+        assertFalse(
+            shouldPersistEditedSongLyricsLocally(
+                isLocalSong = true,
+                writeLocalMetadata = true
+            )
+        )
+        assertFalse(
+            shouldPersistEditedSongLyricsLocally(
+                isLocalSong = false,
+                writeLocalMetadata = false
+            )
+        )
+    }
+
+    @Test
+    fun `local lyric restore requests an explicit metadata writeback choice`() {
+        val localSong = SongItem(
+            id = 43L,
+            name = "Local song",
+            artist = "Artist",
+            album = "__local_files__",
+            albumId = 0L,
+            durationMs = 5_000L,
+            coverUrl = "content://covers/43",
+            mediaUri = "content://media/external/audio/media/43"
+        )
+
+        assertTrue(
+            shouldConfirmLocalMetadataWriteBack(
+                song = localSong
+            )
+        )
+        assertFalse(
+            shouldConfirmLocalMetadataWriteBack(
+                song = localSong.copy(
+                    album = "Netease",
+                    albumId = 1L,
+                    mediaUri = null
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `immediate lyric state keeps current song metadata on the first composition`() {
+        val song = SongItem(
+            id = 41L,
+            name = "Immediate",
+            artist = "Artist",
+            album = "__local_files__",
+            albumId = 0L,
+            durationMs = 5_000L,
+            coverUrl = null,
+            mediaUri = "content://media/external/audio/media/41",
+            matchedLyric = "[00:01.00]first line",
+            matchedTranslatedLyric = "[00:01.00]translated line",
+            matchedRomanizedLyric = "[00:01.00]romanized line"
+        )
+
+        val state = buildNowPlayingImmediateLyricsState(song)
+
+        assertEquals("[00:01.00]first line", state.rawLyrics)
+        assertEquals("[00:01.00]translated line", state.rawTranslatedLyrics)
+        assertEquals("[00:01.00]romanized line", state.rawPhoneticLyrics)
+        assertEquals("first line", state.lyrics.single().text)
+        assertEquals("translated line", state.translatedLyrics.single().text)
+        assertEquals("romanized line", state.phoneticLyrics.single().text)
+    }
+
+    @Test
+    fun `now playing fast lyric stage does not inspect embedded audio metadata`() {
+        assertFalse(shouldReadEmbeddedLyricsForNowPlayingFastStage())
+    }
+
+    @Test
+    fun `empty refresh for the same song keeps existing lyrics`() {
+        assertFalse(
+            shouldReplaceLyricsAfterRefresh(
+                sameSong = true,
+                loadedHasLyrics = false
+            )
+        )
+        assertTrue(
+            shouldReplaceLyricsAfterRefresh(
+                sameSong = true,
+                loadedHasLyrics = true
+            )
+        )
+        assertTrue(
+            shouldReplaceLyricsAfterRefresh(
+                sameSong = false,
+                loadedHasLyrics = false
+            )
+        )
+    }
+
+    @Test
+    fun `reopening now playing shows cached lyrics before preferred lookup`() {
+        val song = SongItem(
+            id = 51L,
+            name = "Cached song",
+            artist = "Artist",
+            album = "Album",
+            albumId = 1L,
+            durationMs = 180_000L,
+            coverUrl = null,
+            matchedLyric = "[00:01.00]Stored line"
+        )
+        val stored = buildNowPlayingInitialLyricsState(song, cachedPreferredLyrics = null)
+        assertEquals("Stored line", stored.lyrics.single().text)
+        assertNull(stored.preferredSource)
+
+        val preferred = buildNowPlayingInitialLyricsState(
+            song,
+            cachedPreferredLyrics = PreferredLyricSourceResult(
+                lyrics = listOf(LyricEntry("Kugou line", 1_000L, 2_000L)),
+                source = LyricSourcePreference.Kugou
+            )
+        )
+        assertEquals("Kugou line", preferred.lyrics.single().text)
+        assertEquals(LyricSourcePreference.Kugou, preferred.preferredSource)
+    }
+
+    @Test
+    fun `preferred source state does not mix downloaded lyrics with selected source`() {
+        val state = buildPreferredLyricSourceState(
+            PreferredLyricSourceResult(
+                lyrics = listOf(LyricEntry("Kugou original", 1_000L, 2_000L)),
+                translatedLyrics = listOf(LyricEntry("Kugou translation", 1_000L, 2_000L)),
+                source = LyricSourcePreference.Kugou
+            )
+        )
+
+        assertNull(state.rawLyrics)
+        assertNull(state.rawTranslatedLyrics)
+        assertNull(state.rawPhoneticLyrics)
+        assertEquals("Kugou original", state.lyrics.single().text)
+        assertEquals("Kugou translation", state.translatedLyrics.single().text)
+        assertTrue(state.phoneticLyrics.isEmpty())
+        assertEquals(LyricSourcePreference.Kugou, state.preferredSource)
+    }
 
     @Test
     fun `collapsed stored lyrics bypass direct renderer parsing`() {
@@ -35,6 +386,188 @@ class NowPlayingScreenTest {
             )
         )
         assertFalse(shouldBypassCollapsedStoredLyric(null))
+    }
+
+    @Test
+    fun `fast lyrics state renders normal LRC before enhanced hydration`() {
+        val state = buildNowPlayingFastLyricsState(
+            rawLyrics = "[00:01.00]first line\n[00:02.00]second line",
+            rawTranslatedLyrics = "[00:01.00]translated line",
+            rawPhoneticLyrics = null
+        )
+
+        assertEquals(2, state.lyrics.size)
+        assertEquals("first line", state.lyrics.first().text)
+        assertEquals(1, state.translatedLyrics.size)
+        assertEquals("translated line", state.translatedLyrics.first().text)
+        assertEquals(state.lyrics, state.plainLyrics)
+    }
+
+    @Test
+    fun `managed download fast lyrics keep root sidecar ahead of local fallback`() {
+        val local = LocalLyricsScanMetadata(
+            lyric = "",
+            translatedLyric = "local translation",
+            romanizedLyric = "local romanized",
+            hasOriginalSidecar = true,
+            hasTranslatedSidecar = true,
+            hasRomanizedSidecar = true,
+            sourceResolved = true
+        )
+        val indexed = ManagedDownloadStorage.DownloadedLyricsBundle(
+            lyric = "indexed original",
+            translatedLyric = "indexed translation",
+            romanizedLyric = "indexed romanized",
+            hasOriginalSidecar = true,
+            hasTranslatedSidecar = true,
+            hasRomanizedSidecar = true
+        )
+
+        assertEquals(
+            "indexed original",
+            resolveManagedDownloadFastLyricText(
+                localLyrics = local,
+                downloadedLyrics = indexed,
+                storedLyric = "stored original",
+                variant = ManagedLyricVariant.ORIGINAL
+            )
+        )
+        assertEquals(
+            "indexed translation",
+            resolveManagedDownloadFastLyricText(
+                localLyrics = local,
+                downloadedLyrics = indexed,
+                storedLyric = "stored translation",
+                variant = ManagedLyricVariant.TRANSLATED
+            )
+        )
+    }
+
+    @Test
+    fun `managed download fast lyrics use indexed sidecar then metadata fallback`() {
+        val indexedSidecar = ManagedDownloadStorage.DownloadedLyricsBundle(
+            lyric = "indexed original",
+            translatedLyric = null,
+            romanizedLyric = null,
+            hasOriginalSidecar = true
+        )
+        assertEquals(
+            "indexed original",
+            resolveManagedDownloadFastLyricText(
+                localLyrics = null,
+                downloadedLyrics = indexedSidecar,
+                storedLyric = "stored original",
+                variant = ManagedLyricVariant.ORIGINAL
+            )
+        )
+        assertEquals(
+            "stored translation",
+            resolveManagedDownloadFastLyricText(
+                localLyrics = null,
+                downloadedLyrics = indexedSidecar,
+                storedLyric = "stored translation",
+                variant = ManagedLyricVariant.TRANSLATED
+            )
+        )
+    }
+
+    @Test
+    fun `managed download fast lyric miss requests a one shot backfill`() {
+        assertTrue(
+            shouldBackfillDownloadedLyricsAfterFastMiss(
+                isManagedLocalDownload = true,
+                canReadManagedDownloadLyrics = true,
+                fastLyrics = ManagedDownloadStorage.DownloadedLyricsBundle(
+                    lyric = null,
+                    translatedLyric = null,
+                    romanizedLyric = null
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `non managed song skips downloaded lyric backfill`() {
+        assertFalse(
+            shouldBackfillDownloadedLyricsAfterFastMiss(
+                isManagedLocalDownload = false,
+                canReadManagedDownloadLyrics = true,
+                fastLyrics = ManagedDownloadStorage.DownloadedLyricsBundle(
+                    lyric = "[00:00.00]sidecar",
+                    translatedLyric = null,
+                    romanizedLyric = null,
+                    hasOriginalSidecar = true
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `managed download partial fast bundle backfills missing lyric variants`() {
+        assertTrue(
+            shouldBackfillDownloadedLyricsAfterFastMiss(
+                isManagedLocalDownload = true,
+                canReadManagedDownloadLyrics = true,
+                fastLyrics = ManagedDownloadStorage.DownloadedLyricsBundle(
+                    lyric = "[00:00.00]sidecar",
+                    translatedLyric = null,
+                    romanizedLyric = null,
+                    hasOriginalSidecar = true
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `managed download complete fast lyric bundle skips a backfill`() {
+        assertFalse(
+            shouldBackfillDownloadedLyricsAfterFastMiss(
+                isManagedLocalDownload = true,
+                canReadManagedDownloadLyrics = true,
+                fastLyrics = ManagedDownloadStorage.DownloadedLyricsBundle(
+                    lyric = "[00:00.00]sidecar",
+                    translatedLyric = "[00:00.00]translation",
+                    romanizedLyric = "[00:00.00]romanized",
+                    hasOriginalSidecar = true,
+                    hasTranslatedSidecar = true,
+                    hasRomanizedSidecar = true
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `local playback uri changes do not cancel lyric reload`() {
+        val localSong = SongItem(
+            id = 1L,
+            name = "Local",
+            artist = "Artist",
+            album = "__local_files__",
+            albumId = 0L,
+            durationMs = 1_000L,
+            coverUrl = null,
+            mediaUri = "content://downloads/audio",
+            localFileName = "audio.mp3"
+        )
+
+        assertEquals(
+            null,
+            resolveNowPlayingLyricsMediaReloadKey(
+                song = localSong,
+                currentMediaUrl = "file:///storage/emulated/0/audio.mp3"
+            )
+        )
+        assertEquals(
+            "https://example.com/audio.mp3",
+            resolveNowPlayingLyricsMediaReloadKey(
+                song = localSong.copy(
+                    album = "netease",
+                    mediaUri = "https://example.com/audio.mp3",
+                    localFileName = null
+                ),
+                currentMediaUrl = "https://example.com/audio.mp3"
+            )
+        )
     }
 
     @Test
@@ -201,7 +734,7 @@ class NowPlayingScreenTest {
                 "play_button",
                 "player_next"
             ),
-            NowPlayingLyricsSharedTransitionElement.values().map { it.key }.toSet()
+            NowPlayingLyricsSharedTransitionElement.entries.map { it.key }.toSet()
         )
     }
 
@@ -486,6 +1019,125 @@ class NowPlayingScreenTest {
     }
 
     @Test
+    fun `queue reorder owner commits duplicate rows by occurrence key`() {
+        val repeated = testSong(id = 1L, name = "Repeated")
+        val other = testSong(id = 2L, name = "Other")
+        val source = buildNowPlayingQueueEntries(listOf(repeated, other, repeated))
+        val owner = NowPlayingQueueReorderOwner(source)
+        owner.move(enabled = true, from = source[2].key, to = source[0].key)
+        assertTrue(owner.isDirty)
+        assertEquals(listOf(source[2].key, source[0].key, source[1].key), owner.entries.map { it.key })
+
+        var committedIndex = -1
+        owner.finish(true, source[2].key, 2, source) { _, index ->
+            committedIndex = index
+            true
+        }
+
+        assertEquals(0, committedIndex)
+        assertFalse(owner.isDirty)
+    }
+
+    @Test
+    fun `queue reorder owner restores source when control is revoked`() {
+        val source = buildNowPlayingQueueEntries(
+            listOf(testSong(id = 1L, name = "First"), testSong(id = 2L, name = "Second"))
+        )
+        val owner = NowPlayingQueueReorderOwner(source)
+        owner.move(enabled = false, from = source[0].key, to = source[1].key)
+        assertFalse(owner.isDirty)
+        owner.move(enabled = true, from = source[0].key, to = source[1].key)
+        owner.revokeReorder(source)
+
+        assertEquals(source, owner.entries.toList())
+        assertFalse(owner.isDirty)
+    }
+
+    @Test
+    fun `queue reorder owner rolls back a rejected player commit`() {
+        val source = buildNowPlayingQueueEntries(
+            listOf(testSong(id = 1L, name = "First"), testSong(id = 2L, name = "Second"))
+        )
+        val owner = NowPlayingQueueReorderOwner(source)
+        owner.move(enabled = true, from = source[0].key, to = source[1].key)
+        owner.finish(true, source[0].key, 0, source) { _, _ -> false }
+
+        assertEquals(source, owner.entries.toList())
+        assertFalse(owner.isDirty)
+    }
+
+    @Test
+    fun `queue reorder owner ignores invalid drag keys and syncs only when clean`() {
+        val source = buildNowPlayingQueueEntries(
+            listOf(testSong(id = 1L, name = "First"), testSong(id = 2L, name = "Second"))
+        )
+        val owner = NowPlayingQueueReorderOwner(source)
+        owner.move(true, null, source[1].key)
+        owner.move(true, source[0].key, 1)
+        owner.move(true, "missing", source[1].key)
+        owner.move(true, source[0].key, source[0].key)
+        assertFalse(owner.isDirty)
+        owner.revokeReorder(source)
+        owner.move(true, source[0].key, source[1].key)
+        owner.sync(source)
+        assertEquals(listOf(source[1], source[0]), owner.entries.toList())
+        owner.finish(false, source[0].key, 0, source) { _, _ -> error("must not commit") }
+        assertEquals(source, owner.entries.toList())
+        owner.sync(source.reversed())
+        assertEquals(source.reversed(), owner.entries.toList())
+    }
+
+    @Test
+    fun `queue reorder owner uses fallback current index and ignores clean finish`() {
+        val source = buildNowPlayingQueueEntries(
+            listOf(testSong(id = 1L, name = "First"), testSong(id = 2L, name = "Second"))
+        )
+        val owner = NowPlayingQueueReorderOwner(source)
+        owner.finish(true, null, 0, source) { _, _ -> error("must not commit") }
+        owner.move(true, source[0].key, source[1].key)
+        var index = -1
+        owner.finish(true, null, 0, source) { _, resolvedIndex ->
+            index = resolvedIndex
+            true
+        }
+        assertEquals(0, index)
+    }
+
+    @Test
+    fun `queue row policies preserve click and visual precedence`() {
+        var selected = 0
+        var played = 0
+        val select: () -> Unit = { selected++ }
+        val play: () -> Unit = { played++ }
+        queueRowClick(true, select, play)()
+        queueRowClick(false, select, play)()
+        assertEquals(1, selected)
+        assertEquals(1, played)
+        assertTrue(shouldShowQueueCurrentMarker(true, false))
+        assertFalse(shouldShowQueueCurrentMarker(true, true))
+        assertFalse(shouldShowQueueCurrentMarker(false, false))
+
+        assertEquals(Color.Red.copy(alpha = 0.64f),
+            queueRowContainerColor(true, true, Color.Red, Color.Green, Color.Blue)
+        )
+        assertEquals(Color.Green.copy(alpha = 0.42f),
+            queueRowContainerColor(false, true, Color.Red, Color.Green, Color.Blue)
+        )
+        assertEquals(Color.Blue.copy(alpha = 0.36f),
+            queueRowContainerColor(false, false, Color.Red, Color.Green, Color.Blue)
+        )
+        assertNull(queueArtworkUrl(null))
+        assertNull(queueArtworkUrl("  "))
+        assertEquals("content://cover", queueArtworkUrl("content://cover"))
+        assertEquals(setOf("a", "b"), selectAllNowPlayingQueueKeys(false, setOf("a", "b")))
+        assertEquals(emptySet<String>(), selectAllNowPlayingQueueKeys(true, setOf("a", "b")))
+        assertFalse(isNowPlayingQueueIndexInputError("", null))
+        assertFalse(isNowPlayingQueueIndexInputError("1", 0))
+        assertTrue(isNowPlayingQueueIndexInputError("11", null))
+        assertEquals("123456", filterNowPlayingQueueIndexInput("a1b234567"))
+    }
+
+    @Test
     fun `queue entry sync keeps the same mutable list after commit`() {
         val first = testSong(id = 1L, name = "First")
         val second = testSong(id = 2L, name = "Second")
@@ -672,6 +1324,34 @@ class NowPlayingScreenTest {
                 firstVisibleItemIndex = 4_096,
                 firstVisibleItemScrollOffset = 12
             )
+        )
+    }
+
+    @Test
+    fun `queue scroll plan preserves first positioning and later animation`() {
+        val initial = planNowPlayingQueueScroll(10, 7, false, false, false, 0, 0)
+        val later = planNowPlayingQueueScroll(10, 7, false, false, true, 0, 0)
+        val already = planNowPlayingQueueScroll(10, 7, false, false, false, 7, 0)
+
+        assertEquals(NowPlayingQueueScrollCommand.Jump(7), initial)
+        assertEquals(NowPlayingQueueScrollCommand.Animate(7), later)
+        assertEquals(NowPlayingQueueScrollCommand.AlreadyPositioned, already)
+        assertTrue(already.marksPositioned)
+    }
+
+    @Test
+    fun `queue scroll plan pauses during selection and stale current index`() {
+        assertEquals(
+            NowPlayingQueueScrollCommand.Skip,
+            planNowPlayingQueueScroll(10, 7, true, false, true, 0, 0)
+        )
+        assertEquals(
+            NowPlayingQueueScrollCommand.Skip,
+            planNowPlayingQueueScroll(10, 7, false, true, true, 0, 0)
+        )
+        assertEquals(
+            NowPlayingQueueScrollCommand.Skip,
+            planNowPlayingQueueScroll(10, 10, false, false, true, 0, 0)
         )
     }
 

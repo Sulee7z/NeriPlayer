@@ -2,6 +2,7 @@ package moe.ouom.neriplayer.ui.effect.glass
 
 import android.graphics.RuntimeShader
 import android.os.Build
+import android.view.View
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.slideInHorizontally
@@ -21,11 +22,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarState
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableFloatState
 import androidx.compose.runtime.MutableState
@@ -37,15 +38,16 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PixelMap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsEnabled
-import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -62,11 +64,11 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import kotlinx.coroutines.flow.collect
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.data.settings.AdvancedBlurQuality
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.settings.appearance.AdvancedBlurQuality
 import moe.ouom.neriplayer.testutil.assumeComposeHostAvailable
-import moe.ouom.neriplayer.ui.screen.tab.ExploreGlassPillSurface
+import moe.ouom.neriplayer.testutil.captureCommittedFrame
+import moe.ouom.neriplayer.ui.screen.tab.explore.ExploreGlassPillSurface
 import moe.ouom.neriplayer.ui.screen.tab.settings.component.ThemeModeActionButton
 import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsHomeScaffold
 import org.junit.Assert.assertEquals
@@ -78,12 +80,15 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicBoolean
 
 @RunWith(AndroidJUnit4::class)
 @SdkSuppress(minSdkVersion = Build.VERSION_CODES.TIRAMISU)
 class AdvancedGlassSurfaceRenderTest {
     @get:Rule
     val composeRule = createComposeRule()
+
+    private lateinit var hostView: View
 
     @Before
     fun assumeDeviceUnlocked() {
@@ -108,6 +113,7 @@ class AdvancedGlassSurfaceRenderTest {
                 "uniform float4 cornerRadii[$ADVANCED_GLASS_MAX_REGIONS];"
             )
         )
+        assertTrue(source.contains("uniform float regionOpacity[$ADVANCED_GLASS_MAX_REGIONS];"))
         assertTrue(
             source.contains(
                 "for (int index = 0; index < $ADVANCED_GLASS_MAX_REGIONS; index++)"
@@ -119,7 +125,7 @@ class AdvancedGlassSurfaceRenderTest {
 
     @Test
     fun settingsGlassKeepsForegroundPixelsSharp() {
-        composeRule.setContent {
+        setContent {
             GlassTestHost {
                 Box(modifier = Modifier.size(160.dp, 120.dp)) {
                     AdvancedGlassSurface(
@@ -142,8 +148,8 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(SettingsGlassTag).captureToImage()
-        val pixels = image.toPixelMap()
+        val image = capturePixels(SettingsGlassTag)
+        val pixels = image
         val center = pixels[image.width / 2, image.height / 2]
 
         assertTrue(
@@ -154,7 +160,7 @@ class AdvancedGlassSurfaceRenderTest {
 
     @Test
     fun bottomNavigationSamplesContentAtItsActualWindowPosition() {
-        composeRule.setContent {
+        setContent {
             MaterialTheme {
                 val backgroundBackdrop = rememberAdvancedGlassBackdrop()
                 val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -200,8 +206,8 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(BottomGlassTag).captureToImage()
-        val pixel = image.toPixelMap()[image.width / 2, image.height / 2]
+        val image = capturePixels(BottomGlassTag)
+        val pixel = image[image.width / 2, image.height / 2]
 
         assertTrue(
             "bottom glass did not transmit the blue content behind it: $pixel",
@@ -211,7 +217,7 @@ class AdvancedGlassSurfaceRenderTest {
 
     @Test
     fun bottomNavigationBlursContentAcrossBackdropBoundary() {
-        composeRule.setContent {
+        setContent {
             MaterialTheme {
                 val backgroundBackdrop = rememberAdvancedGlassBackdrop()
                 val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -262,8 +268,8 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(ContentBlurRootTag).captureToImage()
-        val mixedPixel = image.toPixelMap()[image.width / 2 - 6, image.height / 2]
+        val image = capturePixels(ContentBlurRootTag)
+        val mixedPixel = image[image.width / 2 - 6, image.height / 2]
 
         assertTrue(
             "content behind bottom navigation stayed sharp: $mixedPixel",
@@ -276,7 +282,7 @@ class AdvancedGlassSurfaceRenderTest {
     @Test
     fun glassBlurMixesPixelsAcrossBackdropBoundary() {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -329,8 +335,8 @@ class AdvancedGlassSurfaceRenderTest {
                 capturedBackdrop.renderEffect
             )
         }
-        val image = composeRule.onNodeWithTag(BlurRootTag).captureToImage()
-        val mixedPixel = image.toPixelMap()[image.width / 2 - 6, image.height / 2]
+        val image = capturePixels(BlurRootTag)
+        val mixedPixel = image[image.width / 2 - 6, image.height / 2]
 
         assertTrue(
             "backdrop boundary stayed sharp instead of being blurred: $mixedPixel",
@@ -343,7 +349,7 @@ class AdvancedGlassSurfaceRenderTest {
     @Test
     fun lowQualityUsesLocalNativeBlurWithoutLosingTheGlassEffect() {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -401,8 +407,8 @@ class AdvancedGlassSurfaceRenderTest {
                 capturedBackdrop.renderEffect
             )
         }
-        val image = composeRule.onNodeWithTag(LocalBlurRootTag).captureToImage()
-        val mixedPixel = image.toPixelMap()[image.width / 2 - 6, image.height / 2]
+        val image = capturePixels(LocalBlurRootTag)
+        val mixedPixel = image[image.width / 2 - 6, image.height / 2]
 
         assertTrue(
             "low quality backdrop boundary stayed sharp instead of being blurred: $mixedPixel",
@@ -422,7 +428,7 @@ class AdvancedGlassSurfaceRenderTest {
         val planAvailability = mutableListOf<Boolean>()
         val firstOwner = Any()
         val secondOwner = Any()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -571,7 +577,7 @@ class AdvancedGlassSurfaceRenderTest {
                 )
             }
             assertSceneMaskState(
-                composeRule.onNodeWithTag(LocalBlurHandoffRootTag).captureToImage(),
+                capturePixels(LocalBlurHandoffRootTag),
                 leftBlurred = false
             )
         }
@@ -587,7 +593,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var incomingSceneLaidOut: MutableState<Boolean>
         val firstOwner = Any()
         val secondOwner = Any()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -671,7 +677,7 @@ class AdvancedGlassSurfaceRenderTest {
             )
         }
         assertSceneMaskState(
-            composeRule.onNodeWithTag(PrewarmedOwnerHandoffRootTag).captureToImage(),
+            capturePixels(PrewarmedOwnerHandoffRootTag),
             leftBlurred = true
         )
 
@@ -692,7 +698,7 @@ class AdvancedGlassSurfaceRenderTest {
                 )
             }
             assertSceneMaskState(
-                composeRule.onNodeWithTag(PrewarmedOwnerHandoffRootTag).captureToImage(),
+                capturePixels(PrewarmedOwnerHandoffRootTag),
                 leftBlurred = false
             )
         } finally {
@@ -704,7 +710,7 @@ class AdvancedGlassSurfaceRenderTest {
     fun prewarmedInactiveNavigationOwnerDoesNotDrawASecondGlassSurface() {
         val activeOwner = Any()
         val inactiveOwner = Any()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             MaterialTheme {
@@ -773,8 +779,8 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(PrewarmedInactiveTintTag).captureToImage()
-        val pixel = image.toPixelMap()[image.width / 2, image.height / 2]
+        val image = capturePixels(PrewarmedInactiveTintTag)
+        val pixel = image[image.width / 2, image.height / 2]
 
         assertTrue(
             "prewarmed inactive owner still drew a second glass surface: $pixel",
@@ -785,7 +791,7 @@ class AdvancedGlassSurfaceRenderTest {
     @Test
     fun localBlurRefreshesStableMaskWhenBackdropChanges() {
         lateinit var backdropColor: MutableState<Color>
-        composeRule.setContent {
+        setContent {
             backdropColor = remember { mutableStateOf(Color.Black) }
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -821,19 +827,14 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val initialImage = composeRule
-            .onNodeWithTag(LocalBlurRefreshRootTag)
-            .captureToImage()
+        val initialImage = capturePixels(LocalBlurRefreshRootTag)
         val sampleX = initialImage.width / 2
         val sampleY = initialImage.height / 2
-        val initialPixel = initialImage.toPixelMap()[sampleX, sampleY]
+        val initialPixel = initialImage[sampleX, sampleY]
 
         composeRule.runOnIdle { backdropColor.value = Color.White }
         composeRule.waitForIdle()
-        val refreshedPixel = composeRule
-            .onNodeWithTag(LocalBlurRefreshRootTag)
-            .captureToImage()
-            .toPixelMap()[sampleX, sampleY]
+        val refreshedPixel = capturePixels(LocalBlurRefreshRootTag)[sampleX, sampleY]
 
         assertTrue(
             "local blur did not render the initial backdrop: $initialPixel",
@@ -851,7 +852,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var quality: MutableState<AdvancedBlurQuality>
         lateinit var blurEnabled: MutableState<Boolean>
         val lifecycleOwner = TestLifecycleOwner()
-        composeRule.setContent {
+        setContent {
             CompositionLocalProvider(LocalLifecycleOwner provides lifecycleOwner) {
                 val backgroundBackdrop = rememberAdvancedGlassBackdrop()
                 val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -968,7 +969,7 @@ class AdvancedGlassSurfaceRenderTest {
 
     @Test
     fun selectiveRenderEffectMixesDirectContent() {
-        composeRule.setContent {
+        setContent {
             val assetManager = LocalContext.current.applicationContext.assets
             val shaderSource = remember(assetManager) {
                 AdvancedGlassShaderSource(assetManager)
@@ -1016,8 +1017,8 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(DirectSelectiveBlurTag).captureToImage()
-        val mixedPixel = image.toPixelMap()[image.width / 2 - 6, image.height / 2]
+        val image = capturePixels(DirectSelectiveBlurTag)
+        val mixedPixel = image[image.width / 2 - 6, image.height / 2]
 
         assertTrue(
             "selective RenderEffect did not blur direct content: $mixedPixel",
@@ -1027,7 +1028,18 @@ class AdvancedGlassSurfaceRenderTest {
 
     @Test
     fun topOnlyCornerRadiiKeepTopCornerOutsideBlurMask() {
-        composeRule.setContent {
+        val firstFrameCommitted = AtomicBoolean(false)
+        setContent {
+            val view = LocalView.current
+            DisposableEffect(view) {
+                val observer = view.viewTreeObserver
+                val callback = Runnable { firstFrameCommitted.set(true) }
+                observer.registerFrameCommitCallback(callback)
+                view.invalidate()
+                onDispose {
+                    if (observer.isAlive) observer.unregisterFrameCommitCallback(callback)
+                }
+            }
             val assetManager = LocalContext.current.applicationContext.assets
             val shaderSource = remember(assetManager) {
                 AdvancedGlassShaderSource(assetManager)
@@ -1082,8 +1094,10 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(TopOnlyCornersTag).captureToImage()
-        val pixels = image.toPixelMap()
+        // Compose 空闲不代表硬件帧已提交，先等首次绘制完成再采样
+        composeRule.waitUntil(timeoutMillis = 5_000L) { firstFrameCommitted.get() }
+        val image = capturePixels(TopOnlyCornersTag)
+        val pixels = image
         val sampleX = image.width / 10
         val cornerOffsetY = image.height / 20
         val topCorner = pixels[sampleX, cornerOffsetY]
@@ -1101,7 +1115,7 @@ class AdvancedGlassSurfaceRenderTest {
 
     @Test
     fun pillSurfaceKeepsItsFlatTopEdgeInsideTheBlurMask() {
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             MaterialTheme {
@@ -1145,8 +1159,8 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val image = composeRule.onNodeWithTag(PillMaskRootTag).captureToImage()
-        val pixels = image.toPixelMap()
+        val image = capturePixels(PillMaskRootTag)
+        val pixels = image
         val sampleY = image.height / 16
         val pillShoulder = pixels[image.width * 15 / 80, sampleY]
         val outsidePill = pixels[image.width * 7 / 80, sampleY]
@@ -1164,7 +1178,7 @@ class AdvancedGlassSurfaceRenderTest {
     @Test
     fun explorePillMaskExcludesMinimumTouchTargetPadding() {
         lateinit var regionRegistry: AdvancedGlassRegionRegistry
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             MaterialTheme {
@@ -1252,8 +1266,8 @@ class AdvancedGlassSurfaceRenderTest {
             }
         }
 
-        val image = composeRule.onNodeWithTag(ExplorePillTouchTargetRootTag).captureToImage()
-        val pixels = image.toPixelMap()
+        val image = capturePixels(ExplorePillTouchTargetRootTag)
+        val pixels = image
         val centerX = image.width / 2 - 2
         val centerY = image.height / 2
         val touchPaddingY = centerY - with(composeRule.density) { 20.dp.roundToPx() }
@@ -1275,7 +1289,7 @@ class AdvancedGlassSurfaceRenderTest {
     fun settingsTopAppBarRegistersOnlyOneThemeToggleMask() {
         lateinit var regionRegistry: AdvancedGlassRegionRegistry
         lateinit var topAppBarState: TopAppBarState
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             MaterialTheme {
@@ -1341,11 +1355,11 @@ class AdvancedGlassSurfaceRenderTest {
     fun themeToggleClickabilityIsIndependentFromBackdropRegistration() {
         val darkThemeDescription = InstrumentationRegistry.getInstrumentation()
             .targetContext
-            .getString(R.string.settings_theme_toggle_dark)
+            .getString(CoreCommonR.string.settings_theme_toggle_dark)
         var toggleRequests = 0
         lateinit var titleSlotVisible: MutableState<Boolean>
 
-        composeRule.setContent {
+        setContent {
             titleSlotVisible = remember { mutableStateOf(false) }
             CompositionLocalProvider(
                 LocalAdvancedGlassBackdropRegistrationEnabled provides titleSlotVisible.value
@@ -1384,14 +1398,14 @@ class AdvancedGlassSurfaceRenderTest {
     fun settingsTopAppBarThemeToggleHandlesConsecutiveClicks() {
         val darkThemeDescription = InstrumentationRegistry.getInstrumentation()
             .targetContext
-            .getString(R.string.settings_theme_toggle_dark)
+            .getString(CoreCommonR.string.settings_theme_toggle_dark)
         val lightThemeDescription = InstrumentationRegistry.getInstrumentation()
             .targetContext
-            .getString(R.string.settings_theme_toggle_light)
+            .getString(CoreCommonR.string.settings_theme_toggle_light)
         var toggleRequests = 0
         lateinit var isDarkTheme: MutableState<Boolean>
 
-        composeRule.setContent {
+        setContent {
             isDarkTheme = remember { mutableStateOf(false) }
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -1449,7 +1463,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
         lateinit var activeOwnerState: MutableState<LifecycleOwner?>
         val inactiveOwner = TestLifecycleOwner()
-        composeRule.setContent {
+        setContent {
             val currentOwner = LocalLifecycleOwner.current
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -1498,7 +1512,7 @@ class AdvancedGlassSurfaceRenderTest {
         val firstOwner = TestLifecycleOwner()
         val secondOwner = TestLifecycleOwner()
         val effectAvailability = mutableListOf<Boolean>()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -1563,7 +1577,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var activeOwners: MutableState<Set<Any>>
         val firstOwner = Any()
         val secondOwner = Any()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             activeOwners = remember { mutableStateOf(setOf(firstOwner)) }
@@ -1628,7 +1642,7 @@ class AdvancedGlassSurfaceRenderTest {
 
         composeRule.waitForIdle()
         assertSceneMaskState(
-            composeRule.onNodeWithTag(OwnedSceneMaskRootTag).captureToImage(),
+            capturePixels(OwnedSceneMaskRootTag),
             leftBlurred = true
         )
 
@@ -1637,7 +1651,7 @@ class AdvancedGlassSurfaceRenderTest {
         }
         composeRule.waitForIdle()
         assertSceneMaskState(
-            composeRule.onNodeWithTag(OwnedSceneMaskRootTag).captureToImage(),
+            capturePixels(OwnedSceneMaskRootTag),
             leftBlurred = false
         )
     }
@@ -1647,7 +1661,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
         lateinit var navigateToSecondTab: () -> Unit
         val effectAvailability = mutableListOf<Boolean>()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             val navController = rememberNavController()
@@ -1749,7 +1763,7 @@ class AdvancedGlassSurfaceRenderTest {
 
         composeRule.waitForIdle()
         assertSceneMaskState(
-            composeRule.onNodeWithTag(NavHostSceneHandoffRootTag).captureToImage(),
+            capturePixels(NavHostSceneHandoffRootTag),
             leftBlurred = true
         )
         composeRule.runOnIdle {
@@ -1778,7 +1792,7 @@ class AdvancedGlassSurfaceRenderTest {
         composeRule.mainClock.autoAdvance = true
         composeRule.waitForIdle()
         assertSceneMaskState(
-            composeRule.onNodeWithTag(NavHostSceneHandoffRootTag).captureToImage(),
+            capturePixels(NavHostSceneHandoffRootTag),
             leftBlurred = false
         )
         composeRule.runOnIdle {
@@ -1794,7 +1808,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
         lateinit var activeSceneState: MutableState<Int>
         val effectAvailability = mutableListOf<Boolean>()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -1854,7 +1868,7 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val firstImage = composeRule.onNodeWithTag(SceneHandoffRootTag).captureToImage()
+        val firstImage = capturePixels(SceneHandoffRootTag)
         assertSceneMaskState(firstImage, leftBlurred = true)
 
         composeRule.runOnIdle {
@@ -1862,7 +1876,7 @@ class AdvancedGlassSurfaceRenderTest {
             activeSceneState.value = 1
         }
         composeRule.waitForIdle()
-        val secondImage = composeRule.onNodeWithTag(SceneHandoffRootTag).captureToImage()
+        val secondImage = capturePixels(SceneHandoffRootTag)
         assertSceneMaskState(secondImage, leftBlurred = false)
         composeRule.runOnIdle {
             assertNotNull("scene handoff removed the backdrop effect", capturedBackdrop.renderEffect)
@@ -1878,7 +1892,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
         lateinit var navigationDepth: MutableState<Int>
         val effectAvailability = mutableListOf<Boolean>()
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -1951,7 +1965,7 @@ class AdvancedGlassSurfaceRenderTest {
 
         composeRule.waitForIdle()
         assertNestedSceneMaskState(
-            composeRule.onNodeWithTag(NestedSceneHandoffRootTag).captureToImage(),
+            capturePixels(NestedSceneHandoffRootTag),
             activeThird = 0
         )
 
@@ -1961,7 +1975,7 @@ class AdvancedGlassSurfaceRenderTest {
         }
         composeRule.waitForIdle()
         assertNestedSceneMaskState(
-            composeRule.onNodeWithTag(NestedSceneHandoffRootTag).captureToImage(),
+            capturePixels(NestedSceneHandoffRootTag),
             activeThird = 1
         )
         composeRule.runOnIdle {
@@ -1975,7 +1989,7 @@ class AdvancedGlassSurfaceRenderTest {
         }
         composeRule.waitForIdle()
         assertNestedSceneMaskState(
-            composeRule.onNodeWithTag(NestedSceneHandoffRootTag).captureToImage(),
+            capturePixels(NestedSceneHandoffRootTag),
             activeThird = 2
         )
         composeRule.runOnIdle {
@@ -1991,7 +2005,7 @@ class AdvancedGlassSurfaceRenderTest {
     fun interruptedAnimatedNavigationKeepsSceneMasksAttachedForEveryFrame() {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
         lateinit var navigationDepth: MutableState<Int>
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -2093,7 +2107,7 @@ class AdvancedGlassSurfaceRenderTest {
                 assertNotNull("首页进入二级页时出现空白模糊帧", capturedBackdrop.renderEffect)
             }
             assertSceneBlurPresent(
-                composeRule.onNodeWithTag(InterruptedSceneHandoffRootTag).captureToImage(),
+                capturePixels(InterruptedSceneHandoffRootTag),
                 "首页进入二级页时页面遮罩消失"
             )
         }
@@ -2104,7 +2118,7 @@ class AdvancedGlassSurfaceRenderTest {
                 assertNotNull("快速进入三级页时出现空白模糊帧", capturedBackdrop.renderEffect)
             }
             assertSceneBlurPresent(
-                composeRule.onNodeWithTag(InterruptedSceneHandoffRootTag).captureToImage(),
+                capturePixels(InterruptedSceneHandoffRootTag),
                 "快速进入三级页时页面遮罩消失"
             )
         }
@@ -2112,9 +2126,7 @@ class AdvancedGlassSurfaceRenderTest {
         composeRule.waitForIdle()
 
         assertNestedSceneMaskState(
-            image = composeRule
-                .onNodeWithTag(InterruptedSceneHandoffRootTag)
-                .captureToImage(),
+            image = capturePixels(InterruptedSceneHandoffRootTag),
             activeThird = 2
         )
 
@@ -2122,14 +2134,14 @@ class AdvancedGlassSurfaceRenderTest {
         composeRule.mainClock.advanceTimeBy(600)
         composeRule.waitForIdle()
         assertSceneBlurAbsent(
-            composeRule.onNodeWithTag(InterruptedSceneHandoffRootTag).captureToImage()
+            capturePixels(InterruptedSceneHandoffRootTag)
         )
     }
 
     @Test
     fun changingRadiusChangesRenderedBlurStrength() {
         lateinit var radiusState: MutableFloatState
-        composeRule.setContent {
+        setContent {
             radiusState = remember { mutableFloatStateOf(12f) }
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -2177,17 +2189,14 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val lowRadiusImage = composeRule.onNodeWithTag(AdjustableBlurRootTag).captureToImage()
+        val lowRadiusImage = capturePixels(AdjustableBlurRootTag)
         val sampleX = lowRadiusImage.width / 2 - lowRadiusImage.width / 10
         val sampleY = lowRadiusImage.height / 2
-        val lowRadiusPixel = lowRadiusImage.toPixelMap()[sampleX, sampleY]
+        val lowRadiusPixel = lowRadiusImage[sampleX, sampleY]
 
         composeRule.runOnIdle { radiusState.floatValue = 64f }
         composeRule.waitForIdle()
-        val highRadiusPixel = composeRule
-            .onNodeWithTag(AdjustableBlurRootTag)
-            .captureToImage()
-            .toPixelMap()[sampleX, sampleY]
+        val highRadiusPixel = capturePixels(AdjustableBlurRootTag)[sampleX, sampleY]
 
         assertTrue(
             "radius change did not alter blur strength: low=$lowRadiusPixel high=$highRadiusPixel",
@@ -2200,7 +2209,7 @@ class AdvancedGlassSurfaceRenderTest {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
         lateinit var horizontalOffset: MutableState<Int>
         var initialEffect: androidx.compose.ui.graphics.RenderEffect? = null
-        composeRule.setContent {
+        setContent {
             horizontalOffset = remember { mutableStateOf(0) }
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
@@ -2252,20 +2261,17 @@ class AdvancedGlassSurfaceRenderTest {
         }
 
         composeRule.waitForIdle()
-        val initialImage = composeRule.onNodeWithTag(MovingMaskRootTag).captureToImage()
+        val initialImage = capturePixels(MovingMaskRootTag)
         val sampleX = initialImage.width / 2 - 6
         val sampleY = initialImage.height / 2
-        val initialPixel = initialImage.toPixelMap()[sampleX, sampleY]
+        val initialPixel = initialImage[sampleX, sampleY]
         composeRule.runOnIdle {
             initialEffect = capturedBackdrop.renderEffect
             assertNotNull("initial region never installed a blur effect", initialEffect)
             horizontalOffset.value = 60
         }
         composeRule.waitForIdle()
-        val movedPixel = composeRule
-            .onNodeWithTag(MovingMaskRootTag)
-            .captureToImage()
-            .toPixelMap()[sampleX, sampleY]
+        val movedPixel = capturePixels(MovingMaskRootTag)[sampleX, sampleY]
         composeRule.runOnIdle {
             assertNotSame(
                 "moving a region did not reinstall the updated runtime mask",
@@ -2286,7 +2292,7 @@ class AdvancedGlassSurfaceRenderTest {
     @Test
     fun backdropOffsetKeepsTheMaskAtTheSurfaceWindowPosition() {
         lateinit var capturedBackdrop: AdvancedGlassBackdrop
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             capturedBackdrop = backgroundBackdrop
@@ -2337,11 +2343,11 @@ class AdvancedGlassSurfaceRenderTest {
         composeRule.runOnIdle {
             assertNotNull("offset backdrop never received a blur effect", capturedBackdrop.renderEffect)
         }
-        val image = composeRule.onNodeWithTag(OffsetBackdropRootTag).captureToImage()
+        val image = capturePixels(OffsetBackdropRootTag)
         val boundaryX = image.width / 2 - 6
         val targetY = image.height / 2
         val staleY = image.height / 2 - with(composeRule.density) { 40.dp.roundToPx() }
-        val pixels = image.toPixelMap()
+        val pixels = image
         val targetPixel = pixels[boundaryX, targetY]
         val stalePixel = pixels[boundaryX, staleY]
 
@@ -2358,7 +2364,7 @@ class AdvancedGlassSurfaceRenderTest {
     @Test
     fun enhancedGlassUsesDampedOverscrollInsideHost() {
         var observedFactory: androidx.compose.foundation.OverscrollFactory? = null
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             AdvancedGlassHost(
@@ -2384,7 +2390,7 @@ class AdvancedGlassSurfaceRenderTest {
     fun enhancedGlassPreservesOverscrollWithoutCustomBackground() {
         var parentFactory: androidx.compose.foundation.OverscrollFactory? = null
         var observedFactory: androidx.compose.foundation.OverscrollFactory? = null
-        composeRule.setContent {
+        setContent {
             val backgroundBackdrop = rememberAdvancedGlassBackdrop()
             val contentBackdrop = rememberAdvancedGlassBackdrop()
             parentFactory = LocalOverscrollFactory.current
@@ -2399,6 +2405,24 @@ class AdvancedGlassSurfaceRenderTest {
 
         composeRule.runOnIdle {
             assertEquals("无背景图时不应改变 Overscroll", parentFactory, observedFactory)
+        }
+    }
+
+    private fun setContent(content: @Composable () -> Unit) {
+        composeRule.setContent {
+            hostView = LocalView.current
+            content()
+        }
+    }
+
+    private fun capturePixels(tag: String): PixelMap {
+        val bounds = composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        val bitmap = composeRule.captureCommittedFrame(hostView, bounds)
+        return try {
+            // 复制像素后再释放位图，后续断言只读取独立数组
+            bitmap.asImageBitmap().toPixelMap()
+        } finally {
+            bitmap.recycle()
         }
     }
 
@@ -2447,10 +2471,10 @@ class AdvancedGlassSurfaceRenderTest {
     )
 
     private fun assertSceneMaskState(
-        image: androidx.compose.ui.graphics.ImageBitmap,
+        image: PixelMap,
         leftBlurred: Boolean
     ) {
-        val pixels = image.toPixelMap()
+        val pixels = image
         val boundaryOffset = (image.width / 100).coerceAtLeast(2)
         val leftPixel = pixels[image.width / 4 - boundaryOffset, image.height / 2]
         val rightPixel = pixels[image.width * 3 / 4 - boundaryOffset, image.height / 2]
@@ -2468,10 +2492,10 @@ class AdvancedGlassSurfaceRenderTest {
     }
 
     private fun assertNestedSceneMaskState(
-        image: androidx.compose.ui.graphics.ImageBitmap,
+        image: PixelMap,
         activeThird: Int
     ) {
-        val pixels = image.toPixelMap()
+        val pixels = image
         val boundaryOffset = (image.width / 120).coerceAtLeast(2)
         val sampleX = listOf(
             image.width / 6 - boundaryOffset,
@@ -2492,7 +2516,7 @@ class AdvancedGlassSurfaceRenderTest {
     }
 
     private fun assertSceneBlurPresent(
-        image: androidx.compose.ui.graphics.ImageBitmap,
+        image: PixelMap,
         message: String
     ) {
         val mixedPixels = mixedPixelCount(image, y = image.height / 8)
@@ -2502,7 +2526,7 @@ class AdvancedGlassSurfaceRenderTest {
         )
     }
 
-    private fun assertSceneBlurAbsent(image: androidx.compose.ui.graphics.ImageBitmap) {
+    private fun assertSceneBlurAbsent(image: PixelMap) {
         val sceneMixedPixels = mixedPixelCount(image, y = image.height / 8)
         val bottomMixedPixels = mixedPixelCount(image, y = image.height - 4)
         assertTrue(
@@ -2516,8 +2540,8 @@ class AdvancedGlassSurfaceRenderTest {
     }
 
     private fun assertLocalBlurredBackdropBoundary() {
-        val image = composeRule.onNodeWithTag(LocalBlurRootTag).captureToImage()
-        val mixedPixel = image.toPixelMap()[image.width / 2 - 6, image.height / 2]
+        val image = capturePixels(LocalBlurRootTag)
+        val mixedPixel = image[image.width / 2 - 6, image.height / 2]
 
         assertTrue(
             "local blur returned a blank or sharp backdrop: $mixedPixel",
@@ -2528,10 +2552,10 @@ class AdvancedGlassSurfaceRenderTest {
     }
 
     private fun mixedPixelCount(
-        image: androidx.compose.ui.graphics.ImageBitmap,
+        image: PixelMap,
         y: Int
     ): Int {
-        val pixels = image.toPixelMap()
+        val pixels = image
         return (0 until image.width).count { x ->
             pixels[x, y].red in 0.15f..0.85f
         }

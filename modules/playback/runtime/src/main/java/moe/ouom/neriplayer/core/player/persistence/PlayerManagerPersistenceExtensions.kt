@@ -1,0 +1,1709 @@
+@file:androidx.annotation.OptIn(markerClass = [androidx.media3.common.util.UnstableApi::class])
+
+package moe.ouom.neriplayer.core.player.persistence
+
+import moe.ouom.neriplayer.data.model.playback.storage.PlayerDownloadedMetadataSyncOutcome
+import moe.ouom.neriplayer.data.identity.sameIdentityAs
+import moe.ouom.neriplayer.data.identity.stableKey
+import moe.ouom.neriplayer.data.settings.playback.sanitized
+
+import android.app.Application
+import android.os.SystemClock
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import moe.ouom.neriplayer.data.local.playlist.runLocalPlaylistMutationSafely
+import moe.ouom.neriplayer.data.model.playlist.LocalPlaylist
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.music.MusicPlatform
+import moe.ouom.neriplayer.data.model.music.SongSearchInfo
+import moe.ouom.neriplayer.core.player.host.PlayerDependencies
+import moe.ouom.neriplayer.data.model.playback.storage.PlayerMetadataClearRequest as RestorableMetadataClearPolicy
+import moe.ouom.neriplayer.core.player.PlayerManager
+import moe.ouom.neriplayer.core.player.metadata.applyManualSearchMetadata
+import moe.ouom.neriplayer.core.player.metadata.firstUsableLocalCoverReference
+import moe.ouom.neriplayer.core.player.metadata.normalizeCustomMetadataValue
+import moe.ouom.neriplayer.core.player.metadata.BiliSubtitleLyricsOptions
+import moe.ouom.neriplayer.core.player.metadata.PlayerLyricsProvider
+import moe.ouom.neriplayer.core.player.metadata.SongMetadataApplyOptions
+import moe.ouom.neriplayer.core.player.metadata.SongMetadataApplyStage
+import moe.ouom.neriplayer.core.player.metadata.PreferredLyricSourceResult
+import moe.ouom.neriplayer.data.model.settings.lyrics.LyricSourcePreference
+import moe.ouom.neriplayer.core.player.runtime.metadata.SongMetadataRequestCoordinator
+import moe.ouom.neriplayer.core.player.metadata.hasUsableLyrics
+import moe.ouom.neriplayer.core.player.metadata.LocalMetadataWritePlaybackAction
+import moe.ouom.neriplayer.core.player.metadata.resolveLocalCoverWriteReference
+import moe.ouom.neriplayer.core.player.metadata.resolveLocalMetadataWritePlaybackAction
+import moe.ouom.neriplayer.core.player.metadata.resolveRestoredBaseCoverUrl
+import moe.ouom.neriplayer.core.player.metadata.shouldAutoMatchExternalLyrics
+import moe.ouom.neriplayer.core.player.metadata.shouldMaterializeRemoteLocalCover
+import moe.ouom.neriplayer.core.player.metadata.shouldSkipSongMetadataMutation
+import moe.ouom.neriplayer.core.player.metadata.shouldWriteLocalCoverMetadata
+import moe.ouom.neriplayer.core.player.metadata.toBasicSongDetails
+import moe.ouom.neriplayer.core.player.metadata.withUpdatedLyricsPreservingOriginal
+import moe.ouom.neriplayer.core.player.playback.BiliVideoSkipPlaybackController
+import moe.ouom.neriplayer.core.player.playback.playAtIndex
+import moe.ouom.neriplayer.core.player.playlist.PlayerFavoritesController
+import moe.ouom.neriplayer.data.model.playback.PlaybackCommandSource
+import moe.ouom.neriplayer.core.player.source.toSongItem
+import moe.ouom.neriplayer.data.local.media.LocalMediaMetadataWriteOutcome
+import moe.ouom.neriplayer.data.local.media.LocalMediaSupport
+import moe.ouom.neriplayer.data.local.media.LocalSongSupport
+import moe.ouom.neriplayer.data.local.media.CustomSongCoverStorage
+import moe.ouom.neriplayer.data.local.media.isMediaStoreCoverReference
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthState
+import moe.ouom.neriplayer.lyrics.offset.rebaseLyricUserOffsetMs
+import moe.ouom.neriplayer.lyrics.offset.saturatingAddLyricOffsetMs
+import moe.ouom.neriplayer.lyrics.offset.shouldRebaseLyricOffsetForSource
+import moe.ouom.neriplayer.data.model.lyrics.LyricEntry
+import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.common.logging.NPLogger
+import moe.ouom.neriplayer.data.model.stableKey
+import moe.ouom.neriplayer.core.player.host.PlayerFeedback
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.coroutineContext
+
+internal fun PlayerManager.hasItemsImpl(): Boolean = currentPlaylist.isNotEmpty()
+
+data class RestoredPlayerStateSnapshot(
+    val playlist: List<SongItem>,
+    val currentIndex: Int,
+    val currentMediaUrl: String?,
+    val repeatMode: Int,
+    val shuffleEnabled: Boolean,
+    val shuffleRestorePlaylist: List<SongItem>?,
+    val shuffleRestoreIndex: Int,
+    val resumePositionMs: Long,
+    val shouldResumePlayback: Boolean,
+    val originalPlaylistSize: Int,
+    val persistedIndex: Int
+)
+
+private val songMetadataRequestCoordinator = SongMetadataRequestCoordinator()
+private val songMetadataMutationMutex = Mutex()
+private val favoriteMutationMutex = Mutex()
+
+private data class LocalMetadataWritePlaybackSnapshot(
+    val song: SongItem,
+    val index: Int,
+    val positionMs: Long,
+    val commandSource: PlaybackCommandSource,
+    val requestToken: Long,
+    val resumePlayback: Boolean
+)
+
+internal enum class EditableMetadataWriteMode {
+    APP_ONLY,
+    BACKGROUND_LOCAL_WRITE
+}
+
+internal fun resolveEditableMetadataWriteMode(
+    writeLocalMetadata: Boolean
+): EditableMetadataWriteMode {
+    return if (writeLocalMetadata) {
+        EditableMetadataWriteMode.BACKGROUND_LOCAL_WRITE
+    } else {
+        EditableMetadataWriteMode.APP_ONLY
+    }
+}
+
+internal fun shouldPersistLyricsSidecarsSynchronously(
+    writeLocalMetadata: Boolean,
+    persistLocalSidecars: Boolean
+): Boolean {
+    return persistLocalSidecars && !writeLocalMetadata
+}
+
+internal fun shouldSyncDownloadedMetadataAfterLyricsUpdate(
+    writeLocalMetadata: Boolean,
+    isLocalSong: Boolean,
+    syncDownloadedMetadata: Boolean
+): Boolean {
+    return syncDownloadedMetadata && (isLocalSong || !writeLocalMetadata)
+}
+
+internal fun shouldSyncDownloadedMetadataAfterMetadataUpdate(
+    writeLocalMetadata: Boolean,
+    isLocalSong: Boolean,
+    syncDownloadedMetadata: Boolean = true
+): Boolean {
+    return syncDownloadedMetadata && (isLocalSong || !writeLocalMetadata)
+}
+
+internal fun shouldSyncDownloadedMetadataAfterPlaybackHydration(): Boolean = false
+
+internal suspend fun <T> runSongMetadataMutation(block: suspend () -> T): T {
+    return withContext(Dispatchers.IO) {
+        songMetadataMutationMutex.withLock { block() }
+    }
+}
+
+private fun PlayerManager.dispatchMetadataReplacementCompletion(
+    onComplete: ((Boolean) -> Unit)?,
+    applied: Boolean
+) {
+    val callback = onComplete ?: return
+    application.mainExecutor.execute { callback(applied) }
+}
+
+private fun downloadedLocalFilesCoverCandidates(): List<SongItem> {
+    return PlayerDependencies.downloads.downloadedSongs()
+}
+
+suspend fun preloadRestoredStateSnapshot(
+    app: Application,
+    keepLastPlaybackProgressEnabled: Boolean,
+    keepPlaybackModeStateEnabled: Boolean
+): RestoredPlayerStateSnapshot? {
+    return when (val preload = preloadRestoredPlayerState(
+        app = app,
+        keepLastPlaybackProgressEnabled = keepLastPlaybackProgressEnabled,
+        keepPlaybackModeStateEnabled = keepPlaybackModeStateEnabled
+    )) {
+        is RestoredPlayerStatePreload.Completed -> preload.snapshot
+        RestoredPlayerStatePreload.NeedsFallback -> null
+    }
+}
+
+internal fun PlayerManager.applyRestoredStateSnapshot(snapshot: RestoredPlayerStateSnapshot) {
+    if (!queueSessionBindings.restore(snapshot)) {
+        NPLogger.w(
+            "NERI-PlayerManager",
+            "restoreState: sanitized playlist became empty, originalSize=${snapshot.originalPlaylistSize}, persistedIndex=${snapshot.persistedIndex}"
+        )
+        setCurrentSongForPlayback(null)
+        _currentMediaUrl.value = null
+        _currentPlaybackAudioInfo.value = null
+        _playbackPositionMs.value = 0L
+        currentMediaUrlResolvedAtMs = 0L
+        clearRestoredPlayback()
+        updateResumePlaybackRequested(false)
+        return
+    }
+
+    setCurrentSongForPlayback(currentPlaylist.getOrNull(currentIndex))
+    _currentMediaUrl.value = snapshot.currentMediaUrl
+    repeatModeSetting = snapshot.repeatMode
+    syncExoRepeatMode()
+    _repeatModeFlow.value = repeatModeSetting
+
+    player.shuffleModeEnabled = snapshot.shuffleEnabled
+
+    setRestoredPlayback(snapshot.resumePositionMs, snapshot.shouldResumePlayback)
+    updateResumePlaybackRequested(false)
+    _playbackPositionMs.value = restoredResumePositionMs
+    currentMediaUrlResolvedAtMs = 0L
+    statePersistenceWriter.invalidate()
+    lastStatePersistAtMs = SystemClock.elapsedRealtime()
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "restoreState completed: queueSize=${currentPlaylist.size}, currentIndex=$currentIndex, restoredResumePositionMs=$restoredResumePositionMs, restoredShouldResumePlayback=$restoredShouldResumePlayback, shuffle=${shuffleModeFlow.value}, repeatMode=$repeatModeSetting, currentSong=${_currentSongFlow.value?.name}, mediaUrlPresent=${!_currentMediaUrl.value.isNullOrBlank()}"
+    )
+}
+
+private suspend fun PlayerManager.updateCurrentFavorite(
+    song: SongItem,
+    add: Boolean,
+    playlists: List<LocalPlaylist>
+) {
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "updateCurrentFavorite(): action=${if (add) "add" else "remove"}, song=${song.name}/${song.id}, playlists=${playlists.size}, stack=[${debugStackHint()}]"
+    )
+    val updatedLists = PlayerFavoritesController.optimisticUpdateFavorites(
+        playlists = playlists,
+        add = add,
+        song = song,
+        application = application,
+        favoritePlaylistName = getLocalizedString(CoreCommonR.string.favorite_my_music)
+    )
+    _playlistsFlow.value = PlayerFavoritesController.deepCopyPlaylists(updatedLists)
+
+    try {
+        if (add) {
+            localRepo.addToFavorites(song)
+        } else {
+            localRepo.removeFromFavorites(song)
+        }
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Exception) {
+        val action = if (add) "addToFavorites" else "removeFromFavorites"
+        NPLogger.e("NERI-PlayerManager", "$action failed: ${error.message}", error)
+        _playlistsFlow.value = PlayerFavoritesController.deepCopyPlaylists(localRepo.playlists.value)
+    }
+}
+
+private fun PlayerManager.enqueueFavoriteMutation(
+    song: SongItem,
+    resolveAdd: (List<LocalPlaylist>) -> Boolean
+) {
+    ioScope.launch {
+        favoriteMutationMutex.withLock {
+            if (!localRepo.awaitInitialized()) {
+                NPLogger.w(
+                    "NERI-PlayerManager",
+                    "Favorite mutation skipped because local playlists failed to initialize"
+                )
+                return@withLock
+            }
+            val playlists = localRepo.playlists.value
+            updateCurrentFavorite(
+                song = song,
+                add = resolveAdd(playlists),
+                playlists = playlists
+            )
+        }
+    }
+}
+
+internal fun PlayerManager.addCurrentToFavoritesImpl() {
+    ensureInitialized()
+    if (!initialized) return
+    val song = _currentSongFlow.value ?: return
+    enqueueFavoriteMutation(song) { true }
+}
+
+internal fun PlayerManager.removeCurrentFromFavoritesImpl() {
+    ensureInitialized()
+    if (!initialized) return
+    val song = _currentSongFlow.value ?: return
+    enqueueFavoriteMutation(song) { false }
+}
+
+internal fun PlayerManager.toggleCurrentFavoriteImpl() {
+    ensureInitialized()
+    if (!initialized) return
+    val song = _currentSongFlow.value ?: return
+    enqueueFavoriteMutation(song) { playlists ->
+        val currentlyFavorite = PlayerFavoritesController.isFavorite(
+            playlists,
+            song,
+            application
+        )
+        NPLogger.d(
+            "NERI-PlayerManager",
+            "toggleCurrentFavorite(): song=${song.name}/${song.id}, currentlyFavorite=$currentlyFavorite, stack=[${debugStackHint()}]"
+        )
+        !currentlyFavorite
+    }
+}
+
+internal fun PlayerManager.addCurrentToPlaylistImpl(playlistId: Long) {
+    ensureInitialized()
+    if (!initialized) return
+    val song = _currentSongFlow.value ?: return
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "addCurrentToPlaylist(): playlistId=$playlistId, song=${song.name}/${song.id}, stack=[${debugStackHint()}]"
+    )
+    ioScope.launch {
+        try {
+            localRepo.addSongToPlaylist(playlistId, song)
+            NPLogger.d(
+                "NERI-PlayerManager",
+                "addCurrentToPlaylist(): completed, playlistId=$playlistId, song=${song.name}/${song.id}"
+            )
+        } catch (e: Exception) {
+            NPLogger.e("NERI-PlayerManager", "addCurrentToPlaylist failed: ${e.message}", e)
+        }
+    }
+}
+
+internal fun PlayerManager.playBiliVideoAsAudioImpl(videos: List<BiliVideoItem>, startIndex: Int) {
+    ensureInitialized()
+    check(initialized) { "Call PlayerManager.initialize(application) first." }
+    if (videos.isEmpty()) {
+        NPLogger.w("NERI-Player", "playBiliVideoAsAudio called with EMPTY list")
+        return
+    }
+    val songs = videos.map { it.toSongItem() }
+    playPlaylist(songs, startIndex)
+}
+
+internal suspend fun PlayerManager.getNeteaseLyricsImpl(songId: Long): List<LyricEntry> {
+    return PlayerLyricsProvider.getNeteaseLyrics(songId, neteaseClient, neteaseLyricsCache)
+}
+
+internal suspend fun PlayerManager.getNeteaseTranslatedLyricsImpl(songId: Long): List<LyricEntry> {
+    return PlayerLyricsProvider.getNeteaseTranslatedLyrics(
+        songId,
+        neteaseClient,
+        neteaseLyricsCache
+    )
+}
+
+internal suspend fun PlayerManager.getNeteaseRomanizedLyricsImpl(songId: Long): List<LyricEntry> {
+    return PlayerLyricsProvider.getNeteaseRomanizedLyrics(
+        songId,
+        neteaseClient,
+        neteaseLyricsCache
+    )
+}
+
+internal suspend fun PlayerManager.getPreferredNeteaseLyricContentImpl(songId: Long): String {
+    return PlayerLyricsProvider.getPreferredNeteaseLyricContent(
+        songId,
+        neteaseClient,
+        neteaseLyricsCache
+    )
+}
+
+internal suspend fun PlayerManager.getPreferredNeteaseRomanizedLyricContentImpl(songId: Long): String {
+    return PlayerLyricsProvider.getPreferredNeteaseRomanizedLyricContent(
+        songId,
+        neteaseClient,
+        neteaseLyricsCache
+    )
+}
+
+internal suspend fun PlayerManager.getTranslatedLyricsImpl(
+    song: SongItem,
+    skipPreferredSource: Boolean = false
+): List<LyricEntry> {
+    return PlayerLyricsProvider.getTranslatedLyrics(
+        song = song,
+        application = application,
+        neteaseClient = neteaseClient,
+        neteaseLyricsCache = neteaseLyricsCache,
+        editableLyricsMatcher = PlayerDependencies.repositories.editableLyricsMatcher,
+        preferWordTimedLyrics = preferWordTimedLyrics,
+        defaultLyricSource = if (skipPreferredSource) {
+            LyricSourcePreference.Automatic
+        } else {
+            defaultLyricSource
+        },
+        ytMusicLyricsCache = ytMusicLyricsCache,
+        biliSourceTag = BILI_SOURCE_TAG,
+        biliClient = biliClient,
+        biliSubtitleOptions = BiliSubtitleLyricsOptions(
+            enabled = biliCcSubtitleLyricsEnabled,
+            preferredLanguage = biliCcSubtitleLanguage,
+            aiSubtitleAllowed = biliCcSubtitleAiOnlyEnabled
+        )
+    )
+}
+
+internal suspend fun PlayerManager.getRomanizedLyricsImpl(song: SongItem): List<LyricEntry> {
+    return PlayerLyricsProvider.getRomanizedLyrics(
+        song = song,
+        application = application,
+        neteaseClient = neteaseClient,
+        neteaseLyricsCache = neteaseLyricsCache,
+        editableLyricsMatcher = PlayerDependencies.repositories.editableLyricsMatcher,
+        preferWordTimedLyrics = preferWordTimedLyrics,
+        defaultLyricSource = defaultLyricSource,
+        amllLyricsEnabled = amllLyricsEnabled
+    )
+}
+
+internal suspend fun PlayerManager.getLyricsImpl(
+    song: SongItem,
+    skipPreferredSource: Boolean = false
+): List<LyricEntry> {
+    return PlayerLyricsProvider.getLyrics(
+        song = song,
+        application = application,
+        neteaseClient = neteaseClient,
+        neteaseLyricsCache = neteaseLyricsCache,
+        youtubeMusicClient = youtubeMusicClient,
+        lrcLibClient = lrcLibClient,
+        editableLyricsMatcher = PlayerDependencies.repositories.editableLyricsMatcher,
+        amllTtmlClient = amllTtmlClient,
+        amllLyricsEnabled = amllLyricsEnabled,
+        preferWordTimedLyrics = preferWordTimedLyrics,
+        defaultLyricSource = if (skipPreferredSource) {
+            LyricSourcePreference.Automatic
+        } else {
+            defaultLyricSource
+        },
+        ytMusicLyricsCache = ytMusicLyricsCache,
+        biliSourceTag = BILI_SOURCE_TAG,
+        biliClient = biliClient,
+        biliSubtitleOptions = BiliSubtitleLyricsOptions(
+            enabled = biliCcSubtitleLyricsEnabled,
+            preferredLanguage = biliCcSubtitleLanguage,
+            aiSubtitleAllowed = biliCcSubtitleAiOnlyEnabled
+        )
+    )
+}
+
+internal suspend fun PlayerManager.getPreferredLyricSourceResultImpl(
+    song: SongItem,
+    preference: LyricSourcePreference
+): PreferredLyricSourceResult? = PlayerLyricsProvider.tryGetPreferredLyricSourceResult(
+    song = song,
+    preference = preference,
+    preferWordTimed = preferWordTimedLyrics,
+    editableLyricsMatcher = PlayerDependencies.repositories.editableLyricsMatcher,
+    neteaseClient = neteaseClient,
+    neteaseLyricsCache = neteaseLyricsCache
+)
+
+internal fun PlayerManager.playFromQueueImpl(
+    index: Int,
+    commandSource: PlaybackCommandSource = PlaybackCommandSource.LOCAL,
+    bypassLoudVolumeWarning: Boolean = false
+) {
+    ensureInitialized()
+    if (!initialized) return
+    if (currentPlaylist.isEmpty()) return
+    if (index !in currentPlaylist.indices) return
+    val targetSong = currentPlaylist[index]
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "playFromQueue(): index=$index, source=$commandSource, currentIndex=$currentIndex, queueSize=${currentPlaylist.size}, target=${targetSong.name}/${targetSong.id}, stack=[${debugStackHint()}]"
+    )
+    if (shouldBlockLocalRoomControl(commandSource) ||
+        shouldBlockLocalSongSwitch(targetSong, commandSource)
+    ) {
+        return
+    }
+    if (requestUsbExclusiveLoudPlaybackConfirmation(
+            commandSource = commandSource,
+            bypassWarning = bypassLoudVolumeWarning,
+            continuePlayback = {
+                playFromQueueImpl(
+                    index = index,
+                    commandSource = commandSource,
+                    bypassLoudVolumeWarning = true
+                )
+            }
+        )
+    ) {
+        return
+    }
+
+    currentIndex = index
+    playAtIndex(index, commandSource = commandSource)
+    emitPlaybackCommand(
+        type = "PLAY_FROM_QUEUE",
+        source = commandSource,
+        queue = currentPlaylist.toList(),
+        currentIndex = currentIndex,
+        positionMs = _playbackPositionMs.value
+    )
+}
+
+internal fun PlayerManager.restoreState() {
+    val snapshot = loadRestoredStateSnapshot(
+        app = application,
+        stateFile = stateFile,
+        playbackStateFile = playbackStateFile,
+        keepLastPlaybackProgressEnabled = keepLastPlaybackProgressEnabled,
+        keepPlaybackModeStateEnabled = keepPlaybackModeStateEnabled
+    ) ?: return
+    applyRestoredStateSnapshot(snapshot)
+}
+
+internal fun PlayerManager.suppressFutureAutoResumeForCurrentSessionImpl(
+    forcePersist: Boolean = false
+) {
+    ensureInitialized()
+    if (!initialized || currentPlaylist.isEmpty()) return
+    suppressAutoResumeForCurrentSession = true
+    suppressRestoredAutoResume()
+    val positionMs = if (isPlayerInitialized()) {
+        player.currentPosition.coerceAtLeast(0L)
+    } else {
+        _playbackPositionMs.value.coerceAtLeast(0L)
+    }
+    _playbackPositionMs.value = positionMs
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "suppressFutureAutoResumeForCurrentSession(): forcePersist=$forcePersist, positionMs=$positionMs, queueSize=${currentPlaylist.size}, currentIndex=$currentIndex, currentSong=${_currentSongFlow.value?.name}, stack=[${debugStackHint()}]"
+    )
+    scheduleStatePersist(positionMs = positionMs, shouldResumePlayback = false, debounceMs = 0L)
+}
+
+internal fun PlayerManager.replaceMetadataFromSearchImpl(
+    originalSong: SongItem,
+    selectedSong: SongSearchInfo,
+    isAuto: Boolean = false,
+    onComplete: ((Boolean) -> Unit)? = null,
+    options: SongMetadataApplyOptions? = null,
+    onProgress: ((SongMetadataApplyStage) -> Unit)? = null
+): Job? {
+    val requestToken = songMetadataRequestCoordinator.begin(
+        songKey = originalSong.stableKey(),
+        isAuto = isAuto
+    )
+    if (requestToken == null) {
+        dispatchMetadataReplacementCompletion(onComplete, applied = false)
+        return null
+    }
+
+    val applied = AtomicBoolean(false)
+    val replacementJob = ioScope.launch {
+        NPLogger.d(
+            "NERI-PlayerManager",
+            "replaceMetadataFromSearch: originalSong=${originalSong.name}, selectedId=${selectedSong.id}, source=${selectedSong.source}, isAuto=$isAuto, stack=[${debugStackHint()}]"
+        )
+        try {
+            val platform = selectedSong.source
+            if (
+                platform == MusicPlatform.CLOUD_MUSIC &&
+                PlayerDependencies.repositories.neteaseCookieRepo.getAuthHealthOnce().state == SavedCookieAuthState.Missing
+            ) {
+                mainScope.launch {
+                    PlayerFeedback.show(
+                        context = application,
+                        message = getLocalizedString(CoreCommonR.string.netease_login_required_metadata)
+                    )
+                }
+                return@launch
+            }
+
+            if (options != null && !isAuto) {
+                val requestContext = coroutineContext
+                applied.set(applyManualMetadataSelection(
+                    originalSong = originalSong,
+                    selectedSong = selectedSong,
+                    options = options,
+                    isLatestRequest = { songMetadataRequestCoordinator.isLatest(requestToken) },
+                    onProgress = { stage ->
+                        val callback = onProgress
+                        if (callback != null) withContext(Dispatchers.Main.immediate) {
+                            requestContext.ensureActive()
+                            if (!songMetadataRequestCoordinator.isLatest(requestToken)) {
+                                throw CancellationException("metadata request superseded")
+                            }
+                            callback(stage)
+                        }
+                    },
+                    onApplied = { applied.set(true) }
+                ))
+                return@launch
+            }
+
+            val api = when (platform) {
+                MusicPlatform.CLOUD_MUSIC -> cloudMusicSearchApi
+                MusicPlatform.QQ_MUSIC -> qqMusicSearchApi
+                MusicPlatform.BILIBILI -> PlayerDependencies.repositories.biliSearchApi
+            }
+
+            val (newDetails, usedSearchSummaryFallback) = try {
+                api.getSongInfo(selectedSong.id) to false
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (isAuto) throw error
+                NPLogger.w(
+                    "NERI-PlayerManager",
+                    "Song detail lookup failed, applying search summary: selectedId=${selectedSong.id}, error=${error.message.orEmpty()}"
+                )
+                selectedSong.toBasicSongDetails() to true
+            }
+            applied.set(runSongMetadataMutation {
+                if (!songMetadataRequestCoordinator.isLatest(requestToken)) {
+                    NPLogger.d(
+                        "NERI-PlayerManager",
+                        "Skipping stale metadata replacement: song=${originalSong.name}, selectedId=${selectedSong.id}"
+                    )
+                    return@runSongMetadataMutation false
+                }
+
+                val latestOriginalSong = currentPlaylist.firstOrNull {
+                    it.sameIdentityAs(originalSong)
+                } ?: _currentSongFlow.value?.takeIf {
+                    it.sameIdentityAs(originalSong)
+                } ?: originalSong
+
+                if (
+                    isAuto &&
+                    !shouldAutoMatchExternalLyrics(
+                        song = latestOriginalSong,
+                        isYouTubeMusicTrack = isYouTubeMusicTrack(latestOriginalSong)
+                    )
+                ) {
+                    NPLogger.d(
+                        "NERI-PlayerManager",
+                        "Skipping obsolete auto metadata replacement: song=${latestOriginalSong.name}"
+                    )
+                    return@runSongMetadataMutation false
+                }
+
+                val updatedSong = if (isAuto) {
+                    if (!newDetails.hasUsableLyrics()) {
+                        NPLogger.d(
+                            "NERI-PlayerManager",
+                            "Skipping automatic metadata replacement without lyrics: selectedId=${selectedSong.id}"
+                        )
+                        return@runSongMetadataMutation false
+                    }
+                    latestOriginalSong.withUpdatedLyricsPreservingOriginal(
+                        newLyrics = newDetails.lyric ?: latestOriginalSong.matchedLyric,
+                        newTranslatedLyric = newDetails.translatedLyric
+                            ?: latestOriginalSong.matchedTranslatedLyric,
+                        userEdited = false
+                    ).copy(
+                        matchedLyricSource = selectedSong.source,
+                        matchedSongId = selectedSong.id
+                    )
+                } else {
+                    val selectedCoverUrl = newDetails.coverUrl?.let { coverUrl ->
+                        if (
+                            isLocalSong(latestOriginalSong) &&
+                            CustomSongCoverStorage.isRemoteReference(coverUrl)
+                        ) {
+                            CustomSongCoverStorage.persistManuallySelectedRemoteCover(
+                                context = application,
+                                sourceUrl = coverUrl
+                            ) ?: coverUrl
+                        } else {
+                            coverUrl
+                        }
+                    }
+                    val preparedOriginalSong = preserveLocalSongMetadataOriginals(
+                        song = latestOriginalSong,
+                        preserveCover = true
+                    )
+                    applyManualSearchMetadata(
+                        originalSong = preparedOriginalSong,
+                        songName = newDetails.songName,
+                        singer = newDetails.singer,
+                        coverUrl = selectedCoverUrl,
+                        lyric = newDetails.lyric,
+                        translatedLyric = newDetails.translatedLyric,
+                        matchedSource = selectedSong.source,
+                        matchedSongId = selectedSong.id,
+                        useCustomOverride = shouldApplySearchMetadataAsCustomOverride(latestOriginalSong),
+                        preserveExistingMatchedLyrics = usedSearchSummaryFallback,
+                        lyricRevision = localRepo.nextUserLyricSyncRevision(latestOriginalSong),
+                        captureMatchedOriginals = !LocalSongSupport.isLocalSong(preparedOriginalSong, application)
+                    )
+                }
+
+                updateSongInAllPlaces(
+                    originalSong = latestOriginalSong,
+                    updatedSong = updatedSong,
+                    triggerSync = !isAuto
+                )
+                true
+            })
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (songMetadataRequestCoordinator.isLatest(requestToken)) {
+                mainScope.launch {
+                    PlayerFeedback.show(
+                        context = application,
+                        message = getLocalizedString(CoreCommonR.string.toast_match_failed, e.message.orEmpty())
+                    )
+                    NPLogger.e(
+                        "NERI-PlayerManager",
+                        "replaceMetadataFromSearch failed: ${e.message}",
+                        e
+                    )
+                }
+            }
+        }
+    }
+    replacementJob.invokeOnCompletion {
+        songMetadataRequestCoordinator.complete(requestToken)
+        dispatchMetadataReplacementCompletion(onComplete, applied.get())
+    }
+    return replacementJob
+}
+
+private fun PlayerManager.shouldApplySearchMetadataAsCustomOverride(song: SongItem): Boolean {
+    return isLocalSong(song) || PlayerDependencies.downloads.getLocalPlaybackUri(application, song) != null
+}
+
+private suspend fun PlayerManager.parkCurrentPlaybackForLocalMetadataWrite(
+    targetSong: SongItem
+): LocalMetadataWritePlaybackSnapshot? = withContext(Dispatchers.Main.immediate) {
+    if (!isPlayerInitialized() || currentIndex !in currentPlaylist.indices) {
+        return@withContext null
+    }
+    val action = resolveLocalMetadataWritePlaybackAction(
+        isCurrentSong = isCurrentSong(targetSong),
+        hasActiveMedia = player.mediaItemCount > 0 ||
+            pendingMediaLoadActive || playJob?.isActive == true,
+        shouldResumePlayback = player.playWhenReady || player.isPlaying ||
+            resumePlaybackRequested
+    )
+    if (action == LocalMetadataWritePlaybackAction.NONE) {
+        return@withContext null
+    }
+
+    val snapshot = LocalMetadataWritePlaybackSnapshot(
+        song = _currentSongFlow.value ?: targetSong,
+        index = currentIndex,
+        positionMs = player.currentPosition.coerceAtLeast(0L),
+        commandSource = activePlaybackCommandSource,
+        requestToken = playbackRequestToken,
+        resumePlayback = action == LocalMetadataWritePlaybackAction.RELEASE_AND_RESUME
+    )
+    stopPlaybackPreservingQueue(clearMediaUrl = true)
+    snapshot.copy(requestToken = playbackRequestToken)
+}
+
+private suspend fun PlayerManager.resumePlaybackAfterLocalMetadataWrite(
+    snapshot: LocalMetadataWritePlaybackSnapshot?
+) {
+    if (snapshot == null) return
+    withContext(NonCancellable + Dispatchers.Main.immediate) {
+        val resumeIndex = currentPlaylist.indexOfFirst { it.sameIdentityAs(snapshot.song) }
+        if (
+            !isPlayerInitialized() ||
+                playbackRequestToken != snapshot.requestToken ||
+                resumeIndex != currentIndex ||
+                !isCurrentSong(snapshot.song)
+        ) {
+            return@withContext
+        }
+        playAtIndex(
+            index = resumeIndex,
+            resumePositionMs = snapshot.positionMs,
+            commandSource = snapshot.commandSource,
+            startPaused = !snapshot.resumePlayback,
+            allowRememberedLongFormPosition = false
+        )
+    }
+}
+
+internal suspend fun PlayerManager.writeLocalEditableMetadata(
+    song: SongItem,
+    coverReference: String? = song.customCoverUrl,
+    writeCover: Boolean = coverReference != null,
+    writeLyrics: Boolean = false
+): LocalMediaMetadataWriteOutcome {
+    val writableSong = resolveLocalSidecarWriteSong(song)
+        ?.takeIf { LocalSongSupport.isLocalSong(it, application) }
+        ?: return LocalMediaMetadataWriteOutcome.NOT_WRITABLE
+    val writeSong = if (writeLyrics) {
+        completeUnknownLocalWriteLyrics(writableSong)
+            ?: return LocalMediaMetadataWriteOutcome.FAILED
+    } else {
+        writableSong
+    }
+    val playbackSnapshot = parkCurrentPlaybackForLocalMetadataWrite(song)
+    return try {
+        LocalMediaSupport.writeEditableMetadata(
+            context = application,
+            song = writeSong,
+            coverReference = coverReference,
+            writeCover = writeCover,
+            writeLyrics = writeLyrics
+        )
+    } finally {
+        resumePlaybackAfterLocalMetadataWrite(playbackSnapshot)
+    }
+}
+
+private suspend fun PlayerManager.completeUnknownLocalWriteLyrics(song: SongItem): SongItem? {
+    val missingOriginal = song.matchedLyric == null && song.originalLyric == null
+    val missingTranslated = song.matchedTranslatedLyric == null && song.originalTranslatedLyric == null
+    val missingRomanized = song.matchedRomanizedLyric == null && song.originalRomanizedLyric == null
+    if (!missingOriginal && !missingTranslated && !missingRomanized) return song
+    val embedded = try {
+        withContext(Dispatchers.IO) {
+            LocalMediaSupport.inspectEmbeddedLyrics(application, song)
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        NPLogger.w("PlayerManager", "本地回写前未能确认现有歌词: ${error.message}")
+        null
+    }
+    if (embedded?.embeddedSourceResolved != true) return null
+    // 当前文件里的未知轨只用于本次回写，不能冒充已经丢失的原始恢复数据
+    return song.copy(
+        matchedLyric = if (missingOriginal) embedded.lyric.orEmpty() else song.matchedLyric,
+        matchedTranslatedLyric = if (missingTranslated) embedded.translatedLyric.orEmpty() else song.matchedTranslatedLyric,
+        matchedRomanizedLyric = if (missingRomanized) embedded.romanizedLyric.orEmpty() else song.matchedRomanizedLyric
+    )
+}
+
+private suspend fun PlayerManager.resolveLocalMetadataWriteReference(
+    song: SongItem
+): String? {
+    val sourceContext = localMediaSourceContext(song)
+    val directReference = sourceContext?.reference
+    if (directReference != null) {
+        return PlayerDependencies.downloads.resolvePermittedLocalPlaybackUri(
+            context = application,
+            song = song,
+            rawLocalReference = directReference,
+            sourceContext = sourceContext
+        )
+    }
+    return PlayerDependencies.downloads.getLocalPlaybackUri(application, song)
+}
+
+internal suspend fun PlayerManager.resolveLocalSidecarWriteSong(song: SongItem): SongItem? {
+    val playbackReference = resolveLocalMetadataWriteReference(song) ?: return null
+    return song.copy(
+        mediaUri = playbackReference,
+        localFilePath = if (playbackReference.startsWith('/')) playbackReference else null,
+        localFileName = song.localFileName
+            ?: playbackReference.substringAfterLast('/').takeIf(String::isNotBlank)
+    )
+}
+
+internal fun PlayerManager.showLocalEditableMetadataWriteFeedback(
+    outcome: LocalMediaMetadataWriteOutcome,
+    downloadSyncOutcome: PlayerDownloadedMetadataSyncOutcome
+) {
+    val messageResId = when (outcome) {
+        LocalMediaMetadataWriteOutcome.SUCCESS -> when (downloadSyncOutcome) {
+            PlayerDownloadedMetadataSyncOutcome.FAILED -> {
+                CoreCommonR.string.local_song_metadata_write_catalog_sync_failed
+            }
+            else -> CoreCommonR.string.local_song_metadata_write_success
+        }
+        LocalMediaMetadataWriteOutcome.SIDECAR_ONLY -> {
+            CoreCommonR.string.local_song_metadata_write_sidecar_only
+        }
+        LocalMediaMetadataWriteOutcome.NOT_WRITABLE -> CoreCommonR.string.local_song_metadata_write_not_writable
+        LocalMediaMetadataWriteOutcome.UNSUPPORTED_OR_UNREADABLE,
+        LocalMediaMetadataWriteOutcome.UNSUPPORTED_EMBEDDED_COVER -> {
+            CoreCommonR.string.local_song_metadata_write_unsupported
+        }
+        LocalMediaMetadataWriteOutcome.FAILED -> CoreCommonR.string.local_song_metadata_write_failed
+    }
+    mainScope.launch {
+        PlayerFeedback.show(
+            context = application,
+            message = getLocalizedString(messageResId)
+        )
+    }
+}
+
+internal suspend fun PlayerManager.updateSongCustomInfoImpl(
+    originalSong: SongItem,
+    customCoverUrl: String?,
+    customName: String?,
+    customArtist: String?,
+    restoreBaseCover: Boolean = false,
+    restoreBaseName: Boolean = false,
+    restoreBaseArtist: Boolean = false,
+    clearMatchedMetadata: Boolean = false,
+    writeLocalMetadata: Boolean = false,
+    writeLyrics: Boolean = false,
+    persistManualRemoteCover: Boolean = false,
+    restoreBaseLyrics: Boolean = false
+) : Boolean = runSongMetadataMutation {
+            NPLogger.d(
+                "PlayerManager",
+                "updateSongCustomInfo: id=${originalSong.id}, album='${originalSong.album}', customName=${customName?.take(32)}, customArtist=${customArtist?.take(32)}, customCoverUrl=${customCoverUrl?.take(64)}, restoreBase=[$restoreBaseName,$restoreBaseArtist,$restoreBaseCover], clearMatched=$clearMatchedMetadata, stack=[${debugStackHint()}]"
+            )
+
+            val latestSong = currentPlaylist.firstOrNull { it.sameIdentityAs(originalSong) }
+                ?: _currentSongFlow.value?.takeIf { it.sameIdentityAs(originalSong) }
+                ?: originalSong
+            val currentSong = preserveLocalSongMetadataOriginals(latestSong, preserveLyrics = writeLyrics)
+            val isLocalSong = LocalSongSupport.isLocalSong(currentSong, application)
+
+            val baseName = currentSong.name
+            val baseArtist = currentSong.artist
+            val baseCoverUrl = currentSong.coverUrl
+                ?.takeUnless { CustomSongCoverStorage.isDirectoryReference(it) }
+                ?.takeUnless(::isMediaStoreCoverReference)
+            val existingOriginalCoverUrl = currentSong.originalCoverUrl
+                ?.takeUnless { CustomSongCoverStorage.isDirectoryReference(it) }
+                ?.takeUnless(::isMediaStoreCoverReference)
+            val requestedCoverInput = customCoverUrl
+                .normalizedManualMetadataValue()
+                ?.takeUnless { CustomSongCoverStorage.isDirectoryReference(it) }
+                ?.takeUnless(::isMediaStoreCoverReference)
+            val requestedCoverReference = requestedCoverInput?.let { reference ->
+                if (
+                    shouldMaterializeRemoteLocalCover(
+                        isLocalSong = isLocalSong,
+                        requestedCoverReference = reference,
+                        restoreBaseCover = restoreBaseCover,
+                        persistManualRemoteCover = persistManualRemoteCover
+                    )
+                ) {
+                    CustomSongCoverStorage.persistManuallySelectedRemoteCover(
+                        context = application,
+                        sourceUrl = reference
+                    ) ?: return@runSongMetadataMutation false
+                } else {
+                    reference
+                }
+            }
+            // 侧载封面是本地歌曲的应用内持久化格式, 不应依赖是否回写嵌入元信息
+            val coverChanged = shouldWriteLocalCoverMetadata(
+                restoreBaseCover = restoreBaseCover,
+                nextCustomCover = requestedCoverReference,
+                previousCustomCover = currentSong.customCoverUrl
+            )
+            val lightweightOriginalCoverUrl = existingOriginalCoverUrl
+                ?.takeIf { it != currentSong.customCoverUrl }
+                ?: baseCoverUrl?.takeIf { it != currentSong.customCoverUrl }
+            val shouldResolveLocalCover = isLocalSong &&
+                (coverChanged || restoreBaseCover)
+            val discoveredLocalCoverUrl = if (shouldResolveLocalCover) {
+                firstUsableLocalCoverReference(
+                    // 下载歌曲的 Covers 侧载是本地恢复的第一来源, 不要让远程标签覆盖它
+                    { PlayerDependencies.downloads.peekLocalCoverUri(currentSong) },
+                    { LocalMediaSupport.resolveNearbyCoverUri(application, currentSong) },
+                    { LocalMediaSupport.peekCachedEmbeddedCoverUri(application, currentSong) },
+                    { LocalMediaSupport.resolveCoverUri(application, currentSong) }
+                )
+            } else {
+                null
+            }
+            val legacyOriginalCoverUrl = if (coverChanged && isLocalSong) {
+                CustomSongCoverStorage.resolveLegacyOriginalCoverReference(
+                    context = application,
+                    song = currentSong,
+                    references = listOf(
+                        currentSong.originalCoverUrl,
+                        currentSong.coverUrl
+                    )
+                )
+            } else {
+                null
+            }
+            val originalCoverReference = if (coverChanged && isLocalSong) {
+                if (writeLocalMetadata) {
+                    discoveredLocalCoverUrl ?: lightweightOriginalCoverUrl
+                } else {
+                    existingOriginalCoverUrl
+                        ?.takeIf { reference ->
+                            LocalSongSupport.isLocalMediaUri(reference) &&
+                                reference != currentSong.customCoverUrl
+                        }
+                        ?: legacyOriginalCoverUrl
+                        ?: discoveredLocalCoverUrl
+                        ?: lightweightOriginalCoverUrl
+                }
+            } else {
+                null
+            }
+            val preservedOriginalCoverUrl = if (existingOriginalCoverUrl == "") {
+                ""
+            } else if (coverChanged && isLocalSong) {
+                if (restoreBaseCover) {
+                    existingOriginalCoverUrl
+                } else {
+                    confirmLocalCoverBaseline(
+                        currentSong,
+                        legacyOriginalCoverUrl ?: CustomSongCoverStorage.persistOriginalCover(
+                            context = application,
+                            song = currentSong,
+                            reference = originalCoverReference
+                        ) ?: existingOriginalCoverUrl
+                    )
+                }
+            } else {
+                existingOriginalCoverUrl
+            }
+            val restoredBaseName = customName.normalizedManualMetadataValue()
+                ?: currentSong.originalName
+                ?: baseName
+            val restoredBaseArtist = customArtist.normalizedManualMetadataValue()
+                ?: currentSong.originalArtist
+                ?: baseArtist
+            val restoredBaseCoverUrl = if (restoreBaseCover) {
+                resolveRestoredBaseCoverUrl(
+                    originalCoverUrl = preservedOriginalCoverUrl ?: existingOriginalCoverUrl,
+                    baseCoverUrl = baseCoverUrl,
+                    currentCustomCoverUrl = currentSong.customCoverUrl
+                        ?.takeUnless { CustomSongCoverStorage.isDirectoryReference(it) }
+                        ?: requestedCoverReference,
+                    preferredLocalCoverUrl = discoveredLocalCoverUrl
+                        ?: requestedCoverReference
+                            ?.takeUnless(CustomSongCoverStorage::isRemoteReference),
+                    requestedRestoreCoverUrl = requestedCoverReference,
+                    localOnly = isLocalSong
+                )
+            } else {
+                customCoverUrl.normalizedManualMetadataValue()
+                    ?: preservedOriginalCoverUrl
+            }
+            val coverWriteReference = resolveLocalCoverWriteReference(
+                restoreBaseCover = restoreBaseCover,
+                requestedCoverReference = requestedCoverReference,
+                restoredBaseCoverReference = restoredBaseCoverUrl
+            )
+            // null is a deliberate clear when the user restores or removes a cover
+            val shouldWriteCoverToAudio = coverChanged ||
+                (writeLocalMetadata && requestedCoverReference != null) ||
+                (writeLocalMetadata && isLocalSong && currentSong.originalCoverUrl == "" &&
+                    requestedCoverReference == null && currentSong.customCoverUrl.isNullOrBlank() &&
+                    baseCoverUrl.isNullOrBlank())
+
+            val nextBaseName = if (restoreBaseName) restoredBaseName else baseName
+            val nextBaseArtist = if (restoreBaseArtist) restoredBaseArtist else baseArtist
+            val nextBaseCoverUrl = if (restoreBaseCover) restoredBaseCoverUrl else baseCoverUrl
+            val originalName = currentSong.originalName ?: nextBaseName
+            val originalArtist = currentSong.originalArtist ?: nextBaseArtist
+            val originalCoverUrl = if (restoreBaseCover && isLocalSong) {
+                (nextBaseCoverUrl ?: preservedOriginalCoverUrl)
+                    ?.takeUnless(CustomSongCoverStorage::isRemoteReference)
+            } else {
+                preservedOriginalCoverUrl ?: nextBaseCoverUrl
+            }
+
+            val normalizedCustomName = if (restoreBaseName) {
+                null
+            } else {
+                normalizeCustomMetadataValue(
+                    desiredValue = customName,
+                    baseValue = baseName
+                )
+            }
+            val normalizedCustomArtist = if (restoreBaseArtist) {
+                null
+            } else {
+                normalizeCustomMetadataValue(
+                    desiredValue = customArtist,
+                    baseValue = baseArtist
+                )
+            }
+            val normalizedCustomCoverUrl = if (restoreBaseCover) {
+                null
+            } else {
+                normalizeCustomMetadataValue(
+                    desiredValue = requestedCoverReference,
+                    baseValue = baseCoverUrl
+                )
+            }
+
+            val updatedSong = currentSong.copy(
+                name = nextBaseName,
+                artist = nextBaseArtist,
+                coverUrl = nextBaseCoverUrl,
+                customName = normalizedCustomName,
+                customArtist = normalizedCustomArtist,
+                customCoverUrl = normalizedCustomCoverUrl,
+                originalName = originalName,
+                originalArtist = originalArtist,
+                originalCoverUrl = originalCoverUrl,
+                lyricSyncEdited = if (restoreBaseLyrics || clearMatchedMetadata) false else currentSong.lyricSyncEdited,
+                lyricSyncRevision = if (restoreBaseLyrics || clearMatchedMetadata) {
+                    localRepo.nextUserLyricSyncRevision(currentSong)
+                } else currentSong.lyricSyncRevision,
+                matchedLyricSource = if (clearMatchedMetadata) null else currentSong.matchedLyricSource,
+                matchedSongId = if (clearMatchedMetadata) null else currentSong.matchedSongId
+            )
+
+            if (shouldSkipSongMetadataMutation(
+                    currentSong, updatedSong, writeLyrics,
+                    writeLocalMetadata = writeLocalMetadata && isLocalSong
+                )) {
+                NPLogger.d("PlayerManager", "skip unchanged song metadata mutation")
+                return@runSongMetadataMutation true
+            }
+
+            if (writeLocalMetadata && isLocalSong) {
+                val localWriteOutcome = writeLocalEditableMetadata(
+                    song = updatedSong,
+                    coverReference = coverWriteReference,
+                    writeCover = shouldWriteCoverToAudio,
+                    writeLyrics = writeLyrics
+                )
+                if (localWriteOutcome != LocalMediaMetadataWriteOutcome.SUCCESS) {
+                    showLocalEditableMetadataWriteFeedback(
+                        outcome = localWriteOutcome,
+                        downloadSyncOutcome =
+                            PlayerDownloadedMetadataSyncOutcome.NOT_DOWNLOADED
+                    )
+                    return@runSongMetadataMutation false
+                }
+            } else if (isLocalSong) {
+                val sidecarSong = resolveLocalSidecarWriteSong(updatedSong)
+                if (sidecarSong == null) {
+                    showLocalEditableMetadataWriteFeedback(
+                        outcome = LocalMediaMetadataWriteOutcome.NOT_WRITABLE,
+                        downloadSyncOutcome =
+                            PlayerDownloadedMetadataSyncOutcome.NOT_DOWNLOADED
+                    )
+                    return@runSongMetadataMutation false
+                }
+                val metadataSidecarWritten = LocalMediaSupport.writeLocalMetadataSidecar(
+                    context = application,
+                    song = sidecarSong,
+                    writeLyrics = writeLyrics,
+                    coverReference = coverWriteReference.takeIf { shouldWriteCoverToAudio },
+                    clearCoverReference = shouldWriteCoverToAudio &&
+                        coverWriteReference.isNullOrBlank()
+                )
+                if (!metadataSidecarWritten) {
+                    NPLogger.w(
+                        "PlayerManager",
+                        "本地侧载元数据写入未完成"
+                    )
+                    showLocalEditableMetadataWriteFeedback(
+                        outcome = LocalMediaMetadataWriteOutcome.FAILED,
+                        downloadSyncOutcome =
+                            PlayerDownloadedMetadataSyncOutcome.NOT_DOWNLOADED
+                    )
+                    return@runSongMetadataMutation false
+                }
+            }
+
+            updateSongInAllPlaces(
+                originalSong = originalSong,
+                updatedSong = updatedSong,
+                triggerSync = true,
+                syncDownloadedMetadata = shouldSyncDownloadedMetadataAfterMetadataUpdate(
+                    writeLocalMetadata = writeLocalMetadata,
+                    isLocalSong = isLocalSong
+                ),
+                fastLocalUsageSync = true,
+                clearRestorableOverrides = RestorableMetadataClearPolicy(
+                    title = restoreBaseName,
+                    artist = restoreBaseArtist,
+                    cover = restoreBaseCover,
+                    lyrics = restoreBaseLyrics || clearMatchedMetadata
+                )
+            )
+            true
+        }
+
+private fun String?.normalizedManualMetadataValue(): String? {
+    return this?.trim()?.takeIf { it.isNotBlank() }
+}
+
+internal fun PlayerManager.hydrateSongMetadataImpl(originalSong: SongItem, updatedSong: SongItem) {
+    val queuedSongAtRequest = currentPlaylist.firstOrNull { it.sameIdentityAs(originalSong) }
+    val currentSongAtRequest = _currentSongFlow.value?.takeIf { it.sameIdentityAs(originalSong) }
+    if (queuedSongAtRequest?.let { it != originalSong } == true ||
+        currentSongAtRequest?.let { it != originalSong } == true
+    ) return
+    ioScope.launch {
+        runSongMetadataMutation {
+            // 输入可以是相等的副本，提交时仍校验实际快照是否已被后续保存替换
+            if (currentPlaylist.firstOrNull { it.sameIdentityAs(originalSong) } !== queuedSongAtRequest ||
+                _currentSongFlow.value?.takeIf { it.sameIdentityAs(originalSong) } !== currentSongAtRequest
+            ) return@runSongMetadataMutation
+            NPLogger.d(
+                "NERI-PlayerManager",
+                "hydrateSongMetadata: original=${originalSong.name}/${originalSong.id}, updated=${updatedSong.name}/${updatedSong.id}, stack=[${debugStackHint()}]"
+            )
+            updateSongInAllPlaces(
+                originalSong = originalSong,
+                updatedSong = updatedSong,
+                triggerSync = false,
+                syncDownloadedMetadata = shouldSyncDownloadedMetadataAfterPlaybackHydration()
+            )
+        }
+    }
+}
+
+internal suspend fun PlayerManager.updateUserLyricOffsetImpl(
+    songToUpdate: SongItem,
+    newOffset: Long
+) = runSongMetadataMutation {
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "updateUserLyricOffset: song=${songToUpdate.name}, id=${songToUpdate.id}, newOffset=$newOffset"
+    )
+    updateQueuedSong(songToUpdate) { it.copy(userLyricOffsetMs = newOffset) }
+
+    if (isCurrentSong(songToUpdate)) {
+        setCurrentSongForPlayback(_currentSongFlow.value?.copy(userLyricOffsetMs = newOffset))
+    }
+
+    val latestSong = currentPlaylist.firstOrNull { it.sameIdentityAs(songToUpdate) }
+        ?: _currentSongFlow.value?.takeIf { it.sameIdentityAs(songToUpdate) }
+    if (latestSong != null) {
+        runLocalPlaylistMutationSafely("updateUserLyricOffset") {
+            withContext(Dispatchers.IO) {
+                localRepo.updateSongMetadata(
+                    originalSong = songToUpdate,
+                    newSongInfo = latestSong,
+                    triggerSync = true
+                )
+            }
+        }
+        PlayerDependencies.downloads.syncDownloadedSongMetadataNow(
+            song = latestSong,
+            clearRestorableOverrides = RestorableMetadataClearPolicy(
+                userLyricOffset = true
+            )
+        )
+    }
+
+    persistState()
+}
+
+internal suspend fun PlayerManager.rebaseUserLyricOffsetsForSourceImpl(
+    targetSource: MusicPlatform,
+    previousDefaultOffsetMs: Long,
+    newDefaultOffsetMs: Long
+) = runSongMetadataMutation {
+    if (previousDefaultOffsetMs == newDefaultOffsetMs) {
+        return@runSongMetadataMutation
+    }
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "rebaseUserLyricOffsetsForSource: source=$targetSource old=$previousDefaultOffsetMs new=$newDefaultOffsetMs"
+    )
+    val queueChanged = updateCurrentQueueSongs { playlist ->
+        var changed = false
+        val rebasedPlaylist = playlist.map { song ->
+            if (
+                !shouldRebaseLyricOffsetForSource(
+                    lyricSource = song.matchedLyricSource,
+                    targetSource = targetSource,
+                    userOffsetMs = song.userLyricOffsetMs
+                )
+            ) {
+                return@map song
+            }
+            changed = true
+            song.copy(
+                userLyricOffsetMs = rebaseLyricUserOffsetMs(
+                    userOffsetMs = song.userLyricOffsetMs,
+                    previousDefaultOffsetMs = previousDefaultOffsetMs,
+                    newDefaultOffsetMs = newDefaultOffsetMs
+                )
+            )
+        }
+        rebasedPlaylist.takeIf { changed }
+    } != null
+
+    val currentSong = _currentSongFlow.value
+    val currentSongForRebase = currentSong
+        ?.takeIf {
+            shouldRebaseLyricOffsetForSource(
+                lyricSource = it.matchedLyricSource,
+                targetSource = targetSource,
+                userOffsetMs = it.userLyricOffsetMs
+            )
+        }
+    val rebasedCurrentSong = currentSongForRebase
+        ?.let { song ->
+            song.copy(
+                userLyricOffsetMs = rebaseLyricUserOffsetMs(
+                    userOffsetMs = song.userLyricOffsetMs,
+                    previousDefaultOffsetMs = previousDefaultOffsetMs,
+                    newDefaultOffsetMs = newDefaultOffsetMs
+                )
+            )
+        }
+    if (currentSongForRebase != null && rebasedCurrentSong != null) {
+        val hasPendingLyriconUpdate = hasPendingLyriconUpdate()
+        setCurrentSongForPlayback(rebasedCurrentSong, syncLyricon = false)
+        if (hasPendingLyriconUpdate) {
+            syncLyriconSong(
+                song = rebasedCurrentSong,
+                lyricOffsetOverrideMs = saturatingAddLyricOffsetMs(
+                    value = previousDefaultOffsetMs,
+                    delta = currentSongForRebase.userLyricOffsetMs
+                )
+            )
+        }
+    }
+
+    val localUpdateSucceeded = runLocalPlaylistMutationSafely("rebaseLyricOffsetsForSource") {
+        withContext(Dispatchers.IO) {
+            localRepo.rebaseLyricOffsetsForSource(
+                targetSource = targetSource,
+                previousDefaultOffsetMs = previousDefaultOffsetMs,
+                newDefaultOffsetMs = newDefaultOffsetMs
+            )
+        }
+    }
+    if (localUpdateSucceeded.isSuccess) {
+        PlayerDependencies.repositories.playlistUsageRepo.syncLocalEntries(
+            playlists = localRepo.playlists.value,
+            localFilesCoverCandidates = downloadedLocalFilesCoverCandidates()
+        )
+    }
+
+    if (queueChanged || rebasedCurrentSong != null) {
+        persistState()
+    }
+}
+
+internal suspend fun PlayerManager.updateSongLyricsImpl(
+    songToUpdate: SongItem,
+    newLyrics: String?
+) = runSongMetadataMutation {
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "updateSongLyrics: song=${songToUpdate.name}, id=${songToUpdate.id}, lyricLength=${newLyrics?.length ?: 0}"
+    )
+    val latestQueueSong = currentQueueSnapshot().playlist.firstOrNull { it.sameIdentityAs(songToUpdate) }
+        ?: _currentSongFlow.value?.takeIf { it.sameIdentityAs(songToUpdate) }
+        ?: songToUpdate
+    val currentSong = preserveLocalSongMetadataOriginals(latestQueueSong)
+    val captureMatchedOriginals = !LocalSongSupport.isLocalSong(currentSong, application)
+    recordUserLyricEditThenPublish(
+        prepare = {
+            currentSong.withUpdatedLyricsPreservingOriginal(
+                newLyrics = newLyrics,
+                revision = localRepo.nextUserLyricSyncRevision(currentSong),
+                captureMatchedOriginals = captureMatchedOriginals
+            )
+        },
+        record = localRepo::recordLyricSyncState
+    ) { updatedSong ->
+        val revision = updatedSong.lyricSyncRevision
+        updateQueuedSong(songToUpdate) { current ->
+            current.withOriginalLyricsFrom(updatedSong).withUpdatedLyricsPreservingOriginal(
+                newLyrics = newLyrics,
+                revision = revision,
+                captureMatchedOriginals = captureMatchedOriginals
+            )
+        }
+
+        if (isCurrentSong(songToUpdate)) {
+            setCurrentSongForPlayback(
+                _currentSongFlow.value?.withOriginalLyricsFrom(updatedSong)?.withUpdatedLyricsPreservingOriginal(
+                    newLyrics = newLyrics,
+                    revision = revision,
+                    captureMatchedOriginals = captureMatchedOriginals
+                )
+            )
+        }
+
+        val latestSong = currentPlaylist.firstOrNull { it.sameIdentityAs(songToUpdate) }
+        if (latestSong != null) {
+            runLocalPlaylistMutationSafely("updateSongLyrics") {
+                withContext(Dispatchers.IO) {
+                    localRepo.updateSongMetadata(
+                        originalSong = songToUpdate,
+                        newSongInfo = latestSong,
+                        triggerSync = true
+                    )
+                }
+            }
+            PlayerDependencies.downloads.syncDownloadedSongMetadataNow(latestSong)
+            PlayerDependencies.repositories.playHistoryRepo.updateSongMetadata(songToUpdate, latestSong)
+            PlayerDependencies.repositories.playlistUsageRepo.syncLocalEntries(
+                playlists = localRepo.playlists.value,
+                localFilesCoverCandidates = downloadedLocalFilesCoverCandidates(),
+                resolveLocalMetadataFallback = false
+            )
+        }
+
+        persistState()
+    }
+}
+
+internal suspend fun PlayerManager.updateSongTranslatedLyricsImpl(
+    songToUpdate: SongItem,
+    newTranslatedLyrics: String?
+) = runSongMetadataMutation {
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "updateSongTranslatedLyrics: song=${songToUpdate.name}, id=${songToUpdate.id}, translatedLength=${newTranslatedLyrics?.length ?: 0}"
+    )
+    val latestQueueSong = currentQueueSnapshot().playlist.firstOrNull { it.sameIdentityAs(songToUpdate) }
+        ?: _currentSongFlow.value?.takeIf { it.sameIdentityAs(songToUpdate) }
+        ?: songToUpdate
+    val currentSong = preserveLocalSongMetadataOriginals(latestQueueSong)
+    val captureMatchedOriginals = !LocalSongSupport.isLocalSong(currentSong, application)
+    recordUserLyricEditThenPublish(
+        prepare = {
+            currentSong.withUpdatedLyricsPreservingOriginal(
+                newTranslatedLyric = newTranslatedLyrics,
+                revision = localRepo.nextUserLyricSyncRevision(currentSong),
+                captureMatchedOriginals = captureMatchedOriginals
+            )
+        },
+        record = localRepo::recordLyricSyncState
+    ) { updatedSong ->
+        val revision = updatedSong.lyricSyncRevision
+        updateQueuedSong(songToUpdate) { current ->
+            current.withOriginalLyricsFrom(updatedSong).withUpdatedLyricsPreservingOriginal(
+                newTranslatedLyric = newTranslatedLyrics,
+                revision = revision,
+                captureMatchedOriginals = captureMatchedOriginals
+            )
+        }
+
+        if (isCurrentSong(songToUpdate)) {
+            setCurrentSongForPlayback(
+                _currentSongFlow.value?.withOriginalLyricsFrom(updatedSong)?.withUpdatedLyricsPreservingOriginal(
+                    newTranslatedLyric = newTranslatedLyrics,
+                    revision = revision,
+                    captureMatchedOriginals = captureMatchedOriginals
+                )
+            )
+        }
+
+        val latestSong = currentPlaylist.firstOrNull { it.sameIdentityAs(songToUpdate) }
+        if (latestSong != null) {
+            runLocalPlaylistMutationSafely("updateSongTranslatedLyrics") {
+                withContext(Dispatchers.IO) {
+                    localRepo.updateSongMetadata(
+                        originalSong = songToUpdate,
+                        newSongInfo = latestSong,
+                        triggerSync = true
+                    )
+                }
+            }
+            PlayerDependencies.downloads.syncDownloadedSongMetadataNow(latestSong)
+            PlayerDependencies.repositories.playHistoryRepo.updateSongMetadata(songToUpdate, latestSong)
+            PlayerDependencies.repositories.playlistUsageRepo.syncLocalEntries(
+                playlists = localRepo.playlists.value,
+                localFilesCoverCandidates = downloadedLocalFilesCoverCandidates()
+            )
+        }
+
+        persistState()
+    }
+}
+
+internal suspend fun PlayerManager.updateSongLyricsAndTranslationImpl(
+    songToUpdate: SongItem,
+    newLyrics: String?,
+    newTranslatedLyrics: String?,
+    newRomanizedLyrics: String? = null,
+    writeLocalMetadata: Boolean = false,
+    persistLocalSidecars: Boolean = true,
+    syncDownloadedMetadata: Boolean = true,
+    userEdited: Boolean = true
+) : Boolean = runSongMetadataMutation {
+    val latestQueueSong = currentQueueSnapshot().playlist
+        .firstOrNull { it.sameIdentityAs(songToUpdate) }
+        ?: _currentSongFlow.value?.takeIf { it.sameIdentityAs(songToUpdate) }
+        ?: songToUpdate
+    val currentQueueSong = if (userEdited) {
+        preserveLocalSongMetadataOriginals(latestQueueSong)
+    } else {
+        latestQueueSong
+    }
+    val captureMatchedOriginals = !userEdited || !LocalSongSupport.isLocalSong(currentQueueSong, application)
+    val effectiveLyrics = newLyrics ?: currentQueueSong.matchedLyric
+    val effectiveTranslatedLyrics = newTranslatedLyrics
+        ?: currentQueueSong.matchedTranslatedLyric
+    val effectiveRomanizedLyrics = newRomanizedLyrics
+        ?: currentQueueSong.matchedRomanizedLyric
+    val revision = if (userEdited) localRepo.nextUserLyricSyncRevision(currentQueueSong)
+        else currentQueueSong.lyricSyncRevision
+
+    val lyricsChanged = effectiveLyrics != currentQueueSong.matchedLyric ||
+        effectiveTranslatedLyrics != currentQueueSong.matchedTranslatedLyric ||
+        effectiveRomanizedLyrics != currentQueueSong.matchedRomanizedLyric
+    if (!lyricsChanged && !writeLocalMetadata && currentQueueSong.lyricSyncEdited == userEdited) {
+        val localSidecarRepairRequired =
+            LocalSongSupport.isLocalSong(currentQueueSong, application) &&
+            persistLocalSidecars &&
+            LocalMediaSupport.needsLyricSidecarRepair(
+                context = application,
+                song = currentQueueSong
+            )
+        if (!localSidecarRepairRequired) {
+            NPLogger.d("PlayerManager", "skip unchanged lyric sidecar mutation")
+            return@runSongMetadataMutation true
+        }
+        NPLogger.d("PlayerManager", "rebuild missing lyric sidecars")
+    }
+
+    val updatedSong = currentQueueSong.withUpdatedLyricsPreservingOriginal(
+        newLyrics = effectiveLyrics,
+        newTranslatedLyric = effectiveTranslatedLyrics,
+        newRomanizedLyric = effectiveRomanizedLyrics,
+        userEdited = userEdited,
+        revision = revision,
+        captureMatchedOriginals = captureMatchedOriginals
+    )
+    val isLocalSong = LocalSongSupport.isLocalSong(updatedSong, application)
+    val sidecarsWritten = if (isLocalSong && writeLocalMetadata) {
+        val sidecarSong = resolveLocalSidecarWriteSong(updatedSong)
+        if (sidecarSong == null) {
+            false
+        } else {
+            runCatching {
+                writeLocalEditableMetadata(
+                    song = sidecarSong,
+                    coverReference = sidecarSong.customCoverUrl,
+                    writeCover = false,
+                    writeLyrics = true
+                ) == LocalMediaMetadataWriteOutcome.SUCCESS
+            }.getOrElse { error ->
+                NPLogger.w(
+                    "PlayerManager",
+                    "本地歌词与嵌入元数据同步写入失败: ${error.message}"
+                )
+                false
+            }
+        }
+    } else if (
+        isLocalSong && shouldPersistLyricsSidecarsSynchronously(
+            writeLocalMetadata = writeLocalMetadata,
+            persistLocalSidecars = persistLocalSidecars
+        )
+    ) {
+        val sidecarSong = resolveLocalSidecarWriteSong(updatedSong)
+        if (sidecarSong == null) {
+            false
+        } else {
+            try {
+                LocalMediaSupport.writeLocalLyricsSidecars(
+                    context = application,
+                    song = sidecarSong,
+                    persistMetadata = true
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                NPLogger.w(
+                    "PlayerManager",
+                    "本地歌词侧载写入失败: ${error.message}"
+                )
+                false
+            }
+        }
+    } else {
+        true
+    }
+    if (!sidecarsWritten) {
+        NPLogger.w(
+            "PlayerManager",
+            "本地歌词写入未完成: song=${updatedSong.name}, " +
+                "sidecars=$sidecarsWritten"
+        )
+        return@runSongMetadataMutation false
+    }
+
+    // 编辑或恢复记录先落盘，用户立即删歌也不能使其它设备的旧歌词回流
+    localRepo.recordLyricSyncState(updatedSong)
+
+    val updatedQueueSong = updateQueuedSong(songToUpdate) { current ->
+        current.withOriginalLyricsFrom(updatedSong).withUpdatedLyricsPreservingOriginal(
+            newLyrics = effectiveLyrics,
+            newTranslatedLyric = effectiveTranslatedLyrics,
+            newRomanizedLyric = effectiveRomanizedLyrics,
+            userEdited = userEdited,
+            revision = revision,
+            captureMatchedOriginals = captureMatchedOriginals
+        )
+    }
+    if (updatedQueueSong != null) {
+        NPLogger.d("PlayerManager", "Queue song lyrics updated")
+    }
+    val activeSong = _currentSongFlow.value?.takeIf { it.sameIdentityAs(songToUpdate) }
+    if (activeSong != null) {
+        setCurrentSongForPlayback(
+            activeSong.withOriginalLyricsFrom(updatedSong).withUpdatedLyricsPreservingOriginal(
+                newLyrics = effectiveLyrics,
+                newTranslatedLyric = effectiveTranslatedLyrics,
+                newRomanizedLyric = effectiveRomanizedLyrics,
+                userEdited = userEdited,
+                revision = revision,
+                captureMatchedOriginals = captureMatchedOriginals
+            )
+        )
+    }
+
+    val latestSong = updatedQueueSong
+        ?: updatedSong.takeIf { it.sameIdentityAs(songToUpdate) }
+    if (latestSong == null) {
+        NPLogger.w("PlayerManager", "歌词更新后未找到最新歌曲副本")
+        return@runSongMetadataMutation false
+    }
+
+    // queue/current-song state is published immediately; catalog fanout stays off the editor's critical path
+    ioScope.launch {
+        runSongMetadataMutation {
+            runCatching {
+                runLocalPlaylistMutationSafely("updateSongLyricsAndTranslation") {
+                    withContext(Dispatchers.IO) {
+                        localRepo.updateSongMetadata(
+                            originalSong = songToUpdate,
+                            newSongInfo = latestSong,
+                            triggerSync = true
+                        )
+                    }
+                }
+                if (
+                    shouldSyncDownloadedMetadataAfterLyricsUpdate(
+                        writeLocalMetadata = writeLocalMetadata,
+                        isLocalSong = isLocalSong,
+                        syncDownloadedMetadata = syncDownloadedMetadata
+                    )
+                ) {
+                    PlayerDependencies.downloads.syncDownloadedSongMetadata(latestSong)
+                }
+                PlayerDependencies.repositories.playHistoryRepo.updateSongMetadata(songToUpdate, latestSong)
+                PlayerDependencies.repositories.playlistUsageRepo.syncLocalEntries(
+                    playlists = localRepo.playlists.value,
+                    localFilesCoverCandidates = downloadedLocalFilesCoverCandidates(),
+                    resolveLocalMetadataFallback = false
+                )
+                persistState()
+                NPLogger.d(
+                    "PlayerManager",
+                    "歌词更新已同步到本地仓库: id=${latestSong.id}, " +
+                        "lyric=${latestSong.matchedLyric?.take(32)}, " +
+                        "translated=${latestSong.matchedTranslatedLyric?.take(32)}"
+                )
+            }.onFailure { error ->
+                NPLogger.e(
+                    "PlayerManager",
+                    "歌词更新后台同步失败: ${error.message}",
+                    error
+                )
+            }
+        }
+    }
+    NPLogger.d("PlayerManager", "updateSongLyricsAndTranslation completed")
+    true
+}
+
+internal suspend fun PlayerManager.updateSongInAllPlaces(
+    originalSong: SongItem,
+    updatedSong: SongItem,
+    triggerSync: Boolean,
+    syncDownloadedMetadata: Boolean = true,
+    fastLocalUsageSync: Boolean = false,
+    clearRestorableOverrides: RestorableMetadataClearPolicy =
+        RestorableMetadataClearPolicy()
+) {
+    localRepo.recordLyricSyncState(updatedSong)
+    NPLogger.d(
+        "NERI-PlayerManager",
+        "updateSongInAllPlaces: original=${originalSong.name}/${originalSong.id}, updated=${updatedSong.name}/${updatedSong.id}, hasCurrentMatch=${isCurrentSong(originalSong)}, stack=[${debugStackHint()}]"
+    )
+    updateQueuedSong(originalSong) { updatedSong }
+
+    if (isCurrentSong(originalSong)) {
+        setCurrentSongForPlayback(updatedSong)
+        if (isBiliTrack(updatedSong) && !isListenTogetherActive()) {
+            BiliVideoSkipPlaybackController.prepareActiveBiliTrackTarget(
+                song = updatedSong,
+                requestToken = playbackRequestToken,
+                scope = ioScope
+            )
+        }
+    }
+
+    val persistMetadata: suspend () -> Unit = {
+        runLocalPlaylistMutationSafely("updateSongInAllPlaces") {
+            withContext(Dispatchers.IO) {
+                localRepo.updateSongMetadata(
+                    originalSong = originalSong,
+                    newSongInfo = updatedSong,
+                    triggerSync = triggerSync
+                )
+            }
+        }
+        if (syncDownloadedMetadata) {
+            PlayerDependencies.downloads.syncDownloadedSongMetadata(
+                song = updatedSong,
+                clearRestorableOverrides = clearRestorableOverrides
+            )
+        }
+        PlayerDependencies.repositories.playHistoryRepo.updateSongMetadata(
+            originalSong = originalSong,
+            updatedSong = updatedSong,
+            triggerSync = triggerSync
+        )
+        PlayerDependencies.repositories.playlistUsageRepo.syncLocalEntries(
+            playlists = localRepo.playlists.value,
+            localFilesCoverCandidates = downloadedLocalFilesCoverCandidates(),
+            resolveLocalMetadataFallback = !fastLocalUsageSync
+        )
+        persistState()
+    }
+    persistMetadata()
+}

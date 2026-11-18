@@ -1,14 +1,16 @@
 package moe.ouom.neriplayer.ui.screen.tab.settings.page
 
-import android.content.Context
+import android.content.res.Resources
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.data.settings.generated.AutoSettingInfo
 import moe.ouom.neriplayer.data.settings.generated.AutoSettingsMetadata
 import moe.ouom.neriplayer.data.settings.generated.AutoSettingsSections
 import moe.ouom.neriplayer.ksp.annotations.SettingUiType
-import moe.ouom.neriplayer.util.search.SearchTextMatcher
+import moe.ouom.neriplayer.common.search.SearchTextMatcher
+import moe.ouom.neriplayer.ui.settings.unavailableSettingKeys
+import moe.ouom.neriplayer.R as AppR
 
 internal data class SettingsSearchEntry(
     val id: String,
@@ -25,10 +27,13 @@ internal data class SettingsSearchScrollAnchor(
     val scrollOffset: Dp = 0.dp
 )
 
-internal fun buildSettingsSearchEntries(context: Context): List<SettingsSearchEntry> {
+internal fun buildSettingsSearchEntries(
+    resources: Resources,
+    internationalEnabled: Boolean = false
+): List<SettingsSearchEntry> {
     val pageEntries = SettingsPage.entries.map { page ->
-        val title = context.safeString(page.titleRes)
-        val description = context.safeString(page.descriptionRes)
+        val title = resources.safeString(page.titleRes)
+        val description = resources.safeString(page.descriptionRes)
         SettingsSearchEntry(
             id = "page:${page.name}",
             page = page,
@@ -41,12 +46,17 @@ internal fun buildSettingsSearchEntries(context: Context): List<SettingsSearchEn
     }
 
     val settingEntries = AutoSettingsMetadata.settings
-        .filter { it.ui != SettingUiType.None && it.titleRes != 0 }
+        .filter {
+            it.ui != SettingUiType.None &&
+                it.titleRes != 0 &&
+                it.keyName !in unavailableSettingKeys &&
+                (!internationalEnabled || it.keyName != "home_card_bilibili")
+        }
         .mapNotNull { setting ->
             val page = setting.settingsPage() ?: return@mapNotNull null
-            val title = context.safeString(setting.titleRes)
-            val description = context.safeString(setting.descriptionRes)
-            val pageTitle = context.safeString(page.titleRes)
+            val title = resources.safeString(setting.titleRes)
+            val description = resources.safeString(setting.descriptionRes)
+            val pageTitle = resources.safeString(page.titleRes)
             SettingsSearchEntry(
                 id = "setting:${setting.keyName}",
                 page = page,
@@ -60,7 +70,7 @@ internal fun buildSettingsSearchEntries(context: Context): List<SettingsSearchEn
             )
         }
 
-    return pageEntries + settingEntries + manualSettingsSearchEntries(context)
+    return pageEntries + settingEntries + manualSettingsSearchEntries(resources)
 }
 
 internal fun searchSettingsEntries(
@@ -91,6 +101,16 @@ internal fun AutoSettingInfo.settingsPage(): SettingsPage? {
     if (keyName in LyricAppearanceSettingKeys) {
         return SettingsPage.Lyrics
     }
+    val target = "setting:$keyName"
+    if (target in PersonalizationBackgroundTargets) {
+        return SettingsPage.Background
+    }
+    if (target in PersonalizationPlaybackInfoTargets || target in PersonalizationPlaybackControlTargets) {
+        return SettingsPage.NowPlaying
+    }
+    if (section == AutoSettingsSections.lyrics && !keyName.endsWith("_lyric_default_offset_ms")) {
+        return SettingsPage.ExternalLyrics
+    }
     if (
         keyName == "netease_auto_source_switch" ||
         keyName == "netease_local_source_fallback"
@@ -112,6 +132,7 @@ internal fun settingsPageForSection(section: String): SettingsPage? {
         AutoSettingsSections.display -> SettingsPage.Personalization
         AutoSettingsSections.motion -> SettingsPage.Motion
         AutoSettingsSections.lyrics -> SettingsPage.Lyrics
+        AutoSettingsSections.lyricSource -> SettingsPage.Lyrics
         AutoSettingsSections.network -> SettingsPage.Network
         AutoSettingsSections.download -> SettingsPage.Downloads
         AutoSettingsSections.trafficManagement -> SettingsPage.TrafficManagement
@@ -148,10 +169,14 @@ internal fun AutoSettingInfo.searchTargetId(): String {
         "playback_crossfade_out_duration_ms" -> "playback_crossfade_next"
         "enhanced_advanced_blur_radius_dp" -> "advanced_blur_enabled"
         "advanced_blur_quality" -> "advanced_blur_enabled"
+        "liquid_glass_enabled" -> "advanced_blur_enabled"
         "nowplaying_cover_blur_amount",
         "nowplaying_cover_blur_darken" -> "nowplaying_cover_blur_background_enabled"
         "lyric_blur_amount" -> "lyric_blur_enabled"
         "standardized_lyric_embedding_enabled" -> "download_metadata_post_processing_enabled"
+        "download_netease_audio_quality",
+        "download_youtube_audio_quality",
+        "download_bili_audio_quality" -> "download_follow_playback_audio_quality"
         "lyric_font_scale" -> "nowplaying_cover_lyric_font_scale"
         else -> keyName
     }
@@ -188,18 +213,27 @@ internal fun settingsSearchScrollAnchor(
     }
 
     return when (page) {
+        SettingsPage.Accounts -> SettingsSearchScrollAnchor(itemIndex = 0)
         SettingsPage.Theme -> when (targetId) {
-            "manual:theme_mode" -> SettingsSearchScrollAnchor(itemIndex = 1)
-            "manual:theme_palette_style" -> SettingsSearchScrollAnchor(itemIndex = 3)
-            "manual:theme_color_spec" -> SettingsSearchScrollAnchor(itemIndex = 4)
-            else -> SettingsSearchScrollAnchor(itemIndex = 2)
+            "setting:ui_style" -> SettingsSearchScrollAnchor(itemIndex = 1)
+            "manual:theme_mode" -> SettingsSearchScrollAnchor(itemIndex = 2)
+            "manual:theme_palette_style" -> SettingsSearchScrollAnchor(itemIndex = 4)
+            "manual:theme_color_spec" -> SettingsSearchScrollAnchor(itemIndex = 5)
+            else -> SettingsSearchScrollAnchor(itemIndex = 3)
         }
         SettingsPage.Motion -> SettingsSearchScrollAnchor(
             itemIndex = 1 + motionCardIndex(targetId)
         )
         SettingsPage.Lyrics -> SettingsSearchScrollAnchor(
-            itemIndex = 1 + lyricsCardIndex(targetId)
+            itemIndex = 1 + LyricsPageCards.indexOf(lyricsCardIndex(targetId)).coerceAtLeast(0)
         )
+        SettingsPage.ExternalLyrics -> SettingsSearchScrollAnchor(
+            itemIndex = 1 + ExternalLyricsPageCards.indexOf(lyricsCardIndex(targetId)).coerceAtLeast(0)
+        )
+        SettingsPage.NowPlaying -> SettingsSearchScrollAnchor(
+            itemIndex = 1 + (personalizationCardIndex(targetId) - 2).coerceIn(0, 1)
+        )
+        SettingsPage.Background -> SettingsSearchScrollAnchor(itemIndex = 1)
         SettingsPage.Playback -> SettingsSearchScrollAnchor(
             itemIndex = 1 + playbackCardIndex(targetId)
         )
@@ -210,7 +244,7 @@ internal fun settingsSearchScrollAnchor(
             itemIndex = 1 + backupCardIndex(targetId)
         )
         SettingsPage.Personalization -> SettingsSearchScrollAnchor(
-            itemIndex = 1 + personalizationCardIndex(targetId)
+            itemIndex = 1 + personalizationCardIndex(targetId).coerceIn(0, 1)
         )
         else -> SettingsSearchScrollAnchor(itemIndex = 1)
     }
@@ -219,10 +253,15 @@ internal fun settingsSearchScrollAnchor(
 private fun lyricsCardIndex(targetId: String): Int {
     return when (targetId) {
         "setting:floating_lyrics_enabled" -> 0
+        "setting:prefer_word_timed_lyrics",
+        "setting:default_lyric_source" -> 1
         "setting:cloud_music_lyric_default_offset_ms",
-        "setting:qq_music_lyric_default_offset_ms" -> 2
-        in LyricAppearanceSearchTargets -> 3
-        else -> 1
+        "setting:qq_music_lyric_default_offset_ms",
+        "setting:kugou_lyric_default_offset_ms",
+        "setting:lrclib_lyric_default_offset_ms",
+        "setting:amll_ttml_lyric_default_offset_ms" -> 3
+        in LyricAppearanceSearchTargets -> 4
+        else -> 2
     }
 }
 
@@ -269,6 +308,7 @@ private fun backupCardIndex(targetId: String): Int {
 private fun motionCardIndex(targetId: String): Int {
     return when (targetId) {
         "setting:advanced_blur_enabled",
+        "setting:liquid_glass_enabled",
         "setting:enhanced_advanced_blur_enabled",
         "setting:enhanced_advanced_blur_radius_dp",
         "setting:advanced_blur_quality" -> 1
@@ -318,13 +358,14 @@ private val PersonalizationHomeTargets = setOf(
     "setting:home_card_continue",
     "setting:home_card_trending",
     "setting:home_card_radar",
-    "setting:home_card_recommended"
+    "setting:home_card_recommended",
+    "setting:home_card_bilibili"
 )
 
 private val PersonalizationPlaybackInfoTargets = setOf(
     "setting:show_cover_source_badge",
-    "setting:nowplaying_show_title",
     "setting:nowplaying_song_title_marquee_enabled",
+    "setting:nowplaying_immersive_mode",
     "setting:nowplaying_cover_lyrics_enabled",
     "setting:nowplaying_progress_show_quality_switch",
     "setting:nowplaying_progress_show_audio_codec",
@@ -332,7 +373,6 @@ private val PersonalizationPlaybackInfoTargets = setOf(
 )
 
 private val PersonalizationPlaybackControlTargets = setOf(
-    "setting:always_use_new_tab_style",
     "setting:nowplaying_keep_screen_on",
     "setting:nowplaying_toolbar_dock_enabled",
     "setting:nowplaying_control_placement",
@@ -379,7 +419,7 @@ private fun SettingsPage.searchAliases(): List<String> {
     return PageSearchAliases[this].orEmpty()
 }
 
-internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchEntry> {
+internal fun manualSettingsSearchEntries(resources: Resources): List<SettingsSearchEntry> {
     fun entry(
         page: SettingsPage,
         titleRes: Int,
@@ -389,8 +429,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         targetId: String = "manual:$id",
         order: Int = page.ordinal * 100 + 80
     ): SettingsSearchEntry {
-        val title = context.safeString(titleRes)
-        val description = context.safeString(descriptionRes)
+        val title = resources.safeString(titleRes)
+        val description = resources.safeString(descriptionRes)
         return SettingsSearchEntry(
             id = "manual:$id",
             page = page,
@@ -408,9 +448,9 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
 
     return listOf(
         entry(
-            page = SettingsPage.General,
-            titleRes = R.string.language_setting_title,
-            descriptionRes = R.string.language_select_title,
+            page = SettingsPage.Language,
+            titleRes = CoreCommonR.string.language_setting_title,
+            descriptionRes = CoreCommonR.string.language_select_title,
             id = "language",
             aliases = listOf(
                 "语言设置",
@@ -431,9 +471,9 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
             order = 4
         ),
         entry(
-            page = SettingsPage.General,
-            titleRes = R.string.settings_internationalization,
-            descriptionRes = R.string.settings_internationalization_desc,
+            page = SettingsPage.Language,
+            titleRes = CoreCommonR.string.settings_internationalization,
+            descriptionRes = CoreCommonR.string.settings_internationalization_desc,
             id = "internationalization",
             aliases = listOf(
                 "国际化",
@@ -450,8 +490,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Accounts,
-            titleRes = R.string.settings_netease,
-            descriptionRes = R.string.settings_netease_status_missing,
+            titleRes = CoreCommonR.string.settings_netease,
+            descriptionRes = CoreCommonR.string.settings_netease_status_missing,
             id = "netease_login",
             aliases = listOf(
                 "netease",
@@ -471,8 +511,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Accounts,
-            titleRes = R.string.settings_bilibili,
-            descriptionRes = R.string.settings_bili_status_missing,
+            titleRes = CoreCommonR.string.settings_bilibili,
+            descriptionRes = CoreCommonR.string.settings_bili_status_missing,
             id = "bili_login",
             aliases = listOf(
                 "bili",
@@ -492,8 +532,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Accounts,
-            titleRes = R.string.common_youtube,
-            descriptionRes = R.string.settings_youtube_status_missing,
+            titleRes = CoreCommonR.string.common_youtube,
+            descriptionRes = CoreCommonR.string.settings_youtube_status_missing,
             id = "youtube_login",
             aliases = listOf(
                 "youtube",
@@ -512,36 +552,36 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Theme,
-            titleRes = R.string.settings_theme_mode,
-            descriptionRes = R.string.settings_theme_mode_desc,
+            titleRes = CoreCommonR.string.settings_theme_mode,
+            descriptionRes = CoreCommonR.string.settings_theme_mode_desc,
             id = "theme_mode",
             aliases = listOf("dark", "light", "system", "auto", "shense", "qianse", "zidong")
         ),
         entry(
             page = SettingsPage.Theme,
-            titleRes = R.string.settings_theme_palette_style,
-            descriptionRes = R.string.settings_theme_palette_style_desc,
+            titleRes = CoreCommonR.string.settings_theme_palette_style,
+            descriptionRes = CoreCommonR.string.settings_theme_palette_style_desc,
             id = "theme_palette_style",
             aliases = listOf("palette", "color", "kolor", "monet", "seban", "quse")
         ),
         entry(
             page = SettingsPage.Theme,
-            titleRes = R.string.settings_theme_color_spec,
-            descriptionRes = R.string.settings_theme_color_spec_desc,
+            titleRes = CoreCommonR.string.settings_theme_color_spec,
+            descriptionRes = CoreCommonR.string.settings_theme_color_spec_desc,
             id = "theme_color_spec",
             aliases = listOf("color spec", "material", "2021", "2025", "secai", "guifan")
         ),
         entry(
             page = SettingsPage.Theme,
-            titleRes = R.string.settings_theme_color,
-            descriptionRes = R.string.settings_theme_color_desc,
+            titleRes = CoreCommonR.string.settings_theme_color,
+            descriptionRes = CoreCommonR.string.settings_theme_color_desc,
             id = "theme_seed_color",
             aliases = listOf("accent", "seed", "custom color", "zhutise", "yanse")
         ),
         entry(
-            page = SettingsPage.Personalization,
-            titleRes = R.string.settings_nowplaying_control_placement,
-            descriptionRes = R.string.settings_nowplaying_control_placement_desc,
+            page = SettingsPage.NowPlaying,
+            titleRes = CoreCommonR.string.settings_nowplaying_control_placement,
+            descriptionRes = CoreCommonR.string.settings_nowplaying_control_placement_desc,
             id = "nowplaying_control_placement",
             aliases = listOf(
                 "播放按钮位置",
@@ -554,12 +594,12 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
                 "bofangweizhi"
             ),
             targetId = "setting:nowplaying_control_placement",
-            order = SettingsPage.Personalization.ordinal * 100 + 32
+            order = SettingsPage.NowPlaying.ordinal * 100 + 32
         ),
         entry(
-            page = SettingsPage.Personalization,
-            titleRes = R.string.settings_nowplaying_control_size,
-            descriptionRes = R.string.settings_nowplaying_control_size_desc,
+            page = SettingsPage.NowPlaying,
+            titleRes = CoreCommonR.string.settings_nowplaying_control_size,
+            descriptionRes = CoreCommonR.string.settings_nowplaying_control_size_desc,
             id = "nowplaying_control_size",
             aliases = listOf(
                 "播放按钮大小",
@@ -569,12 +609,12 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
                 "bofanganniu"
             ),
             targetId = "setting:nowplaying_control_size",
-            order = SettingsPage.Personalization.ordinal * 100 + 34
+            order = SettingsPage.NowPlaying.ordinal * 100 + 34
         ),
         entry(
-            page = SettingsPage.Personalization,
-            titleRes = R.string.settings_lyrics_control_size,
-            descriptionRes = R.string.settings_lyrics_control_size_desc,
+            page = SettingsPage.NowPlaying,
+            titleRes = CoreCommonR.string.settings_lyrics_control_size,
+            descriptionRes = CoreCommonR.string.settings_lyrics_control_size_desc,
             id = "lyrics_control_size",
             aliases = listOf(
                 "歌词页控件大小",
@@ -584,12 +624,12 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
                 "gecikongjian"
             ),
             targetId = "setting:lyrics_control_size",
-            order = SettingsPage.Personalization.ordinal * 100 + 36
+            order = SettingsPage.NowPlaying.ordinal * 100 + 36
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.playlist_export,
-            descriptionRes = R.string.playlist_export_desc,
+            titleRes = CoreCommonR.string.playlist_export,
+            descriptionRes = CoreCommonR.string.playlist_export_desc,
             id = "playlist_export",
             aliases = listOf(
                 "导出歌单",
@@ -608,8 +648,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.playlist_import,
-            descriptionRes = R.string.playlist_import_desc,
+            titleRes = CoreCommonR.string.playlist_import,
+            descriptionRes = CoreCommonR.string.playlist_import_desc,
             id = "playlist_import",
             aliases = listOf(
                 "导入歌单",
@@ -628,8 +668,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.settings_export_config,
-            descriptionRes = R.string.settings_export_config_desc,
+            titleRes = CoreCommonR.string.settings_export_config,
+            descriptionRes = CoreCommonR.string.settings_export_config_desc,
             id = "config_export",
             aliases = listOf(
                 "导出配置",
@@ -649,8 +689,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.settings_import_config,
-            descriptionRes = R.string.settings_import_config_desc,
+            titleRes = CoreCommonR.string.settings_import_config,
+            descriptionRes = CoreCommonR.string.settings_import_config_desc,
             id = "config_import",
             aliases = listOf(
                 "导入配置",
@@ -670,8 +710,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.github_auto_sync,
-            descriptionRes = R.string.sync_config_desc,
+            titleRes = CoreCommonR.string.github_auto_sync,
+            descriptionRes = CoreCommonR.string.sync_config_desc,
             id = "github_sync",
             aliases = listOf("github", "git", "token", "sync", "tongbu", "beifen"),
             targetId = "manual:github_sync",
@@ -679,8 +719,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.webdav_sync_title,
-            descriptionRes = R.string.webdav_sync_desc,
+            titleRes = CoreCommonR.string.webdav_sync_title,
+            descriptionRes = CoreCommonR.string.webdav_sync_desc,
             id = "webdav_sync",
             aliases = listOf("webdav", "dav", "sync", "tongbu", "beifen", "server", "url"),
             targetId = "manual:webdav_sync",
@@ -688,8 +728,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.sync_auto,
-            descriptionRes = R.string.sync_auto_desc,
+            titleRes = CoreCommonR.string.sync_auto,
+            descriptionRes = CoreCommonR.string.sync_auto_desc,
             id = "github_auto_sync",
             aliases = listOf(
                 "github",
@@ -706,8 +746,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.Backup,
-            titleRes = R.string.webdav_sync_title,
-            descriptionRes = R.string.webdav_auto_sync_desc,
+            titleRes = CoreCommonR.string.webdav_sync_title,
+            descriptionRes = CoreCommonR.string.webdav_auto_sync_desc,
             id = "webdav_auto_sync",
             aliases = listOf("webdav", "dav", "sync", "auto sync", "zidongtongbu", "tongbu"),
             targetId = "manual:webdav_auto_sync",
@@ -715,8 +755,8 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.ListenTogether,
-            titleRes = R.string.listen_together_join_room,
-            descriptionRes = R.string.settings_listen_together_join_room_desc,
+            titleRes = CoreCommonR.string.listen_together_join_room,
+            descriptionRes = CoreCommonR.string.settings_listen_together_join_room_desc,
             id = "listen_together_join_room",
             aliases = listOf(
                 "listen together",
@@ -732,43 +772,95 @@ internal fun manualSettingsSearchEntries(context: Context): List<SettingsSearchE
         ),
         entry(
             page = SettingsPage.ListenTogether,
-            titleRes = R.string.settings_listen_together_server_title,
-            descriptionRes = R.string.settings_listen_together_expand,
+            titleRes = CoreCommonR.string.settings_listen_together_server_title,
+            descriptionRes = CoreCommonR.string.settings_listen_together_expand,
             id = "listen_together_server",
             aliases = listOf("listen together", "lt", "worker", "room", "server", "url", "yiqiting")
         ),
         entry(
             page = SettingsPage.ListenTogether,
-            titleRes = R.string.settings_listen_together_default_nickname_title,
-            descriptionRes = R.string.listen_together_nickname,
+            titleRes = CoreCommonR.string.settings_listen_together_default_nickname_title,
+            descriptionRes = CoreCommonR.string.listen_together_nickname,
             id = "listen_together_nickname",
             aliases = listOf("nickname", "name", "uuid", "shenfen", "nicheng", "yiqiting")
         ),
         entry(
             page = SettingsPage.Storage,
-            titleRes = R.string.settings_clear_cache,
-            descriptionRes = R.string.settings_clear_cache_desc,
+            titleRes = CoreCommonR.string.settings_clear_cache,
+            descriptionRes = CoreCommonR.string.settings_clear_cache_desc,
             id = "clear_cache",
             aliases = listOf("cache", "clean", "qingli", "huancun", "storage", "space"),
             targetId = "manual:clear_cache"
         ),
         entry(
             page = SettingsPage.About,
-            titleRes = R.string.settings_about,
-            descriptionRes = R.string.settings_about_desc,
+            titleRes = CoreCommonR.string.settings_about,
+            descriptionRes = CoreCommonR.string.settings_about_desc,
             id = "about_debug",
             aliases = listOf("about", "version", "debug", "banben", "tiaoshi")
+        )
+    ) + audioEffectsSearchEntries(::entry)
+}
+
+private typealias ManualSearchEntryFactory =
+    (SettingsPage, Int, Int, String, List<String>, String, Int) -> SettingsSearchEntry
+
+private fun audioEffectsSearchEntries(entry: ManualSearchEntryFactory): List<SettingsSearchEntry> {
+    val page = SettingsPage.AudioEffects
+    val target = "page:${page.name}"
+    fun audio(titleRes: Int, descriptionRes: Int, id: String, aliases: List<String>, offset: Int) =
+        entry(page, titleRes, descriptionRes, id, aliases, target, page.ordinal * 100 + offset)
+    return listOf(
+        audio(
+            AppR.string.audio_effects_eq_title, AppR.string.audio_effects_eq_desc, "audio_effects_eq",
+            listOf("equalizer", "eq", "10 band", "junhengqi", "均衡", "频段"), 10
+        ),
+        audio(
+            AppR.string.audio_effects_presets_title, AppR.string.audio_effects_presets_desc,
+            "audio_effects_presets", listOf("preset", "rock", "pop", "jazz", "yuzhi", "风格", "摇滚", "流行"), 12
+        ),
+        audio(
+            AppR.string.audio_effects_peq_title, AppR.string.audio_effects_peq_desc, "audio_effects_peq",
+            listOf("autoeq", "parametric", "peq", "headphone", "erji", "jiaozheng", "耳机", "校正"), 14
+        ),
+        audio(
+            AppR.string.audio_effects_tone_title, AppR.string.audio_effects_tone_desc, "audio_effects_tone",
+            listOf("bass", "treble", "virtual bass", "diyin", "gaoyin", "低音", "高音", "重低音"), 16
+        ),
+        audio(
+            AppR.string.audio_effects_space_title, AppR.string.audio_effects_space_desc,
+            "audio_effects_space", listOf("reverb", "surround", "3d", "crossfeed", "width", "hunxiang", "环绕", "混响"), 18
+        ),
+        audio(
+            AppR.string.audio_effects_dynamics_title, AppR.string.audio_effects_dynamics_desc,
+            "audio_effects_dynamics", listOf("compressor", "limiter", "loudness", "yasuo", "压缩", "破音", "响度"), 20
+        ),
+        audio(
+            AppR.string.audio_effects_speaker_title, AppR.string.audio_effects_speaker_desc,
+            "audio_effects_speaker", listOf("speaker", "waifang", "yangshengqi", "外放", "扬声器", "喇叭"), 22
+        ),
+        audio(
+            AppR.string.audio_effects_speed_title, AppR.string.audio_effects_speed_desc,
+            "audio_effects_speed", listOf("speed", "pitch", "nightcore", "beisu", "yindiao", "倍速", "变调"), 24
+        ),
+        audio(
+            AppR.string.audio_effects_power_mode, AppR.string.audio_effects_power_note,
+            "audio_effects_power", listOf("battery", "power", "gonghao", "shengdian", "功耗", "省电"), 26
         )
     )
 }
 
-private fun Context.safeString(resId: Int): String {
+private fun Resources.safeString(resId: Int): String {
     if (resId == 0) return ""
     return runCatching { getString(resId) }.getOrDefault("")
 }
 
 private val PageSearchAliases = mapOf(
     SettingsPage.General to listOf("general", "basic", "tongyong", "jichu"),
+    SettingsPage.AudioEffects to listOf(
+        "audio effects", "sound effects", "dsp", "eq", "equalizer", "preset", "speed", "pitch",
+        "yinxiao", "junhengqi", "beisu", "yindiao", "音效", "均衡器", "倍速", "变速", "音调"
+    ),
     SettingsPage.Theme to listOf("theme", "dark", "light", "color", "palette", "zhuti", "yanse"),
     SettingsPage.Accounts to listOf(
         "account",
@@ -784,9 +876,20 @@ private val PageSearchAliases = mapOf(
         "third party",
         "platform"
     ),
-    SettingsPage.Personalization to listOf("display", "home", "font", "dpi", "background", "tab", "xianshi"),
+    SettingsPage.Personalization to listOf("home", "start", "startup", "keyboard", "shouye", "qidong"),
+    SettingsPage.NowPlaying to listOf("now playing", "player", "cover", "badge", "controls", "immersive", "bofangye", "fengmian"),
+    SettingsPage.Background to listOf("background", "wallpaper", "image", "beijing", "bizhi"),
+    SettingsPage.Language to listOf("language", "locale", "international", "yuyan", "guojihua"),
+    SettingsPage.ExternalLyrics to listOf(
+        "floating", "desktop lyrics", "status bar", "island", "bluetooth", "lyricon", "amll",
+        "live update", "xuanfu", "zhuangtailan", "lingdongdao", "chaojidao"
+    ),
     SettingsPage.Motion to listOf("motion", "animation", "glass", "blur", "dynamic", "dongxiao", "mohu"),
-    SettingsPage.Lyrics to listOf("lyrics", "lrc", "amll", "lyricon", "floating", "bluetooth", "geci"),
+    SettingsPage.Lyrics to listOf(
+        "lyrics", "lrc", "geci", "translation", "font size",
+        "lyric source", "lyrics source", "lyric provider", "word timed", "word by word",
+        "kugou", "netease", "qq music", "lrclib", "ttml", "geciyuan", "zhuci"
+    ),
     SettingsPage.Network to listOf("network", "proxy", "bypass", "daili", "wangluo"),
     SettingsPage.Playback to listOf("playback", "audio", "queue", "volume", "fade", "crossfade", "bofang"),
     SettingsPage.UsbExclusive to listOf("usb", "dac", "pcm", "uac", "exclusive", "bit perfect", "dizhan"),
@@ -818,6 +921,7 @@ private val PageSearchAliases = mapOf(
 )
 
 private val SettingSearchAliases = mapOf(
+    "coloros_lockscreen_lyrics_enabled" to listOf("ColorOS", "OPlus", "OxygenOS", "root", "shizuku", "锁屏岛", "锁屏歌词"),
     "dynamic_color" to listOf("material you", "monet", "auto color", "quse", "xitongquse"),
     "haptic_feedback_enabled" to listOf("vibration", "touch", "zhendong", "chugan"),
     "playback_service_idle_shutdown_minutes" to listOf("notification", "foreground", "idle", "tuichu"),
@@ -833,6 +937,7 @@ private val SettingSearchAliases = mapOf(
     "default_start_destination" to listOf("start page", "home", "tab", "qidongye"),
     "auto_show_keyboard" to listOf("keyboard", "input", "shurufa", "jianpan"),
     "home_card_continue" to listOf("continue", "recent", "jixu"),
+    "home_card_bilibili" to listOf("bilibili", "bili", "哔哩哔哩", "B站", "音乐榜", "热门视频"),
     "home_card_trending" to listOf(
         "trending",
         "charts",
@@ -864,7 +969,10 @@ private val SettingSearchAliases = mapOf(
     ),
     "show_cover_source_badge" to listOf("badge", "source", "cover", "biaoshi"),
     "always_use_new_tab_style" to listOf("tab", "bottom bar", "new ui"),
-    "nowplaying_show_title" to listOf("title", "song name", "geming"),
+    "ui_style" to listOf("style", "theme", "clean", "apple", "ios", "material", "fengge", "jianjie", "风格", "简洁"),
+    "liquid_glass_enabled" to listOf("liquid glass", "glass", "refraction", "yetai boli", "液态玻璃"),
+    "predictive_back_preview_enabled" to listOf("predictive back", "back gesture", "preview", "yuce fanhui", "预测性返回"),
+    "nowplaying_immersive_mode" to listOf("immersive", "fullscreen", "status bar", "chenjin", "沉浸"),
     "nowplaying_song_title_marquee_enabled" to listOf(
         "marquee",
         "scrolling title",
@@ -916,11 +1024,18 @@ private val SettingSearchAliases = mapOf(
     ),
     "cloud_music_lyric_default_offset_ms" to listOf("netease lyrics offset", "wy geci pianyi"),
     "qq_music_lyric_default_offset_ms" to listOf("qq lyrics offset", "qq geci pianyi"),
+    "kugou_lyric_default_offset_ms" to listOf("kugou lyrics offset", "kugou geci pianyi"),
+    "lrclib_lyric_default_offset_ms" to listOf("lrclib lyrics offset"),
+    "amll_ttml_lyric_default_offset_ms" to listOf("amll ttml lyrics offset"),
     "bypass_proxy" to listOf("proxy", "vpn", "direct", "daili"),
     "download_directory_uri" to listOf("folder", "path", "saf", "xiazai mulu"),
     "download_file_name_template" to listOf("filename", "template", "mingming"),
     "download_metadata_post_processing_enabled" to listOf("taglib", "metadata", "lyrics embed"),
     "standardized_lyric_embedding_enabled" to listOf("lyrics embed", "lrc", "tag"),
+    "download_follow_playback_audio_quality" to listOf("download quality", "audio quality", "yin zhi"),
+    "download_netease_audio_quality" to listOf("netease download quality", "wangyi yin zhi"),
+    "download_youtube_audio_quality" to listOf("youtube download quality", "youtube yin zhi"),
+    "download_bili_audio_quality" to listOf("bili download quality", "bilibili yin zhi"),
     "download_parallelism" to listOf("threads", "parallel", "concurrency", "bingfa"),
     "mobile_data_high_risk_prompt_enabled" to listOf("traffic warning", "roaming", "liuliang tishi"),
     "max_cache_size_bytes" to listOf("cache limit", "space", "huancun daxiao"),

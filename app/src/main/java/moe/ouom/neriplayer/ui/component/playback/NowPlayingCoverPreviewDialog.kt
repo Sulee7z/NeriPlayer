@@ -77,12 +77,13 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
+import moe.ouom.neriplayer.ui.component.overlay.LocalizedDialog as Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowInsetsControllerCompat
 import coil.compose.AsyncImage
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.ui.component.overlay.ApplyOverlayWindowNavigationBarPolicy
 import moe.ouom.neriplayer.ui.haptic.HapticButton
 import moe.ouom.neriplayer.ui.haptic.HapticFilledIconButton
 import moe.ouom.neriplayer.util.media.offlineCachedImageRequest
@@ -128,7 +129,7 @@ internal fun NowPlayingCoverPreviewDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val title = songName.ifBlank { stringResource(R.string.cover_preview_title) }
+    val title = songName.ifBlank { stringResource(CoreCommonR.string.cover_preview_title) }
     var transform by remember(coverUrl) { mutableStateOf(CoverPreviewTransform()) }
     var intrinsicArtworkSize by remember(coverUrl) { mutableStateOf(Size.Unspecified) }
     val backdropModel = remember(context, coverUrl, offlineMode) {
@@ -150,6 +151,7 @@ internal fun NowPlayingCoverPreviewDialog(
             decorFitsSystemWindows = false
         )
     ) {
+        ApplyOverlayWindowNavigationBarPolicy()
         LightDialogSystemBarIcons()
         Surface(
             modifier = Modifier.fillMaxSize(),
@@ -226,7 +228,7 @@ internal fun NowPlayingCoverPreviewDialog(
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Close,
-                                    contentDescription = stringResource(R.string.action_close)
+                                    contentDescription = stringResource(CoreCommonR.string.action_close)
                                 )
                             }
                         }
@@ -259,10 +261,10 @@ internal fun NowPlayingCoverPreviewDialog(
                             )
                         }
                         val imageContentDescription = if (songName.isBlank()) {
-                            stringResource(R.string.cover_preview_image_content_description)
+                            stringResource(CoreCommonR.string.cover_preview_image_content_description)
                         } else {
                             stringResource(
-                                R.string.cover_preview_image_content_description_named,
+                                CoreCommonR.string.cover_preview_image_content_description_named,
                                 songName
                             )
                         }
@@ -374,7 +376,7 @@ internal fun NowPlayingCoverPreviewDialog(
                                 ) {
                                     Text(
                                         text = stringResource(
-                                            R.string.cover_preview_zoom_percent,
+                                            CoreCommonR.string.cover_preview_zoom_percent,
                                             (transform.scale * 100f).roundToInt()
                                         ),
                                         style = MaterialTheme.typography.labelMedium,
@@ -387,7 +389,7 @@ internal fun NowPlayingCoverPreviewDialog(
 
                                 if (showZoomHint) {
                                     Text(
-                                        text = stringResource(R.string.cover_preview_zoom_hint),
+                                        text = stringResource(CoreCommonR.string.cover_preview_zoom_hint),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = Color.White.copy(alpha = 0.70f),
                                         maxLines = 1,
@@ -411,7 +413,7 @@ internal fun NowPlayingCoverPreviewDialog(
                                     Icon(
                                         imageVector = Icons.Outlined.RestartAlt,
                                         contentDescription = stringResource(
-                                            R.string.cover_preview_reset_zoom
+                                            CoreCommonR.string.cover_preview_reset_zoom
                                         )
                                     )
                                 }
@@ -434,7 +436,7 @@ internal fun NowPlayingCoverPreviewDialog(
                                         contentDescription = null
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
-                                    Text(stringResource(R.string.action_download_cover))
+                                    Text(stringResource(CoreCommonR.string.action_download_cover))
                                 }
                             }
                         }

@@ -14,14 +14,22 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.search.MusicPlatform
-import moe.ouom.neriplayer.core.api.search.SongSearchInfo
-import moe.ouom.neriplayer.core.player.model.PlaybackQualityOption
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.music.MusicPlatform
+import moe.ouom.neriplayer.data.model.music.SongSearchInfo
+import moe.ouom.neriplayer.data.model.playback.PlaybackQualityOption
 import moe.ouom.neriplayer.ui.component.playback.NowPlayingCoverPreviewDialog
 import moe.ouom.neriplayer.testutil.assumeComposeHostAvailable
 import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.ui.screen.nowplaying.NowPlayingQualityOptionsDialog
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.EditSongLocalMetadataWriteBackConfirmDialog
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.EditSongLyricsDraft
+import moe.ouom.neriplayer.ui.screen.nowplaying.edit.FillOptionsDialog
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.LyricFontSizeSheet
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.LyricOffsetSheet
+import moe.ouom.neriplayer.ui.screen.nowplaying.lyrics.LyricsEditorSheet
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -63,7 +71,7 @@ class NowPlayingDialogsTest {
 
         waitForText("夜航星")
         waitForText("不才")
-        composeRule.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_confirm)).performClick()
 
         composeRule.runOnIdle {
             assertEquals(listOf(true, true, true, true), confirmArgs)
@@ -89,13 +97,45 @@ class NowPlayingDialogsTest {
             }
         }
 
-        waitForText(context.getString(R.string.music_auto_fill_cover))
-        composeRule.onNodeWithText(context.getString(R.string.music_auto_fill_cover)).performClick()
-        composeRule.onNodeWithText(context.getString(R.string.music_auto_fill_lyrics)).performClick()
-        composeRule.onNodeWithText(context.getString(R.string.action_confirm)).performClick()
+        waitForText(context.getString(CoreCommonR.string.music_auto_fill_cover))
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.music_auto_fill_cover)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.music_auto_fill_lyrics)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_confirm)).performClick()
 
         composeRule.runOnIdle {
             assertEquals(listOf(false, true, true, false), confirmArgs)
+        }
+    }
+
+    @Test
+    fun editSongMetadataWriteBackDialog_offersWriteAppOnlyAndCancel() {
+        val context = targetContext
+        var wroteToLocal = false
+        var savedInAppOnly = false
+        var cancelled = false
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box {
+                    EditSongLocalMetadataWriteBackConfirmDialog(
+                        isSaving = false,
+                        onWriteToLocal = { wroteToLocal = true },
+                        onSaveInAppOnly = { savedInAppOnly = true },
+                        onCancel = { cancelled = true }
+                    )
+                }
+            }
+        }
+
+        waitForText(context.getString(CoreCommonR.string.local_song_metadata_write_confirm_write))
+        waitForText(context.getString(CoreCommonR.string.local_song_metadata_write_confirm_app_only))
+        waitForText(context.getString(CoreCommonR.string.action_cancel))
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_cancel)).performClick()
+
+        composeRule.runOnIdle {
+            assertTrue(cancelled)
+            assertFalse(wroteToLocal)
+            assertFalse(savedInAppOnly)
         }
     }
 
@@ -110,6 +150,7 @@ class NowPlayingDialogsTest {
                         originalSong = demoSongItem(),
                         initialLyrics = "原文A",
                         initialTranslatedLyrics = "译文B",
+                        onSaveLyrics = { true },
                         onDismiss = { }
                     )
                 }
@@ -117,15 +158,15 @@ class NowPlayingDialogsTest {
         }
 
         waitForText("原文A")
-        composeRule.onNodeWithText(context.getString(R.string.action_clear)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_clear)).performClick()
 
         composeRule.waitUntil(timeoutMillis = 3_000) {
             composeRule.onAllNodesWithText("原文A").fetchSemanticsNodes().isEmpty()
         }
 
-        composeRule.onNodeWithText(context.getString(R.string.lyrics_translation)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.lyrics_translation)).performClick()
         waitForText("译文B")
-        composeRule.onNodeWithText(context.getString(R.string.action_clear)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_clear)).performClick()
 
         composeRule.waitUntil(timeoutMillis = 3_000) {
             composeRule.onAllNodesWithText("译文B").fetchSemanticsNodes().isEmpty()
@@ -149,6 +190,7 @@ class NowPlayingDialogsTest {
                             originalSong = demoSongItem(),
                             initialLyrics = "原文A",
                             initialTranslatedLyrics = "译文B",
+                            onSaveLyrics = { true },
                             onDismiss = {
                                 lyricsEditorDismissed = true
                                 lyricsEditorShown.value = false
@@ -174,6 +216,84 @@ class NowPlayingDialogsTest {
     }
 
     @Test
+    fun lyricsEditorSheet_dismissesOnlyAfterLyricsWriteSucceeds() {
+        val context = targetContext
+        val savedDrafts = mutableListOf<EditSongLyricsDraft>()
+        var dismissed = false
+
+        composeRule.setContent {
+            val lyricsEditorShown = remember { mutableStateOf(true) }
+            MaterialTheme {
+                Box {
+                    if (lyricsEditorShown.value) {
+                        LyricsEditorSheet(
+                            originalSong = demoSongItem(),
+                            initialLyrics = "原文A",
+                            initialTranslatedLyrics = "译文B",
+                            onSaveLyrics = { draft ->
+                                savedDrafts += draft
+                                true
+                            },
+                            onDismiss = {
+                                dismissed = true
+                                lyricsEditorShown.value = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        waitForText("原文A")
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.music_save_changes)).performClick()
+        composeRule.waitUntil(timeoutMillis = 3_000) { dismissed }
+
+        composeRule.runOnIdle {
+            assertEquals(
+                EditSongLyricsDraft(
+                    lyric = "原文A",
+                    translatedLyric = "译文B",
+                    romanizedLyric = "",
+                    writeLocalMetadata = false
+                ),
+                savedDrafts.single()
+            )
+        }
+    }
+
+    @Test
+    fun lyricsEditorSheet_keepsEditorOpenWhenLyricsWriteFails() {
+        val context = targetContext
+        var saveFailureCount = 0
+        var dismissed = false
+
+        composeRule.setContent {
+            MaterialTheme {
+                Box {
+                    LyricsEditorSheet(
+                        originalSong = demoSongItem(),
+                        initialLyrics = "原文A",
+                        initialTranslatedLyrics = "译文B",
+                        onSaveLyrics = { false },
+                        onSaveFailed = { saveFailureCount += 1 },
+                        onDismiss = { dismissed = true }
+                    )
+                }
+            }
+        }
+
+        waitForText("原文A")
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.music_save_changes)).performClick()
+        composeRule.waitUntil(timeoutMillis = 3_000) { saveFailureCount == 1 }
+        waitForText("原文A")
+
+        composeRule.runOnIdle {
+            assertFalse(dismissed)
+            assertEquals(1, saveFailureCount)
+        }
+    }
+
+    @Test
     fun lyricFontSizeSheet_doneCommitsScaleAndDismisses() {
         val context = targetContext
         val committedLyricScales = mutableListOf<Float>()
@@ -194,8 +314,8 @@ class NowPlayingDialogsTest {
             }
         }
 
-        waitForText(context.getString(R.string.nowplaying_lyrics_sample))
-        composeRule.onNodeWithText(context.getString(R.string.action_done)).performClick()
+        waitForText(context.getString(CoreCommonR.string.nowplaying_lyrics_sample))
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_done)).performClick()
 
         composeRule.runOnIdle {
             assertEquals(listOf(1.25f), committedLyricScales)
@@ -220,8 +340,8 @@ class NowPlayingDialogsTest {
             }
         }
 
-        waitForText(context.getString(R.string.lyrics_adjust_offset))
-        composeRule.onNodeWithText(context.getString(R.string.action_done)).performClick()
+        waitForText(context.getString(CoreCommonR.string.lyrics_adjust_offset))
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_done)).performClick()
 
         composeRule.runOnIdle {
             assertTrue(dismissed)
@@ -243,7 +363,7 @@ class NowPlayingDialogsTest {
             MaterialTheme {
                 Box {
                     NowPlayingQualityOptionsDialog(
-                        title = context.getString(R.string.nowplaying_quality_switch_title),
+                        title = context.getString(CoreCommonR.string.nowplaying_quality_switch_title),
                         selectedKey = "lossless",
                         options = options,
                         onDismiss = { dismissed = true },
@@ -254,9 +374,9 @@ class NowPlayingDialogsTest {
         }
 
         waitForText("无损")
-        waitForText(context.getString(R.string.common_selected))
+        waitForText(context.getString(CoreCommonR.string.common_selected))
         composeRule.onNodeWithText("Hi-Res").performClick()
-        composeRule.onNodeWithText(context.getString(R.string.action_close)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.action_close)).performClick()
 
         composeRule.runOnIdle {
             assertEquals("master", selectedKey)
@@ -283,21 +403,21 @@ class NowPlayingDialogsTest {
         }
 
         waitForText("夜航星")
-        waitForText(context.getString(R.string.cover_preview_zoom_percent, 100))
+        waitForText(context.getString(CoreCommonR.string.cover_preview_zoom_percent, 100))
         composeRule.onNodeWithContentDescription(
-            context.getString(R.string.cover_preview_reset_zoom)
+            context.getString(CoreCommonR.string.cover_preview_reset_zoom)
         ).fetchSemanticsNode()
         composeRule.onNodeWithContentDescription(
             context.getString(
-                R.string.cover_preview_image_content_description_named,
+                CoreCommonR.string.cover_preview_image_content_description_named,
                 "夜航星"
             )
         ).fetchSemanticsNode()
         composeRule.onNodeWithText(
-            context.getString(R.string.action_download_cover)
+            context.getString(CoreCommonR.string.action_download_cover)
         ).performClick()
         composeRule.onNodeWithContentDescription(
-            context.getString(R.string.action_close)
+            context.getString(CoreCommonR.string.action_close)
         ).performClick()
 
         composeRule.runOnIdle {

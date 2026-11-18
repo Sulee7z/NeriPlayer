@@ -1,20 +1,22 @@
 package moe.ouom.neriplayer.ui.screen.playlist
 
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentHeight
@@ -29,6 +31,7 @@ import androidx.compose.material.icons.outlined.Repeat
 import androidx.compose.material.icons.outlined.Shuffle
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -37,10 +40,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -63,21 +70,29 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
+import android.content.Context
+import android.content.res.Configuration
+import android.os.LocaleList
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.ColorUtils
 import androidx.media3.common.Player
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassRole
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassOverscrollBackdrop
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSurface
@@ -86,10 +101,13 @@ import moe.ouom.neriplayer.ui.effect.glass.drawAdvancedGlassOverscrollBackdrop
 import moe.ouom.neriplayer.ui.haptic.HapticFilledIconButton
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.util.format.formatPlayCount
+import moe.ouom.neriplayer.data.model.artwork.CoverArtColorSample
 import moe.ouom.neriplayer.util.media.CoverArtColorCache
 import moe.ouom.neriplayer.util.media.normalizeCoverArtColorCacheKey
 import moe.ouom.neriplayer.util.media.offlineCachedImageRequest
-import moe.ouom.neriplayer.util.search.SearchTextMatcher
+import moe.ouom.neriplayer.common.search.SearchTextMatcher
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.math.roundToInt
 
 internal const val PLAYLIST_HEADER_KEY = "header"
 internal const val PLAYLIST_ACTIONS_KEY = "playlist_actions"
@@ -161,10 +179,8 @@ internal fun playlistModernSearchVisibilityProgress(
 ): Float {
     val progress by animateFloatAsState(
         targetValue = if (searchVisible) 1f else 0f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
+        // 调用端统一应用缓动曲线，避免弹簧进度再次缓动后在中段突然加速
+        animationSpec = tween(durationMillis = 300, easing = LinearEasing),
         label = label
     )
     return progress.coerceIn(0f, 1f)
@@ -272,6 +288,19 @@ internal fun resolvePlaylistSearchInputSyncValue(
     }
 }
 
+@Stable
+internal class PlaylistSearchUiState(
+    val visible: MutableState<Boolean>,
+    val query: MutableState<String>
+)
+
+@Composable
+internal fun rememberPlaylistSearchUiState(): PlaylistSearchUiState {
+    val visible = rememberSaveable { mutableStateOf(false) }
+    val query = rememberSaveable { mutableStateOf("") }
+    return remember(visible, query) { PlaylistSearchUiState(visible, query) }
+}
+
 @Composable
 internal fun rememberPlaylistSearchInputState(
     query: String,
@@ -287,31 +316,78 @@ internal fun rememberPlaylistSearchInputState(
         )
     }
     val lastSynchronizedQueryState = remember { mutableStateOf(query) }
-    LaunchedEffect(query) {
-        resolvePlaylistSearchInputSyncValue(
-            inputValue = inputState.value,
-            lastSynchronizedQuery = lastSynchronizedQueryState.value,
-            query = query
-        )?.let { synchronizedValue ->
-            inputState.value = synchronizedValue
-        }
-        lastSynchronizedQueryState.value = query
+    LaunchedEffect(query, block = syncPlaylistSearchInput(inputState, lastSynchronizedQueryState, query))
+    LaunchedEffect(
+        inputState.value,
+        block = debouncePlaylistSearchQuery(inputState, query, delayMillis, onQueryChange)
+    )
+    return inputState
+}
+
+private fun syncPlaylistSearchInput(
+    inputState: MutableState<TextFieldValue>,
+    lastSynchronizedQueryState: MutableState<String>,
+    query: String
+): suspend CoroutineScope.() -> Unit = {
+    resolvePlaylistSearchInputSyncValue(
+        inputValue = inputState.value,
+        lastSynchronizedQuery = lastSynchronizedQueryState.value,
+        query = query
+    )?.let { synchronizedValue ->
+        inputState.value = synchronizedValue
     }
-    LaunchedEffect(inputState.value) {
-        val pendingQuery = inputState.value.text
-        if (pendingQuery == query) return@LaunchedEffect
-        delay(delayMillis)
+    lastSynchronizedQueryState.value = query
+}
+
+private fun debouncePlaylistSearchQuery(
+    inputState: MutableState<TextFieldValue>,
+    query: String,
+    delayMillis: Long,
+    onQueryChange: (String) -> Unit
+): suspend CoroutineScope.() -> Unit = {
+    val pendingQuery = inputState.value.text
+    if (pendingQuery != query) {
+        delay(delayMillis.milliseconds)
         if (inputState.value.text == pendingQuery) {
             onQueryChange(pendingQuery)
         }
     }
-    return inputState
 }
 
 internal fun shouldBuildPlaylistSearchIndex(
     searchVisible: Boolean,
     query: String
 ): Boolean = searchVisible || query.isNotBlank()
+
+@Composable
+private fun playlistSearchLocaleTags(): String {
+    val configuration = Configuration(LocalConfiguration.current)
+    configuration.setLocales(LocalResources.current.configuration.locales)
+    return configuration.locales.toLanguageTags()
+}
+
+@Composable
+internal fun rememberPlaylistSearchContext(): Context {
+    val context = LocalContext.current
+    val localeTags = playlistSearchLocaleTags()
+    return remember(context, localeTags) {
+        val configuration = Configuration().apply {
+            setLocales(LocaleList.forLanguageTags(localeTags))
+        }
+        context.createConfigurationContext(configuration)
+    }
+}
+
+private class PlaylistSearchIndexState<T>(
+    val owner: Any,
+    val index: SearchTextMatcher.Index<T>
+)
+
+private class PlaylistSearchResultState<T>(
+    val index: PlaylistSearchIndexState<T>,
+    val query: String,
+    val items: List<T>
+)
 
 @Composable
 internal fun <T> rememberPlaylistSearchResults(
@@ -322,35 +398,36 @@ internal fun <T> rememberPlaylistSearchResults(
 ): List<T> {
     if (!buildIndex) return items
 
-    val indexState = produceState<SearchTextMatcher.Index<T>?>(
-        initialValue = null,
-        key1 = items
-    ) {
+    val localeTags = playlistSearchLocaleTags()
+    val indexOwner = remember(items, localeTags) { Any() }
+    val preparedIndex by produceState<PlaylistSearchIndexState<T>?>(null, indexOwner) {
         value = withContext(Dispatchers.Default) {
-            SearchTextMatcher.index(items, tokens)
+            PlaylistSearchIndexState(indexOwner, SearchTextMatcher.index(items, tokens))
         }
     }
-    val displayedItems by produceState(
-        initialValue = items,
-        key1 = items,
-        key2 = indexState.value,
-        key3 = query
+    val activeIndex = preparedIndex?.takeIf { it.owner === indexOwner }
+    val displayedItems by produceState<PlaylistSearchResultState<T>?>(
+        initialValue = null,
+        key1 = activeIndex,
+        key2 = query
     ) {
-        val index = indexState.value
-        value = if (index == null) {
-            items
-        } else {
-            withContext(Dispatchers.Default) {
-                index.filterAndRank(query)
-            }
+        value = activeIndex?.let { index ->
+            PlaylistSearchResultState(index, query, rankPlaylistSearchResults(items, index.index, query))
         }
     }
-    return displayedItems
+    if (query.isBlank()) return items
+    return displayedItems?.takeIf { it.index === activeIndex && it.query == query }?.items.orEmpty()
 }
+
+private suspend fun <T> rankPlaylistSearchResults(
+    items: List<T>,
+    index: SearchTextMatcher.Index<T>?,
+    query: String
+): List<T> = if (index == null) items else withContext(Dispatchers.Default) { index.filterAndRank(query) }
 
 private val PlaylistHeroCoverSize = 88.dp
 private val PlaylistHeroCoverCornerRadius = 14.dp
-private val PlaylistHeroSearchTopPadding = 14.dp
+private val PlaylistHeroSearchTopPadding = 22.dp
 private val PlaylistDockedSearchTopPadding = 10.dp
 private val PlaylistDockedSearchBottomPadding = 8.dp
 private val PlaylistSearchFieldMinHeight = 60.dp
@@ -421,9 +498,9 @@ internal fun localPlaylistRepeatModeLabelRes(repeatMode: Int): Int {
 
 internal fun playlistRepeatModeLabelRes(repeatMode: Int): Int {
     return when (repeatMode) {
-        Player.REPEAT_MODE_ALL -> R.string.playlist_mode_repeat_all
-        Player.REPEAT_MODE_ONE -> R.string.playlist_mode_repeat_one
-        else -> R.string.playlist_mode_repeat_off
+        Player.REPEAT_MODE_ALL -> CoreCommonR.string.playlist_mode_repeat_all
+        Player.REPEAT_MODE_ONE -> CoreCommonR.string.playlist_mode_repeat_one
+        else -> CoreCommonR.string.playlist_mode_repeat_off
     }
 }
 
@@ -512,6 +589,19 @@ private data class PlaylistHeroVisualColors(
     val controlContent: Color
 )
 
+private fun PlaylistHeroVisualColors?.accentOr(fallback: Color): Color = this?.accent ?: fallback
+
+private fun PlaylistHeroVisualColors?.readableAccentOr(fallback: Color): Color =
+    this?.readableAccent ?: fallback
+
+private fun PlaylistHeroVisualColors?.backgroundOr(fallback: Color): Color = this?.background ?: fallback
+
+private fun PlaylistHeroVisualColors?.controlContentOr(fallback: Color): Color =
+    this?.controlContent ?: fallback
+
+private fun Modifier.focusRequesterIfPresent(focusRequester: FocusRequester?): Modifier =
+    if (focusRequester == null) this else focusRequester(focusRequester)
+
 private data class PlaylistSearchGlassStyle(
     val fallbackColor: Color,
     val tintColor: Color,
@@ -543,22 +633,23 @@ private fun rememberResolvedPlaylistHeroVisualColors(
         mutableStateOf(cachedColorSample)
     }
     val hasCoverModel = !coverUrl.isNullOrBlank()
-    LaunchedEffect(context, colorCacheKey, offlineMode) {
-        if (!hasCoverModel) {
-            colorSampleState.value = null
-            return@LaunchedEffect
-        }
-        colorSampleState.value = CoverArtColorCache.getOrLoad(
+    LaunchedEffect(
+        context,
+        colorCacheKey,
+        offlineMode,
+        block = loadPlaylistHeroColorSample(
             context = context,
-            coverUrl = normalizedCoverModel,
-            offlineMode = offlineMode
+            coverModel = normalizedCoverModel,
+            hasCoverModel = hasCoverModel,
+            offlineMode = offlineMode,
+            colorSampleState = colorSampleState
         )
-    }
-    val coverColorArgb = if (hasCoverModel) {
-        (cachedColorSample ?: colorSampleState.value)?.baseColorArgb
-    } else {
-        null
-    }
+    )
+    val coverColorArgb = resolvePlaylistHeroCoverColorArgb(
+        hasCoverModel = hasCoverModel,
+        cachedSample = cachedColorSample,
+        loadedSample = colorSampleState
+    )
     val backgroundColor by animateColorAsState(
         targetValue = Color(
             resolvePlaylistHeroBackgroundArgb(
@@ -586,17 +677,42 @@ private fun rememberResolvedPlaylistHeroVisualColors(
         animationSpec = tween(220, easing = FastOutSlowInEasing),
         label = "playlist-readable-accent"
     )
-    val controlContentColor = if (isDarkTheme) {
-        Color.White.copy(alpha = 0.94f)
-    } else {
-        Color(0xFF191712)
-    }
     return PlaylistHeroVisualColors(
         background = backgroundColor,
         accent = accentColor,
         readableAccent = readableAccentColor,
-        controlContent = controlContentColor
+        controlContent = playlistHeroControlContentColor(isDarkTheme)
     )
+}
+
+private fun loadPlaylistHeroColorSample(
+    context: Context,
+    coverModel: String,
+    hasCoverModel: Boolean,
+    offlineMode: Boolean,
+    colorSampleState: MutableState<CoverArtColorSample?>
+): suspend CoroutineScope.() -> Unit = {
+    colorSampleState.value = if (hasCoverModel) {
+        CoverArtColorCache.getOrLoad(
+            context = context,
+            coverUrl = coverModel,
+            offlineMode = offlineMode
+        )
+    } else {
+        null
+    }
+}
+
+internal fun resolvePlaylistHeroCoverColorArgb(
+    hasCoverModel: Boolean,
+    cachedSample: CoverArtColorSample?,
+    loadedSample: State<CoverArtColorSample?>
+): Int? = if (hasCoverModel) (cachedSample ?: loadedSample.value)?.baseColorArgb else null
+
+internal fun playlistHeroControlContentColor(isDarkTheme: Boolean): Color = if (isDarkTheme) {
+    Color.White.copy(alpha = 0.94f)
+} else {
+    Color(0xFF191712)
 }
 
 @Composable
@@ -622,7 +738,7 @@ internal fun PlaylistModernVisualColorsProvider(
             coverUrl = coverUrl,
             offlineMode = offlineMode
         )
-    val overscrollOffset = remember { mutableStateOf(0f) }
+    val overscrollOffset = remember { mutableFloatStateOf(0f) }
     val overscrollBackdrop = remember(overscrollOffset, visualColors.background) {
         AdvancedGlassOverscrollBackdrop(
             color = visualColors.background,
@@ -750,8 +866,8 @@ internal fun PlaylistModernStableSearchField(
         fraction = progress
     )
     val fallbackAccentColor = interpolatePlaylistColor(
-        start = visualColors?.accent ?: MaterialTheme.colorScheme.primary,
-        end = visualColors?.readableAccent ?: MaterialTheme.colorScheme.primary,
+        start = visualColors.accentOr(MaterialTheme.colorScheme.primary),
+        end = visualColors.readableAccentOr(MaterialTheme.colorScheme.primary),
         fraction = progress
     )
     val glassStyle = resolvePlaylistSearchGlassStyle(
@@ -779,13 +895,7 @@ internal fun PlaylistModernStableSearchField(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(PlaylistSearchFieldMinHeight)
-                .let { baseModifier ->
-                    if (focusRequester == null) {
-                        baseModifier
-                    } else {
-                        baseModifier.focusRequester(focusRequester)
-                    }
-                }
+                .focusRequesterIfPresent(focusRequester)
                 .onFocusChanged { state -> onFocusChanged?.invoke(state.isFocused) },
             leadingIcon = {
                 Icon(
@@ -981,6 +1091,7 @@ internal fun PlaylistModernHeroHeader(
     offlineMode: Boolean,
     height: Dp,
     coverContentDescription: String = displayName,
+    actionsRevealProgress: Float = 1f,
     actions: (@Composable () -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -993,15 +1104,14 @@ internal fun PlaylistModernHeroHeader(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(height)
+            .heightIn(min = height)
             .background(visualColors.background)
     ) {
         Column(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
-                .padding(start = 20.dp, top = 6.dp, end = 20.dp, bottom = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(start = 20.dp, top = 6.dp, end = 20.dp, bottom = 6.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1051,7 +1161,19 @@ internal fun PlaylistModernHeroHeader(
             }
             CompositionLocalProvider(LocalPlaylistHeroVisualColors provides visualColors) {
                 if (actions != null) {
-                    Box(modifier = Modifier.padding(top = PlaylistHeroSearchTopPadding)) {
+                    Box(
+                        modifier = Modifier
+                            .clipToBounds()
+                            .layout { measurable, constraints ->
+                                // 完整测量输入框，只展开槽位高度，避免首帧撑满自适应头部
+                                val placeable = measurable.measure(constraints.copy(minHeight = 0))
+                                val revealedHeight = (placeable.height * actionsRevealProgress.coerceIn(0f, 1f)).roundToInt()
+                                layout(placeable.width, constraints.constrainHeight(revealedHeight)) {
+                                    placeable.placeRelative(0, 0)
+                                }
+                            }
+                            .padding(top = PlaylistHeroSearchTopPadding)
+                    ) {
                         actions()
                     }
                 }
@@ -1069,19 +1191,21 @@ internal fun LocalPlaylistHeroHeader(
     playCount: Long,
     offlineMode: Boolean,
     height: Dp,
+    actionsRevealProgress: Float = 1f,
     actions: (@Composable () -> Unit)? = null
 ) {
     PlaylistModernHeroHeader(
         displayName = displayName,
         coverUrl = headerCover,
         subtitle = stringResource(
-            R.string.local_playlist_total_duration,
+            CoreCommonR.string.local_playlist_total_duration,
             totalDurationText,
             songCount,
             formatPlayCount(LocalContext.current, playCount)
         ),
         offlineMode = offlineMode,
         height = height,
+        actionsRevealProgress = actionsRevealProgress,
         actions = actions
     )
 }
@@ -1101,8 +1225,7 @@ internal fun PlaylistModernHeroSearchField(
         onQueryChange = onQueryChange
     )
     val visualColors = LocalPlaylistHeroVisualColors.current
-    val accentColor = visualColors?.accent ?: MaterialTheme.colorScheme.primary
-    val focusModifier = focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier
+    val accentColor = visualColors.accentOr(MaterialTheme.colorScheme.primary)
     AdvancedGlassSurface(
         role = AdvancedGlassRole.SemanticCard,
         modifier = modifier.fillMaxWidth(),
@@ -1116,7 +1239,7 @@ internal fun PlaylistModernHeroSearchField(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(PlaylistSearchFieldMinHeight)
-                .then(focusModifier)
+                .focusRequesterIfPresent(focusRequester)
                 .onFocusChanged { state -> onFocusChanged?.invoke(state.isFocused) },
             leadingIcon = {
                 Icon(
@@ -1167,7 +1290,7 @@ internal fun PlaylistModernDockedSearchField(
     )
     val visualColors = LocalPlaylistHeroVisualColors.current
     val glassColor = playlistModernDockedSearchGlassColor(
-        playlistColor = visualColors?.background ?: MaterialTheme.colorScheme.primary
+        playlistColor = visualColors.backgroundOr(MaterialTheme.colorScheme.primary)
     )
     val glassStyle = resolvePlaylistSearchGlassStyle(
         glassColor = glassColor,
@@ -1175,11 +1298,10 @@ internal fun PlaylistModernDockedSearchField(
         isDarkSurface = playlistModernUsesDarkSurface(),
         progress = 1f,
         fallbackContentColor = playlistModernSheetContentColor(),
-        fallbackAccentColor = visualColors?.readableAccent ?: MaterialTheme.colorScheme.primary
+        fallbackAccentColor = visualColors.readableAccentOr(MaterialTheme.colorScheme.primary)
     )
     val contentColor = glassStyle.contentColor
     val accentColor = glassStyle.accentColor
-    val focusModifier = focusRequester?.let { Modifier.focusRequester(it) } ?: Modifier
 
     Box(
         modifier = modifier
@@ -1204,7 +1326,7 @@ internal fun PlaylistModernDockedSearchField(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(PlaylistSearchFieldMinHeight)
-                    .then(focusModifier)
+                    .focusRequesterIfPresent(focusRequester)
                     .onFocusChanged { state -> onFocusChanged?.invoke(state.isFocused) },
                 leadingIcon = {
                     Icon(
@@ -1249,18 +1371,14 @@ internal fun PlaylistModernDockedSearchSlot(
     onQueryChange: (String) -> Unit,
     placeholder: String,
     focusRequester: FocusRequester?,
+    dockedProgress: Float,
     modifier: Modifier = Modifier,
     onFocusChanged: ((Boolean) -> Unit)? = null,
-    dockedProgress: Float = revealProgress,
     inputState: MutableState<TextFieldValue>? = null
 ) {
     val slotProgress = revealProgress.coerceIn(0f, 1f)
     val slotAlpha = resolvePlaylistEasedProgress(slotProgress)
-    if (!shouldComposePlaylistSearchSlot(
-            searchVisible = slotProgress > 0.001f,
-            visibilityProgress = slotProgress
-        )
-    ) {
+    if (!shouldComposePlaylistSearchSlot(searchVisible = false, visibilityProgress = slotProgress)) {
         return
     }
     val density = LocalDensity.current
@@ -1270,7 +1388,7 @@ internal fun PlaylistModernDockedSearchSlot(
     ) {
         val visualColors = LocalPlaylistHeroVisualColors.current
         val glassColor = playlistModernDockedSearchGlassColor(
-            playlistColor = visualColors?.background ?: MaterialTheme.colorScheme.primary
+            playlistColor = visualColors.backgroundOr(MaterialTheme.colorScheme.primary)
         )
         Box(
             modifier = modifier
@@ -1397,13 +1515,13 @@ internal fun PlaylistModernListItemSurface(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PlaylistModernPlaybackActions(
     songCount: Int,
     shuffleEnabled: Boolean,
     repeatMode: Int,
     modifier: Modifier = Modifier,
-    exportEnabled: Boolean = shouldEnableLocalPlaylistQuickExport(songCount),
     onPlayInOrder: () -> Unit,
     onShufflePlay: () -> Unit,
     onToggleShuffle: () -> Unit,
@@ -1412,54 +1530,49 @@ internal fun PlaylistModernPlaybackActions(
 ) {
     val canUseSongs = songCount > 0
     val visualColors = LocalPlaylistHeroVisualColors.current
-    val accentColor = visualColors?.readableAccent ?: MaterialTheme.colorScheme.primary
+    val accentColor = visualColors.readableAccentOr(MaterialTheme.colorScheme.primary)
     val onAccentColor = resolvePlaylistContentColor(accentColor)
-    val controlContentColor = visualColors?.controlContent
-        ?: MaterialTheme.colorScheme.onSurface
-    val playLabel = if (shuffleEnabled) {
-        stringResource(R.string.player_shuffle_play)
-    } else {
-        stringResource(R.string.player_play_all)
-    }
+    val controlContentColor = visualColors.controlContentOr(MaterialTheme.colorScheme.onSurface)
+    val playLabel = stringResource(playlistPlayLabelRes(shuffleEnabled))
+    val onPlay = if (shuffleEnabled) onShufflePlay else onPlayInOrder
 
-    Row(
+    FlowRow(
         modifier = modifier
             .fillMaxWidth()
             .padding(start = 18.dp, top = 8.dp, end = 22.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        itemVerticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        HapticFilledIconButton(
-            onClick = {
-                if (shuffleEnabled) {
-                    onShufflePlay()
-                } else {
-                    onPlayInOrder()
-                }
-            },
-            enabled = canUseSongs,
-            modifier = Modifier.size(PlaylistActionBarHeight),
-            shape = CircleShape,
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = accentColor,
-                contentColor = onAccentColor
-            )
+        Row(
+            modifier = Modifier.padding(end = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                Icons.Filled.PlayArrow,
-                contentDescription = playLabel,
-                modifier = Modifier.size(26.dp)
+            HapticFilledIconButton(
+                onClick = onPlay,
+                enabled = canUseSongs,
+                modifier = Modifier.size(PlaylistActionBarHeight),
+                shape = CircleShape,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = accentColor,
+                    contentColor = onAccentColor
+                )
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = playLabel,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+            Text(
+                text = playLabel,
+                style = MaterialTheme.typography.titleMedium,
+                color = controlContentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
-
-        Text(
-            text = playLabel,
-            style = MaterialTheme.typography.titleMedium,
-            color = controlContentColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
 
         Row(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -1467,29 +1580,21 @@ internal fun PlaylistModernPlaybackActions(
         ) {
             PlaylistCompactIconButton(
                 imageVector = Icons.Outlined.Shuffle,
-                contentDescription = if (shuffleEnabled) {
-                    stringResource(R.string.playlist_mode_shuffle)
-                } else {
-                    stringResource(R.string.playlist_mode_order)
-                },
+                contentDescription = stringResource(playlistShuffleModeLabelRes(shuffleEnabled)),
                 enabled = canUseSongs,
                 active = shuffleEnabled,
                 onClick = onToggleShuffle
             )
             PlaylistCompactIconButton(
-                imageVector = if (repeatMode == Player.REPEAT_MODE_ONE) {
-                    Icons.Filled.RepeatOne
-                } else {
-                    Icons.Outlined.Repeat
-                },
+                imageVector = playlistRepeatModeIcon(repeatMode),
                 contentDescription = stringResource(playlistRepeatModeLabelRes(repeatMode)),
                 active = repeatMode != Player.REPEAT_MODE_OFF,
                 onClick = onCycleRepeatMode
             )
             PlaylistCompactIconButton(
                 imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
-                contentDescription = stringResource(R.string.playlist_export_to_local),
-                enabled = canUseSongs && exportEnabled,
+                contentDescription = stringResource(CoreCommonR.string.playlist_export_to_local),
+                enabled = shouldEnableLocalPlaylistQuickExport(songCount),
                 onClick = onExportToLocalPlaylist,
             )
         }
@@ -1505,26 +1610,16 @@ private fun PlaylistCompactIconButton(
     onClick: () -> Unit
 ) {
     val visualColors = LocalPlaylistHeroVisualColors.current
-    val containerColor = when {
-        active -> visualColors?.accent?.copy(alpha = 0.24f)
-            ?: MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
-        else -> (visualColors?.controlContent ?: MaterialTheme.colorScheme.onSurface)
-            .copy(alpha = 0.09f)
-    }
-    val contentColor = when {
-        !enabled -> (visualColors?.controlContent ?: MaterialTheme.colorScheme.onSurface)
-            .copy(alpha = 0.32f)
-        active -> visualColors?.readableAccent ?: MaterialTheme.colorScheme.primary
-        else -> visualColors?.controlContent?.copy(alpha = 0.82f)
-            ?: MaterialTheme.colorScheme.onSurfaceVariant
-    }
+    val colorScheme = MaterialTheme.colorScheme
+    val containerColor = visualColors.compactIconContainerColor(colorScheme, active)
+    val contentColor = visualColors.compactIconContentColor(colorScheme, enabled, active)
 
     HapticIconButton(
         onClick = onClick,
         enabled = enabled,
         modifier = Modifier
             .size(PlaylistCompactActionButtonSize)
-            .clip(RoundedCornerShape(22.dp))
+            .clip(neriRoundedShape(22.dp))
             .background(containerColor)
     ) {
         Icon(
@@ -1535,6 +1630,50 @@ private fun PlaylistCompactIconButton(
         )
     }
 }
+
+private fun PlaylistHeroVisualColors?.compactIconContainerColor(
+    colorScheme: ColorScheme,
+    active: Boolean
+): Color = when {
+    this == null && active -> colorScheme.primary.copy(alpha = 0.18f)
+    this == null -> colorScheme.onSurface.copy(alpha = 0.09f)
+    active -> accent.copy(alpha = 0.24f)
+    else -> controlContent.copy(alpha = 0.09f)
+}
+
+private fun PlaylistHeroVisualColors?.compactIconContentColor(
+    colorScheme: ColorScheme,
+    enabled: Boolean,
+    active: Boolean
+): Color {
+    if (this == null) {
+        return when {
+            !enabled -> colorScheme.onSurface.copy(alpha = 0.32f)
+            active -> colorScheme.primary
+            else -> colorScheme.onSurfaceVariant
+        }
+    }
+    return when {
+        !enabled -> controlContent.copy(alpha = 0.32f)
+        active -> readableAccent
+        else -> controlContent.copy(alpha = 0.82f)
+    }
+}
+
+internal fun playlistPlayLabelRes(shuffleEnabled: Boolean): Int = if (shuffleEnabled) {
+    CoreCommonR.string.player_shuffle_play
+} else {
+    CoreCommonR.string.player_play_all
+}
+
+internal fun playlistShuffleModeLabelRes(shuffleEnabled: Boolean): Int = if (shuffleEnabled) {
+    CoreCommonR.string.playlist_mode_shuffle
+} else {
+    CoreCommonR.string.playlist_mode_order
+}
+
+internal fun playlistRepeatModeIcon(repeatMode: Int): ImageVector =
+    if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Filled.RepeatOne else Icons.Outlined.Repeat
 
 private fun resolvePlaylistContentColor(backgroundColor: Color): Color {
     return if (ColorUtils.calculateLuminance(backgroundColor.toArgb()) > 0.48) {

@@ -1,0 +1,77 @@
+package moe.ouom.neriplayer.core.download.storage.entry
+
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
+import java.io.File
+import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
+import moe.ouom.neriplayer.core.download.storage.tree.cache.QueriedTreeChild
+
+internal object ManagedDownloadStoredEntryMapper {
+    fun fromFile(file: File): ManagedDownloadStorage.StoredEntry {
+        val mediaUri = runCatching {
+            Uri.fromFile(file).toString()
+        }.getOrElse {
+            file.toURI().toString()
+        }
+        return ManagedDownloadStorage.StoredEntry(
+            name = file.name,
+            reference = file.absolutePath,
+            mediaUri = mediaUri,
+            localFilePath = file.absolutePath,
+            sizeBytes = file.length(),
+            lastModifiedMs = file.lastModified(),
+            isDirectory = file.isDirectory
+        )
+    }
+
+    fun fromTreeChild(child: QueriedTreeChild): ManagedDownloadStorage.StoredEntry {
+        return fromTreeChild(
+            name = child.name,
+            documentReference = child.documentUri.toString(),
+            sizeBytes = child.sizeBytes ?: 0L,
+            lastModifiedMs = child.lastModifiedMs,
+            isDirectory = child.isDirectory,
+            sizeKnown = child.sizeBytes != null
+        )
+    }
+
+    fun fromTreeChild(
+        name: String,
+        documentReference: String,
+        sizeBytes: Long,
+        lastModifiedMs: Long,
+        isDirectory: Boolean,
+        sizeKnown: Boolean = true
+    ): ManagedDownloadStorage.StoredEntry {
+        return ManagedDownloadStorage.StoredEntry(
+            name = name,
+            reference = documentReference,
+            mediaUri = documentReference,
+            localFilePath = null,
+            sizeBytes = sizeBytes,
+            lastModifiedMs = lastModifiedMs,
+            sizeKnown = sizeKnown,
+            isDirectory = isDirectory
+        )
+    }
+
+    fun fromDocumentFile(
+        documentFile: DocumentFile,
+        knownName: String? = null,
+        knownSizeBytes: Long? = null,
+        knownLastModifiedMs: Long? = null,
+        knownIsDirectory: Boolean? = null
+    ): ManagedDownloadStorage.StoredEntry? {
+        val displayName = knownName ?: documentFile.name ?: return null
+        return ManagedDownloadStorage.StoredEntry(
+            name = displayName,
+            reference = documentFile.uri.toString(),
+            mediaUri = documentFile.uri.toString(),
+            localFilePath = null,
+            sizeBytes = knownSizeBytes ?: documentFile.length(),
+            lastModifiedMs = knownLastModifiedMs ?: documentFile.lastModified(),
+            sizeKnown = knownSizeBytes != null,
+            isDirectory = knownIsDirectory ?: documentFile.isDirectory
+        )
+    }
+}

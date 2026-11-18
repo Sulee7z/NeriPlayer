@@ -23,6 +23,9 @@ package moe.ouom.neriplayer.ui.viewmodel.playlist
  * Created: 2025/8/10
  */
 
+import moe.ouom.neriplayer.core.player.persistence.toSongItem
+import moe.ouom.neriplayer.data.model.netease.collection.NeteaseCollectionDetailUiState
+import moe.ouom.neriplayer.data.model.netease.collection.NeteaseCollectionHeader
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -32,30 +35,38 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.netease.mergeNeteaseSessionCookies
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.platform.netease.api.client.mergeNeteaseSessionCookies
+import moe.ouom.neriplayer.platform.netease.api.client.NeteaseClient
+import moe.ouom.neriplayer.platform.netease.auth.NeteaseCookieRepository
+import moe.ouom.neriplayer.platform.netease.NeteasePlaylistCacheRepository
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.platform.netease.CachedNeteaseArtist
-import moe.ouom.neriplayer.data.platform.netease.CachedNeteasePlaylistDetail
-import moe.ouom.neriplayer.data.platform.netease.CachedNeteasePlaylistHeader
-import moe.ouom.neriplayer.data.platform.netease.CachedNeteasePlaylistTrack
-import moe.ouom.neriplayer.data.platform.netease.neteaseRadarCacheContext
+import moe.ouom.neriplayer.data.model.netease.cache.CachedNeteaseArtist
+import moe.ouom.neriplayer.data.model.netease.cache.CachedNeteasePlaylistDetail
+import moe.ouom.neriplayer.data.model.netease.cache.CachedNeteasePlaylistHeader
+import moe.ouom.neriplayer.data.model.netease.cache.CachedNeteasePlaylistTrack
+import moe.ouom.neriplayer.platform.netease.neteaseRadarCacheContext
 import moe.ouom.neriplayer.data.model.NeteaseArtistSummary
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.ui.viewmodel.artist.parseNeteaseArtistSummaries
+import moe.ouom.neriplayer.platform.netease.mapping.parseNeteaseArtistSummaries
 import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.NeteaseRadarPlaylistDefinitions
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.isNeteaseRadarPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.tab.parseNeteasePlaylistDetailSummaryOrNull
 import moe.ouom.neriplayer.ui.viewmodel.tab.toPlaylistSummary
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.logging.NPLogger
+import moe.ouom.neriplayer.ui.component.playlist.playlistLoadFailure
+import moe.ouom.neriplayer.data.model.playlist.PlaylistLoadFailure
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 
@@ -76,6 +87,10 @@ private fun normalizeNeteaseCollectionCoverUrl(url: String?): String? {
     return normalized.replaceFirst(Regex("^http://"), "https://")
 }
 
+private fun positiveOr(value: Long, fallback: Long): Long = if (value > 0L) value else fallback
+
+private fun positiveOr(value: Int, fallback: Int): Int = if (value > 0) value else fallback
+
 internal fun refreshNeteasePlaylistCachedHeader(
     cached: CachedNeteasePlaylistDetail,
     fresh: NeteaseCollectionHeader?
@@ -87,8 +102,8 @@ internal fun refreshNeteasePlaylistCachedHeader(
             id = previous.id,
             name = fresh.name.ifBlank { previous.name },
             coverUrl = fresh.coverUrl.ifBlank { previous.coverUrl },
-            playCount = fresh.playCount.takeIf { it > 0L } ?: previous.playCount,
-            trackCount = fresh.trackCount.takeIf { it > 0 } ?: previous.trackCount
+            playCount = positiveOr(fresh.playCount, previous.playCount),
+            trackCount = positiveOr(fresh.trackCount, previous.trackCount)
         )
     )
 }
@@ -202,8 +217,137 @@ internal fun CachedNeteasePlaylistHeader.toNeteaseCollectionHeader(
         coverUrl = coverUrl.ifBlank {
             normalizeNeteaseCollectionCoverUrl(fallback.picUrl) ?: ""
         },
-        playCount = playCount.takeIf { it > 0L } ?: fallback.playCount,
-        trackCount = trackCount.takeIf { it > 0 } ?: fallback.trackCount
+        playCount = positiveOr(playCount, fallback.playCount),
+        trackCount = positiveOr(trackCount, fallback.trackCount)
+    )
+}
+
+internal class NeteaseCollectionResponseErrors(
+    val apiCode: (Int) -> String,
+    val missingNode: (String) -> String
+)
+
+internal data class ParsedNeteaseCollectionDetail(
+    val header: NeteaseCollectionHeader,
+    val tracks: List<SongItem>,
+    val trackIds: List<Long> = emptyList()
+)
+
+internal fun ParsedNeteaseCollectionDetail.expectedTrackCount(): Int {
+    return positiveOr(header.trackCount, positiveOr(trackIds.size, tracks.size))
+}
+
+internal fun parseNeteasePlaylistDetailResponse(
+    raw: String,
+    errors: NeteaseCollectionResponseErrors
+): ParsedNeteaseCollectionDetail {
+    val root = requireNeteaseOkRoot(raw, errors)
+    val pl = root.optJSONObject("playlist") ?: error(errors.missingNode("playlist"))
+    val header = NeteaseCollectionHeader(
+        id = pl.optLong("id"),
+        name = pl.optString("name"),
+        coverUrl = pl.optString("coverImgUrl", "").replaceFirst(Regex("^http://"), "https://"),
+        playCount = pl.optLong("playCount", 0L),
+        trackCount = pl.optInt("trackCount", 0),
+        isAlbum = false
+    )
+    return ParsedNeteaseCollectionDetail(
+        header = header,
+        tracks = parseNeteaseCollectionTracks(pl.optJSONArray("tracks")),
+        trackIds = parseNeteaseTrackIds(pl.optJSONArray("trackIds"))
+    )
+}
+
+internal fun parseNeteaseAlbumDetailResponse(
+    raw: String,
+    coverFallback: String?,
+    errors: NeteaseCollectionResponseErrors
+): ParsedNeteaseCollectionDetail {
+    val root = requireNeteaseOkRoot(raw, errors)
+    val al = root.optJSONObject("album") ?: error(errors.missingNode("album"))
+    val cover = resolveNeteaseCollectionCoverUrl(
+        primary = al.optString("picUrl", ""),
+        fallback = coverFallback
+    )
+    val header = NeteaseCollectionHeader(
+        id = al.optLong("id"),
+        name = al.optString("name"),
+        coverUrl = cover,
+        playCount = 0L,
+        trackCount = al.optInt("size", 0),
+        isAlbum = true
+    )
+    return ParsedNeteaseCollectionDetail(
+        header = header,
+        tracks = parseNeteaseCollectionTracks(root.optJSONArray("songs"), coverFallback = cover)
+    )
+}
+
+internal fun parseNeteaseSongDetailResponse(
+    raw: String,
+    errors: NeteaseCollectionResponseErrors
+): List<SongItem> {
+    val root = requireNeteaseOkRoot(raw, errors)
+    return parseNeteaseCollectionTracks(root.optJSONArray("songs"))
+}
+
+private fun requireNeteaseOkRoot(raw: String, errors: NeteaseCollectionResponseErrors): JSONObject {
+    val root = JSONObject(raw)
+    val code = root.optInt("code", -1)
+    require(code == 200) { errors.apiCode(code) }
+    return root
+}
+
+private fun parseNeteaseCollectionTracks(
+    tracks: JSONArray?,
+    coverFallback: String? = null
+): List<SongItem> {
+    if (tracks == null) return emptyList()
+    val list = mutableListOf<SongItem>()
+    for (i in 0 until tracks.length()) {
+        val t = tracks.optJSONObject(i) ?: continue
+        parseNeteaseCollectionSong(t, coverFallback)?.let { list.add(it) }
+    }
+    return list
+}
+
+private fun parseNeteaseTrackIds(trackIds: JSONArray?): List<Long> {
+    if (trackIds == null) return emptyList()
+    val ids = mutableListOf<Long>()
+    for (i in 0 until trackIds.length()) {
+        val id = trackIds.optJSONObject(i)?.optLong("id", 0L) ?: 0L
+        if (id != 0L) ids.add(id)
+    }
+    return ids
+}
+
+private fun parseNeteaseCollectionSong(
+    t: JSONObject,
+    coverFallback: String?
+): SongItem? {
+    val id = t.optLong("id", 0L)
+    val name = t.optString("name", "")
+    if (id == 0L || name.isBlank()) return null
+
+    val artistItems = parseNeteaseArtistSummaries(t.optJSONArray("ar"))
+    val al = t.optJSONObject("al") ?: t.optJSONObject("album") ?: JSONObject()
+    val cover = resolveNeteaseCollectionCoverUrl(
+        primary = al.optString("picUrl", ""),
+        fallback = coverFallback
+    ).takeIf { it.isNotBlank() }
+
+    return SongItem(
+        id = id,
+        name = name,
+        artist = artistItems.joinToString(" / ") { it.name },
+        album = "Netease${al.optString("name", "")}",
+        albumId = al.optLong("id", 0L),
+        durationMs = t.optLong("dt", 0L),
+        coverUrl = cover,
+        originalCoverUrl = cover,
+        channelId = "netease",
+        audioId = id.toString(),
+        neteaseArtists = artistItems
     )
 }
 
@@ -234,22 +378,45 @@ internal fun matchingNeteaseRadarCacheHeader(
         ?.header
 }
 
-class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewModel(application) {
-    private val client = AppContainer.neteaseClient
-    private val cookieRepo = AppContainer.neteaseCookieRepo
-    private val playlistCacheRepo = AppContainer.neteasePlaylistCacheRepo
+class NeteaseCollectionDetailViewModel internal constructor(
+    application: Application,
+    private val client: NeteaseClient,
+    private val cookieRepo: NeteaseCookieRepository,
+    private val playlistCacheRepo: NeteasePlaylistCacheRepository,
+    playlistChanges: Flow<Long>
+) : AndroidViewModel(application) {
+    constructor(application: Application) : this(
+        application,
+        AppContainer.neteaseClient,
+        AppContainer.neteaseCookieRepo,
+        AppContainer.neteasePlaylistCacheRepo,
+        LocalPlaylistRepository.getInstance(application).neteasePlaylistChanges
+    )
+    private val responseErrors = NeteaseCollectionResponseErrors(
+        apiCode = { code -> getApplication<Application>().getString(CoreCommonR.string.error_api_code, code) },
+        missingNode = { node -> getApplication<Application>().getString(CoreCommonR.string.error_missing_node, node) }
+    )
 
     private val _uiState = MutableStateFlow(NeteaseCollectionDetailUiState())
     val uiState: StateFlow<NeteaseCollectionDetailUiState> = _uiState
 
     private var playlistId: Long = 0L
     private var currentPlaylist: PlaylistSummary? = null
+    private var currentOfflineMode: Boolean = false
+    private var currentOwner: Any? = null
     private var visibleRadarCacheContext: String? = null
     private var playlistLoadJob: Job? = null
     private var playlistLoadGeneration: Long = 0L
     private val initialRadarCacheContext = neteaseRadarCacheContext(cookieRepo.getCookiesOnce())
 
     init {
+        viewModelScope.launch {
+            playlistChanges.collect { changedId ->
+                if (currentPlaylist?.id == changedId && !currentOfflineMode) {
+                    retry()
+                }
+            }
+        }
         viewModelScope.launch {
             var isFirstRadarContextEmission = true
             cookieRepo.cookieFlow
@@ -269,13 +436,15 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
                     if (visibleRadarCacheContext == radarCacheContext) return@collect
                     startPlaylist(
                         playlist = resetNeteaseRadarPlaylistSummaryForContextChange(playlist),
-                        forceRefresh = true
+                        forceRefresh = true,
+                        offlineMode = currentOfflineMode,
+                        owner = currentOwner
                     )
                 }
         }
     }
 
-    fun startPlaylist(playlist: PlaylistSummary, forceRefresh: Boolean = false) {
+    fun startPlaylist(playlist: PlaylistSummary, forceRefresh: Boolean = false, offlineMode: Boolean = false, owner: Any? = null) {
         playlistLoadJob?.cancel()
         playlistLoadGeneration += 1L
         val loadGeneration = playlistLoadGeneration
@@ -286,6 +455,8 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
             currentCacheContext = radarCacheContext
         )
         currentPlaylist = entryPlaylist
+        currentOfflineMode = offlineMode
+        currentOwner = owner
         playlistId = entryPlaylist.id
         val isRadarPlaylist = isNeteaseRadarPlaylist(entryPlaylist.id)
         val previous = _uiState.value.takeIf {
@@ -315,7 +486,8 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
             loadPlaylist(
                 playlist = entryPlaylist,
                 forceRefresh = forceRefresh,
-                loadGeneration = loadGeneration
+                loadGeneration = loadGeneration,
+                offlineMode = offlineMode
             )
         }
     }
@@ -323,11 +495,24 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
     private suspend fun loadPlaylist(
         playlist: PlaylistSummary,
         forceRefresh: Boolean,
-        loadGeneration: Long
+        loadGeneration: Long,
+        offlineMode: Boolean
     ) {
         var radarCacheContext = neteaseRadarCacheContext(cookieRepo.getCookiesOnce())
         val requestStartedAtMs = System.currentTimeMillis()
         val cached = readCompatiblePlaylistCache(playlist.id)
+        if (offlineMode) {
+            if (!isCurrentPlaylistLoad(playlist, loadGeneration, radarCacheContext)) return
+            if (cached != null) {
+                publishCachedPlaylist(cached, playlist)
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    loading = false,
+                    error = PlaylistLoadFailure.Offline
+                )
+            }
+            return
+        }
         if (
             !forceRefresh &&
             cached != null &&
@@ -360,7 +545,7 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
             }
             NPLogger.d(TAG_PD, "detail head=${raw.take(500)}")
 
-            val parsed = parseDetailFromPlaylist(raw)
+            val parsed = parseNeteasePlaylistDetailResponse(raw, responseErrors)
             val displayHeader = resolveNeteasePlaylistDisplayHeader(
                 playlist = playlist,
                 detailHeader = parsed.header,
@@ -441,13 +626,13 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
             if (fallback != null) {
                 if (!isCurrentPlaylistLoad(playlist, loadGeneration, radarCacheContext)) return
                 NPLogger.w(TAG_PD, "NetEase playlist detail failed, fallback to cache: playlistId=${playlist.id}", e)
-                publishCachedPlaylist(fallback, playlist)
+                publishCachedPlaylist(fallback, playlist, error = playlistLoadFailure(e))
                 return
             }
             NPLogger.e(TAG_PD, "Network/Server error", e)
             _uiState.value = _uiState.value.copy(
                 loading = false,
-                error = "Network or server error: ${e.message ?: e.javaClass.simpleName}"  // Localized in UI
+                error = playlistLoadFailure(e)
             )
         } catch (e: Exception) {
             if (!isCurrentPlaylistLoad(playlist, loadGeneration, radarCacheContext)) return
@@ -455,13 +640,13 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
             if (fallback != null) {
                 if (!isCurrentPlaylistLoad(playlist, loadGeneration, radarCacheContext)) return
                 NPLogger.w(TAG_PD, "NetEase playlist detail parse failed, fallback to cache: playlistId=${playlist.id}", e)
-                publishCachedPlaylist(fallback, playlist)
+                publishCachedPlaylist(fallback, playlist, error = playlistLoadFailure(e))
                 return
             }
             NPLogger.e(TAG_PD, "Unexpected error", e)
             _uiState.value = _uiState.value.copy(
                 loading = false,
-                error = "Parse/unknown error: ${e.message ?: e.javaClass.simpleName}"  // Localized in UI
+                error = playlistLoadFailure(e)
             )
         }
     }
@@ -573,7 +758,8 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
     private suspend fun publishCachedPlaylist(
         cached: CachedNeteasePlaylistDetail,
         fallback: PlaylistSummary,
-        loading: Boolean = false
+        loading: Boolean = false,
+        error: PlaylistLoadFailure? = null
     ) {
         visibleRadarCacheContext = cached.radarCacheContext.takeIf {
             isNeteaseRadarPlaylist(cached.playlistId)
@@ -581,7 +767,7 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         _uiState.value = withContext(Dispatchers.Default) {
             NeteaseCollectionDetailUiState(
                 loading = loading,
-                error = null,
+                error = error,
                 header = cached.header.toNeteaseCollectionHeader(fallback),
                 tracks = cached.tracks.map { it.toSongItem() }
             )
@@ -590,7 +776,7 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
 
     private fun shouldReuseCachedPlaylist(
         cached: CachedNeteasePlaylistDetail,
-        parsed: ParsedDetail
+        parsed: ParsedNeteaseCollectionDetail
     ): Boolean {
         return shouldReuseNeteasePlaylistCache(
             cached = cached,
@@ -600,7 +786,7 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         )
     }
 
-    private suspend fun resolvePlaylistTracks(parsed: ParsedDetail): List<SongItem> {
+    private suspend fun resolvePlaylistTracks(parsed: ParsedNeteaseCollectionDetail): List<SongItem> {
         return if (
             parsed.trackIds.isNotEmpty() &&
             parsed.trackIds.size > parsed.tracks.size
@@ -611,13 +797,7 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         }
     }
 
-    private fun ParsedDetail.expectedTrackCount(): Int {
-        return header.trackCount.takeIf { it > 0 }
-            ?: trackIds.size.takeIf { it > 0 }
-            ?: tracks.size
-    }
-
-    private fun ParsedDetail.recentTrackSignature(): String {
+    private fun ParsedNeteaseCollectionDetail.recentTrackSignature(): String {
         val ids = trackIds.ifEmpty { tracks.map { it.id } }
         return buildString {
             append(expectedTrackCount())
@@ -631,7 +811,7 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         }
     }
 
-    private fun ParsedDetail.toCache(
+    private fun ParsedNeteaseCollectionDetail.toCache(
         tracks: List<SongItem>,
         displayHeader: NeteaseCollectionHeader = header,
         radarCacheContext: String,
@@ -695,13 +875,15 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         )
     }
 
-    fun startAlbum(album: AlbumSummary) {
+    fun startAlbum(album: AlbumSummary, offlineMode: Boolean = false, owner: Any? = null) {
         // 专辑依然每次刷新，避免和歌单缓存混用
         playlistLoadJob?.cancel()
         playlistLoadGeneration += 1L
         val loadGeneration = playlistLoadGeneration
         val albumId = album.id
         currentPlaylist = null
+        currentOfflineMode = offlineMode
+        currentOwner = owner
         playlistId = albumId
         visibleRadarCacheContext = null
 
@@ -719,6 +901,14 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
             tracks = emptyList()
         )
 
+        if (offlineMode) {
+            _uiState.value = _uiState.value.copy(
+                loading = false,
+                error = PlaylistLoadFailure.Offline
+            )
+            return
+        }
+
         playlistLoadJob = viewModelScope.launch {
             try {
                 val raw = withContext(Dispatchers.IO) {
@@ -728,9 +918,10 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
                 if (!isCurrentCollectionLoad(albumId, loadGeneration)) return@launch
                 NPLogger.d(TAG_PD, "detail head=${raw.take(500)}")
 
-                val (header, tracks) = parseDetailFromAlbum(
+                val (header, tracks) = parseNeteaseAlbumDetailResponse(
                     raw = raw,
-                    coverFallback = album.picUrl
+                    coverFallback = album.picUrl,
+                    errors = responseErrors
                 )
                 if (!isCurrentCollectionLoad(albumId, loadGeneration)) return@launch
 
@@ -747,14 +938,14 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
                 NPLogger.e(TAG_PD, "Network/Server error", e)
                 _uiState.value = _uiState.value.copy(
                     loading = false,
-                    error = "Network or server error: ${e.message ?: e.javaClass.simpleName}"  // Localized in UI
+                    error = playlistLoadFailure(e)
                 )
             } catch (e: Exception) {
                 if (!isCurrentCollectionLoad(albumId, loadGeneration)) return@launch
                 NPLogger.e(TAG_PD, "Unexpected error", e)
                 _uiState.value = _uiState.value.copy(
                     loading = false,
-                    error = "Parse/unknown error: ${e.message ?: e.javaClass.simpleName}"  // Localized in UI
+                    error = playlistLoadFailure(e)
                 )
             }
         }
@@ -772,7 +963,23 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         )
     }
 
-    fun retry() {
+    fun updateOfflineMode(owner: Any, offlineMode: Boolean) {
+        if (currentOwner !== owner || currentOfflineMode == offlineMode) return
+        currentOfflineMode = offlineMode
+        if (offlineMode) retry(offlineMode = true, owner = owner)
+    }
+
+    fun stop(owner: Any) {
+        if (currentOwner !== owner) return
+        playlistLoadGeneration += 1L
+        playlistLoadJob?.cancel()
+        currentOwner = null
+        currentPlaylist = null
+        _uiState.value = _uiState.value.copy(loading = false)
+    }
+
+    fun retry(offlineMode: Boolean = currentOfflineMode, owner: Any? = currentOwner) {
+        if (currentOwner !== owner) return
         val h = _uiState.value.header ?: return
         if (h.isAlbum) {
             startAlbum(
@@ -781,7 +988,9 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
                     name = h.name,
                     picUrl = h.coverUrl,
                     size = h.trackCount
-                )
+                ),
+                offlineMode = offlineMode,
+                owner = owner
             )
         } else {
             val current = currentPlaylist?.takeIf { it.id == h.id }
@@ -798,122 +1007,15 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
                     playCount = h.playCount,
                     trackCount = h.trackCount
                 ),
-                forceRefresh = true
+                forceRefresh = true,
+                offlineMode = offlineMode,
+                owner = owner
             )
         }
     }
 
     private fun toHttps(url: String?): String? =
         url?.replaceFirst(Regex("^http://"), "https://")
-
-    private fun parseDetailFromPlaylist(raw: String): ParsedDetail {
-        val root = JSONObject(raw)
-        val code = root.optInt("code", -1)
-        require(code == 200) { getApplication<Application>().getString(R.string.error_api_code, code) }
-
-        val pl = root.optJSONObject("playlist") ?: error(getApplication<Application>().getString(R.string.error_missing_node, "playlist"))
-
-        val header = NeteaseCollectionHeader(
-            id = pl.optLong("id"),
-            name = pl.optString("name"),
-            coverUrl = toHttps(pl.optString("coverImgUrl", "")) ?: "",
-            playCount = pl.optLong("playCount", 0L),
-            trackCount = pl.optInt("trackCount", 0),
-            isAlbum = false
-        )
-
-        val list = mutableListOf<SongItem>()
-        val tracksArr = pl.optJSONArray("tracks")
-        if (tracksArr != null) {
-            for (i in 0 until tracksArr.length()) {
-                val t = tracksArr.optJSONObject(i) ?: continue
-                parseSongItem(t)?.let { list.add(it) }
-            }
-        }
-        val trackIds = mutableListOf<Long>()
-        val trackIdsArr = pl.optJSONArray("trackIds")
-        if (trackIdsArr != null) {
-            for (i in 0 until trackIdsArr.length()) {
-                val id = trackIdsArr.optJSONObject(i)?.optLong("id", 0L) ?: 0L
-                if (id != 0L) trackIds.add(id)
-            }
-        }
-        return ParsedDetail(header, list, trackIds)
-    }
-
-    private fun parseDetailFromAlbum(
-        raw: String,
-        coverFallback: String? = null
-    ): ParsedDetail {
-        val root = JSONObject(raw)
-        val code = root.optInt("code", -1)
-        require(code == 200) { getApplication<Application>().getString(R.string.error_api_code, code) }
-
-        val al = root.optJSONObject("album") ?: error(getApplication<Application>().getString(R.string.error_missing_node, "album"))
-        val cover = resolveNeteaseCollectionCoverUrl(
-            primary = al.optString("picUrl", ""),
-            fallback = coverFallback
-        )
-
-        val header = NeteaseCollectionHeader(
-            id = al.optLong("id"),
-            name = al.optString("name"),
-            coverUrl = cover,
-            playCount = 0L,
-            trackCount = al.optInt("size", 0),
-            isAlbum = true
-        )
-
-        val list = mutableListOf<SongItem>()
-        val tracksArr = root.optJSONArray("songs")
-        if (tracksArr != null) {
-            for (i in 0 until tracksArr.length()) {
-                val t = tracksArr.optJSONObject(i) ?: continue
-                parseSongItem(t, coverFallback = cover)?.let { list.add(it) }
-            }
-        }
-        return ParsedDetail(header, list)
-    }
-    
-    private data class ParsedDetail(
-        val header: NeteaseCollectionHeader,
-        val tracks: List<SongItem>,
-        val trackIds: List<Long> = emptyList()
-    )
-
-    private fun parseSongItem(
-        t: JSONObject,
-        coverFallback: String? = null
-    ): SongItem? {
-        val id = t.optLong("id", 0L)
-        val name = t.optString("name", "")
-        if (id == 0L || name.isBlank()) return null
-
-        val artistItems = parseNeteaseArtistSummaries(t.optJSONArray("ar"))
-        val artist = artistItems.joinToString(" / ") { it.name }
-        val al = t.optJSONObject("al") ?: t.optJSONObject("album")
-        val albumName = al?.optString("name", "") ?: ""
-        val albumId = al?.optLong("id", 0L) ?: 0L
-        val cover = resolveNeteaseCollectionCoverUrl(
-            primary = al?.optString("picUrl", ""),
-            fallback = coverFallback
-        )
-        val duration = t.optLong("dt", 0L)
-
-        return SongItem(
-            id = id,
-            name = name,
-            artist = artist,
-            album = "Netease$albumName",
-            albumId = albumId,
-            durationMs = duration,
-            coverUrl = cover.takeIf { it.isNotBlank() },
-            originalCoverUrl = cover.takeIf { it.isNotBlank() },
-            channelId = "netease",
-            audioId = id.toString(),
-            neteaseArtists = artistItems
-        )
-    }
 
     private suspend fun fetchFullPlaylistTracks(
         trackIds: List<Long>,
@@ -936,24 +1038,11 @@ class NeteaseCollectionDetailViewModel(application: Application) : AndroidViewMo
         deferred.awaitAll()
             .sortedBy { it.first }
             .forEach { (_, raw) ->
-                parseSongDetail(raw).forEach { song ->
+                parseNeteaseSongDetailResponse(raw, responseErrors).forEach { song ->
                     fetchedMap[song.id] = song
                 }
             }
         val merged = existingMap + fetchedMap
         trackIds.mapNotNull { merged[it] }
-    }
-
-    private fun parseSongDetail(raw: String): List<SongItem> {
-        val root = JSONObject(raw)
-        val code = root.optInt("code", -1)
-        require(code == 200) { getApplication<Application>().getString(R.string.error_api_code, code) }
-        val songs = root.optJSONArray("songs") ?: return emptyList()
-        val out = mutableListOf<SongItem>()
-        for (i in 0 until songs.length()) {
-            val t = songs.optJSONObject(i) ?: continue
-            parseSongItem(t)?.let { out.add(it) }
-        }
-        return out
     }
 }

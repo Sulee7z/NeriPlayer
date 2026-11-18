@@ -1,0 +1,592 @@
+package moe.ouom.neriplayer.ui.screen.playlist
+
+/*
+ * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
+ * Copyright (C) 2025-2025 NeriPlayer developers
+ * https://github.com/cwuom/NeriPlayer
+ *
+ * This software is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software.
+ * If not, see <https://www.gnu.org/licenses/>.
+ *
+ * File: moe.ouom.neriplayer.ui.screen.playlist/LocalPlaylistDetailScreen
+ * Updated: 2026/3/23
+ */
+
+import moe.ouom.neriplayer.data.identity.stableKey
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.local.LocalAudioScanPhase
+import moe.ouom.neriplayer.data.model.local.LocalAudioScanProgress
+import moe.ouom.neriplayer.data.model.stableKey
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.ui.feedback.NeriSnackbarHost
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.ui.haptic.HapticIconButton
+import moe.ouom.neriplayer.ui.haptic.HapticOutlinedButton
+import moe.ouom.neriplayer.ui.haptic.HapticTextButton
+import moe.ouom.neriplayer.common.search.SearchTextMatcher
+import moe.ouom.neriplayer.R as AppR
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+internal fun LocalScanPreviewScreen(
+    isScanning: Boolean,
+    scanProgress: LocalAudioScanProgress = LocalAudioScanProgress(),
+    songs: List<SongItem>,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    metadataOnly: Boolean = false,
+    onMetadataOnlyChange: ((Boolean) -> Unit)? = null,
+    hideExistingLocalPlaylistSongs: Boolean = false,
+    onHideExistingLocalPlaylistSongsChange: ((Boolean) -> Unit)? = null,
+    existingLocalPlaylistKeys: Set<String> = emptySet(),
+    hideDuplicateMetadataSongs: Boolean = false,
+    onHideDuplicateMetadataSongsChange: ((Boolean) -> Unit)? = null,
+    duplicateMetadataKeys: Set<String> = emptySet(),
+    metadataPendingKeys: Set<String> = emptySet(),
+    selectedKeys: Set<String>,
+    onSelectedKeysChange: (Set<String>) -> Unit,
+    snackbarHostState: SnackbarHostState,
+    onBack: () -> Unit,
+    onImport: () -> Unit,
+    onSecondaryAction: (() -> Unit)? = null,
+    title: String? = null,
+    actionLabel: ((Int) -> String)? = null,
+    secondaryActionLabel: String? = null,
+    searchPlaceholder: String? = null,
+    emptyText: String? = null,
+    isBusy: Boolean = false
+) {
+    val context = LocalContext.current
+    val previewItems by produceState(
+        initialValue = emptyList(),
+        songs,
+        metadataPendingKeys,
+        context
+    ) {
+        value = withContext(Dispatchers.Default) {
+            songs.map {
+                it.toLocalScanPreviewItem(
+                    context = context,
+                    metadataPending = it.stableKey() in metadataPendingKeys
+                )
+            }
+        }
+    }
+    val listState = rememberLazyListState()
+    val displayedItems by produceState(
+        initialValue = emptyList(),
+        previewItems,
+        query,
+        metadataOnly,
+        hideExistingLocalPlaylistSongs,
+        existingLocalPlaylistKeys,
+        hideDuplicateMetadataSongs,
+        duplicateMetadataKeys
+    ) {
+        value = withContext(Dispatchers.Default) {
+            filterLocalScanPreviewItems(
+                items = previewItems,
+                query = query,
+                metadataOnly = metadataOnly,
+                hideExistingLocalPlaylistSongs = hideExistingLocalPlaylistSongs,
+                existingLocalPlaylistKeys = existingLocalPlaylistKeys,
+                hideDuplicateMetadataSongs = hideDuplicateMetadataSongs,
+                duplicateMetadataKeys = duplicateMetadataKeys
+            )
+        }
+    }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    val metadataFilterAvailable = onMetadataOnlyChange != null
+    val existingLocalPlaylistSongsFilterAvailable =
+        onHideExistingLocalPlaylistSongsChange != null
+    val duplicateMetadataSongsFilterAvailable =
+        onHideDuplicateMetadataSongsChange != null
+    val displayedKeys by remember(displayedItems) {
+        derivedStateOf {
+            displayedItems.mapTo(LinkedHashSet(displayedItems.size)) { it.stableKey }
+        }
+    }
+    val allDisplayedSelected = displayedKeys.isNotEmpty() && displayedKeys.all(selectedKeys::contains)
+    val resolvedTitle = title ?: stringResource(CoreCommonR.string.local_playlist_scan_preview_title)
+    val resolvedSearchPlaceholder =
+        searchPlaceholder ?: stringResource(CoreCommonR.string.local_playlist_scan_preview_search)
+    val resolvedEmptyText = emptyText ?: when {
+        hideDuplicateMetadataSongs || (metadataOnly && hideExistingLocalPlaylistSongs) -> {
+            stringResource(CoreCommonR.string.local_playlist_scan_filtered_empty)
+        }
+        metadataOnly -> stringResource(CoreCommonR.string.local_playlist_scan_metadata_empty)
+        hideExistingLocalPlaylistSongs -> stringResource(CoreCommonR.string.local_playlist_scan_existing_empty)
+        else -> stringResource(CoreCommonR.string.download_scan_empty)
+    }
+    val resolvedActionLabel = actionLabel?.invoke(selectedKeys.size)
+        ?: stringResource(CoreCommonR.string.download_scan_add_selected, selectedKeys.size)
+    val showBusy = isScanning || isBusy
+    val selectionActionsEnabled = selectedKeys.isNotEmpty() && !showBusy
+
+    BackHandler(onBack = onBack)
+
+    Scaffold(
+        containerColor = Color.Transparent,
+        snackbarHost = {
+            NeriSnackbarHost(
+                hostState = snackbarHostState,
+                bottomPadding = LocalMiniPlayerHeight.current
+            )
+        },
+        topBar = {
+            TopAppBar(
+                title = { Text(resolvedTitle) },
+                navigationIcon = {
+                    HapticIconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(CoreCommonR.string.action_back)
+                        )
+                    }
+                },
+                actions = {
+                    if (showBusy) {
+                        CircularProgressIndicator(
+                            modifier = Modifier
+                                .padding(end = 16.dp)
+                                .size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    }
+                    if (
+                        metadataFilterAvailable ||
+                        existingLocalPlaylistSongsFilterAvailable ||
+                        duplicateMetadataSongsFilterAvailable
+                    ) {
+                        Box {
+                            HapticIconButton(onClick = { showMoreMenu = true }) {
+                                Icon(
+                                    Icons.Filled.MoreVert,
+                                    contentDescription = stringResource(CoreCommonR.string.common_more_options)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showMoreMenu,
+                                onDismissRequest = { showMoreMenu = false }
+                            ) {
+                                if (metadataFilterAvailable) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(stringResource(CoreCommonR.string.local_playlist_scan_filter_metadata))
+                                        },
+                                        trailingIcon = {
+                                            Checkbox(
+                                                checked = metadataOnly,
+                                                onCheckedChange = null
+                                            )
+                                        },
+                                        onClick = {
+                                            onMetadataOnlyChange(!metadataOnly)
+                                            showMoreMenu = false
+                                        }
+                                    )
+                                }
+                                if (existingLocalPlaylistSongsFilterAvailable) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(stringResource(CoreCommonR.string.local_playlist_scan_filter_existing))
+                                        },
+                                        trailingIcon = {
+                                            Checkbox(
+                                                checked = hideExistingLocalPlaylistSongs,
+                                                onCheckedChange = null
+                                            )
+                                        },
+                                        onClick = {
+                                            onHideExistingLocalPlaylistSongsChange(
+                                                !hideExistingLocalPlaylistSongs
+                                            )
+                                            showMoreMenu = false
+                                        }
+                                    )
+                                }
+                                if (duplicateMetadataSongsFilterAvailable) {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                stringResource(
+                                                    CoreCommonR.string.local_playlist_scan_filter_duplicates
+                                                )
+                                            )
+                                        },
+                                        trailingIcon = {
+                                            Checkbox(
+                                                checked = hideDuplicateMetadataSongs,
+                                                onCheckedChange = null
+                                            )
+                                        },
+                                        onClick = {
+                                            onHideDuplicateMetadataSongsChange(
+                                                !hideDuplicateMetadataSongs
+                                            )
+                                            showMoreMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+                windowInsets = WindowInsets.statusBars,
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.76f),
+                    scrolledContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f)
+                )
+            )
+        },
+        bottomBar = {
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                tonalElevation = 3.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(bottom = LocalMiniPlayerHeight.current)
+                ) {
+                    if (isScanning) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    Text(
+                        text = pluralStringResource(
+                            AppR.plurals.common_selected_count,
+                            selectedKeys.size,
+                            selectedKeys.size
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)
+                    ) {
+                        if (onSecondaryAction != null && secondaryActionLabel != null) {
+                            HapticOutlinedButton(
+                                enabled = selectionActionsEnabled,
+                                onClick = onSecondaryAction
+                            ) {
+                                Text(secondaryActionLabel)
+                            }
+                        }
+                        HapticTextButton(
+                            enabled = selectionActionsEnabled,
+                            onClick = onImport
+                        ) {
+                            Text(resolvedActionLabel)
+                        }
+                    }
+                }
+            }
+        }
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            if (isScanning && songs.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        CircularProgressIndicator()
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = stringResource(CoreCommonR.string.download_scanning),
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            val phaseElapsedSeconds =
+                                ((scanProgress.phaseElapsedMs + 999L) / 1_000L)
+                                    .coerceAtMost(Int.MAX_VALUE.toLong())
+                                    .toInt()
+                            Text(
+                                text = when (scanProgress.phase) {
+                                    LocalAudioScanPhase.PREPARING -> pluralStringResource(
+                                        AppR.plurals.local_playlist_scan_progress_preparing,
+                                        phaseElapsedSeconds,
+                                        phaseElapsedSeconds
+                                    )
+                                    LocalAudioScanPhase.READING_DOWNLOAD_INDEX -> pluralStringResource(
+                                        AppR.plurals.local_playlist_scan_progress_download_index,
+                                        phaseElapsedSeconds,
+                                        phaseElapsedSeconds
+                                    )
+                                    LocalAudioScanPhase.QUERYING_MEDIA_STORE -> pluralStringResource(
+                                        AppR.plurals.local_playlist_scan_progress_media_store,
+                                        phaseElapsedSeconds,
+                                        phaseElapsedSeconds
+                                    )
+                                    LocalAudioScanPhase.TRAVERSING -> pluralStringResource(
+                                        CoreCommonR.plurals.local_playlist_scan_progress_traversing,
+                                        scanProgress.visitedDirectories,
+                                        scanProgress.visitedDirectories,
+                                        scanProgress.discoveredSongs
+                                    )
+                                    LocalAudioScanPhase.HYDRATING_METADATA -> stringResource(
+                                        CoreCommonR.string.local_playlist_scan_progress_metadata,
+                                        scanProgress.processed,
+                                        scanProgress.total
+                                    )
+                                    LocalAudioScanPhase.BUILDING_ENTRIES -> stringResource(
+                                        CoreCommonR.string.local_playlist_scan_progress_building,
+                                        scanProgress.processed,
+                                        scanProgress.total
+                                    )
+                                    LocalAudioScanPhase.COMPLETED -> pluralStringResource(
+                                        AppR.plurals.local_playlist_scan_progress_completed,
+                                        scanProgress.discoveredSongs,
+                                        scanProgress.discoveredSongs
+                                    )
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            } else {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = {
+                        Text(resolvedSearchPlaceholder)
+                    },
+                    singleLine = true
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    HapticTextButton(
+                        enabled = displayedItems.isNotEmpty(),
+                        onClick = {
+                            onSelectedKeysChange(
+                                if (allDisplayedSelected) {
+                                    selectedKeys - displayedKeys
+                                } else {
+                                    selectedKeys + displayedKeys
+                                }
+                            )
+                        }
+                    ) {
+                        Text(
+                            if (allDisplayedSelected) {
+                                stringResource(CoreCommonR.string.action_deselect_all)
+                            } else {
+                                stringResource(CoreCommonR.string.action_select_all)
+                            }
+                        )
+                    }
+                    HapticTextButton(
+                        enabled = displayedItems.isNotEmpty(),
+                        onClick = {
+                            onSelectedKeysChange(
+                                selectedKeys
+                                    .subtract(displayedKeys)
+                                    .plus(displayedKeys - selectedKeys)
+                            )
+                        }
+                    ) {
+                        Text(stringResource(CoreCommonR.string.action_inverse_select))
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                if (displayedItems.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = resolvedEmptyText,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        itemsIndexed(
+                            items = displayedItems,
+                            key = { _, item -> item.rowKey },
+                            contentType = { _, _ -> "local_scan_preview_song" }
+                        ) { _, item ->
+                            val selected = item.stableKey in selectedKeys
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .combinedClickable(
+                                        onClick = {
+                                            onSelectedKeysChange(
+                                                if (selected) {
+                                                    selectedKeys - item.stableKey
+                                                } else {
+                                                    selectedKeys + item.stableKey
+                                                }
+                                            )
+                                        }
+                                    )
+                                    .padding(vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = selected,
+                                    onCheckedChange = {
+                                        onSelectedKeysChange(
+                                            if (selected) {
+                                                selectedKeys - item.stableKey
+                                            } else {
+                                                selectedKeys + item.stableKey
+                                            }
+                                        )
+                                    }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.title,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.bodyLarge
+                                    )
+                                    if (item.subtitle.isNotBlank()) {
+                                        Text(
+                                            text = item.subtitle,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    if (item.filePath.isNotBlank()) {
+                                        Text(
+                                            text = item.filePath,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.82f)
+                                        )
+                                    }
+                                }
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+internal fun filterLocalScanPreviewItems(
+    items: List<LocalScanPreviewItem>,
+    query: String,
+    metadataOnly: Boolean,
+    hideExistingLocalPlaylistSongs: Boolean,
+    existingLocalPlaylistKeys: Set<String>,
+    hideDuplicateMetadataSongs: Boolean,
+    duplicateMetadataKeys: Set<String>
+): List<LocalScanPreviewItem> {
+    val candidates = items
+        .asSequence()
+        .filter { item -> !metadataOnly || item.hasMetadata }
+        .filter { item ->
+            !hideExistingLocalPlaylistSongs || item.stableKey !in existingLocalPlaylistKeys
+        }
+        .filter { item ->
+            !hideDuplicateMetadataSongs || item.stableKey !in duplicateMetadataKeys
+        }
+        .toList()
+    return SearchTextMatcher.filterAndRank(query, candidates) { item ->
+        listOf(item.title, item.fileName, item.filePath, item.subtitle, item.searchText)
+    }
+}

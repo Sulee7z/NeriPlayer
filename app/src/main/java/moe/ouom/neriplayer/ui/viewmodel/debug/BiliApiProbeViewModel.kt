@@ -27,19 +27,22 @@ import android.app.Application
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.bili.BiliClient
+import moe.ouom.neriplayer.data.model.bilibili.playback.PlayOptions
+import moe.ouom.neriplayer.platform.bilibili.lyrics.BiliSubtitleLyricsLoader
 import moe.ouom.neriplayer.core.di.AppContainer
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import moe.ouom.neriplayer.R as AppR
 
 data class BiliProbeUiState(
     val running: Boolean = false,
@@ -79,7 +82,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(
                 running = true,
-                lastMessage = getApplication<Application>().getString(R.string.debug_calling, label),
+                lastMessage = getApplication<Application>().getString(AppR.string.debug_calling, label),
                 lastJsonPreview = ""
             )
             try {
@@ -87,18 +90,18 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
                 copyToClipboard("bili_api_$label", raw)
                 _ui.value = _ui.value.copy(
                     running = false,
-                    lastMessage = getApplication<Application>().getString(R.string.debug_copied_label, label),
+                    lastMessage = getApplication<Application>().getString(AppR.string.debug_copied_label, label),
                     lastJsonPreview = raw
                 )
             } catch (e: IOException) {
                 _ui.value = _ui.value.copy(
                     running = false,
-                    lastMessage = getApplication<Application>().getString(R.string.debug_network_error, e.message ?: e.javaClass.simpleName)
+                    lastMessage = getApplication<Application>().getString(AppR.string.debug_network_error, e.message ?: e.javaClass.simpleName)
                 )
             } catch (e: Exception) {
                 _ui.value = _ui.value.copy(
                     running = false,
-                    lastMessage = getApplication<Application>().getString(R.string.debug_call_failed, e.message ?: e.javaClass.simpleName)
+                    lastMessage = getApplication<Application>().getString(AppR.string.debug_call_failed, e.message ?: e.javaClass.simpleName)
                 )
             }
         }
@@ -111,7 +114,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
             ?: pages.firstOrNull()
             ?: throw IllegalArgumentException(
                 getApplication<Application>().resources.getQuantityString(
-                    R.plurals.debug_page_not_found,
+                    AppR.plurals.debug_page_not_found,
                     page,
                     page
                 )
@@ -126,7 +129,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
             ?: pages.firstOrNull()
             ?: throw IllegalArgumentException(
                 getApplication<Application>().resources.getQuantityString(
-                    R.plurals.debug_page_not_found,
+                    AppR.plurals.debug_page_not_found,
                     page,
                     page
                 )
@@ -303,7 +306,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
     // 支持通过 avid+page 获取 cid
     fun playInfoByAvidCidAndCopy() = launchAndCopy("playinfo_by_avid_cid") {
         val avid = ui.value.bvid.removePrefix("av").toLongOrNull()
-            ?: throw IllegalArgumentException(getApplication<Application>().getString(R.string.probe_invalid_avid))
+            ?: throw IllegalArgumentException(getApplication<Application>().getString(AppR.string.probe_invalid_avid))
 
         val cid = if (ui.value.cid.isNotBlank()) {
             ui.value.cid.toLongOrNull() ?: 0L
@@ -328,7 +331,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
             getCidByBvidAndPage(bvid, page)
         }
 
-        val list = client.getAllAudioStreams(bvid, cid, BiliClient.PlayOptions())
+        val list = client.getAllAudioStreams(bvid, cid, PlayOptions())
         val arr = JSONArray()
         list.forEach { a ->
             arr.put(JSONObject().apply {
@@ -348,7 +351,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
         val page = ui.value.page.toIntOrNull() ?: 1
         val cid = getCidByBvidAndPage(bvid, page)
 
-        val list = client.getAllAudioStreams(bvid, cid, BiliClient.PlayOptions())
+        val list = client.getAllAudioStreams(bvid, cid, PlayOptions())
         val arr = JSONArray()
         list.forEach { a ->
             arr.put(JSONObject().apply {
@@ -378,7 +381,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
             getCidByBvidAndPage(bvid, page)
         }
 
-        val opts = BiliClient.PlayOptions(
+        val opts = PlayOptions(
             qn = ui.value.cid.toIntOrNull(),
             fnval = 0,
             platform = "html5",
@@ -405,7 +408,7 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
         val page = ui.value.page.toIntOrNull() ?: 1
         val cid = getCidByBvidAndPage(bvid, page)
 
-        val opts = BiliClient.PlayOptions(
+        val opts = PlayOptions(
             qn = null,
             fnval = 0,
             platform = "html5",
@@ -429,6 +432,92 @@ class BiliApiProbeViewModel(app: Application) : AndroidViewModel(app) {
             put("resolved_cid", cid)
             put("page", page)
             put("durl", arr)
+        }.toString()
+    }
+
+    /** 解析探针目标：aid、cid 与视频页 Referer */
+    private suspend fun resolveSubtitleProbeTarget(): Triple<Long, Long, String> {
+        val bvid = ui.value.bvid.trim()
+        require(bvid.isNotEmpty()) {
+            getApplication<Application>().getString(AppR.string.debug_bvid_hint)
+        }
+        val info = client.getVideoBasicInfoByBvid(bvid)
+        val cid = ui.value.cid.toLongOrNull()?.takeIf { it > 0L }
+            ?: getCidByBvidAndPage(bvid, ui.value.page.toIntOrNull() ?: 1)
+        return Triple(info.aid, cid, "https://www.bilibili.com/video/$bvid")
+    }
+
+    /** CC 字幕轨道探针：登录态、轨道数量与字幕文件地址 */
+    fun subtitleTracksByBvidCidAndCopy() = launchAndCopy("subtitle_tracks") {
+        val (aid, cid, referer) = resolveSubtitleProbeTarget()
+        val tracks = BiliSubtitleLyricsLoader.loadTracksFor(aid, cid, client)
+        JSONObject().apply {
+            put("aid", aid)
+            put("cid", cid)
+            put("referer", referer)
+            put("login", client.hasLoginSession())
+            put("track_count", tracks.size)
+            put("tracks", JSONArray().apply {
+                tracks.forEach { track ->
+                    put(JSONObject().apply {
+                        put("id", track.id)
+                        put("lan", track.lan)
+                        put("lan_doc", track.lanDoc)
+                        put("ai_generated", track.isAiGenerated)
+                        put("host", track.url.toUri().host)
+                        put("subtitle_url", track.url)
+                    })
+                }
+            })
+        }.toString()
+    }
+
+    /** CC 字幕内容探针：逐条轨道读取，记录耗时、条目数与首行内容 */
+    fun subtitleCueProbeByBvidCidAndCopy() = launchAndCopy("subtitle_cues") {
+        val (aid, cid, referer) = resolveSubtitleProbeTarget()
+        val tracks = BiliSubtitleLyricsLoader.loadTracksFor(aid, cid, client)
+        val settings = AppContainer.settingsRepo
+        val lyricsEnabled = settings.biliCcSubtitleLyricsEnabledFlow.first()
+        val preferredLanguage = settings.biliCcSubtitleLanguageFlow.first()
+        val aiFallback = settings.biliCcSubtitleAiOnlyEnabledFlow.first()
+        JSONObject().apply {
+            put("aid", aid)
+            put("cid", cid)
+            put("referer", referer)
+            put("login", client.hasLoginSession())
+            put("lyrics_enabled", lyricsEnabled)
+            put("preferred_language", preferredLanguage)
+            put("ai_fallback", aiFallback)
+            put("tracks", JSONArray().apply {
+                tracks.forEach { track ->
+                    val startedAt = System.currentTimeMillis()
+                    val result = JSONObject().apply {
+                        put("lan", track.lan)
+                        put("lan_doc", track.lanDoc)
+                        put("ai_generated", track.isAiGenerated)
+                        put("host", track.url.toUri().host)
+                    }
+                    try {
+                        val cues = BiliSubtitleLyricsLoader.loadCuesFor(track.url, referer, client)
+                        result.put("ok", true)
+                        result.put("cue_count", cues.size)
+                        result.put("first_cues", JSONArray().apply {
+                            cues.take(3).forEach { cue ->
+                                put(JSONObject().apply {
+                                    put("from_ms", cue.startTimeMs)
+                                    put("to_ms", cue.endTimeMs)
+                                    put("content", cue.content)
+                                })
+                            }
+                        })
+                    } catch (error: Exception) {
+                        result.put("ok", false)
+                        result.put("error", error.message ?: error.javaClass.simpleName)
+                    }
+                    result.put("elapsed_ms", System.currentTimeMillis() - startedAt)
+                    put(result)
+                }
+            })
         }.toString()
     }
 }

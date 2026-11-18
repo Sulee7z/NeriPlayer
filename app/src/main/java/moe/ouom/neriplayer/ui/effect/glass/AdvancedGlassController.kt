@@ -1,8 +1,8 @@
 package moe.ouom.neriplayer.ui.effect.glass
 
-import moe.ouom.neriplayer.data.settings.DEFAULT_ENHANCED_ADVANCED_BLUR_RADIUS_DP
-import moe.ouom.neriplayer.data.settings.AdvancedBlurQuality
-import moe.ouom.neriplayer.data.settings.EnhancedAdvancedBlurPreference
+import moe.ouom.neriplayer.data.settings.appearance.DEFAULT_ENHANCED_ADVANCED_BLUR_RADIUS_DP
+import moe.ouom.neriplayer.data.model.settings.appearance.AdvancedBlurQuality
+import moe.ouom.neriplayer.data.settings.appearance.EnhancedAdvancedBlurPreference
 
 internal const val ADVANCED_GLASS_MIN_SDK = ADVANCED_GLASS_BACKEND_MIN_SDK
 
@@ -13,8 +13,15 @@ internal data class AdvancedGlassController(
     val backendReady: Boolean,
     val sessionHealthy: Boolean = true,
     val enhancedAdvancedBlurRadiusDp: Float = DEFAULT_ENHANCED_ADVANCED_BLUR_RADIUS_DP,
-    val advancedBlurQuality: AdvancedBlurQuality = AdvancedBlurQuality.Default
+    val advancedBlurQuality: AdvancedBlurQuality = AdvancedBlurQuality.Default,
+    val liquidGlassRequested: Boolean = false
 ) {
+    /** Lens refraction only rides the fullscreen pipeline; region-local profiles stay frosted. */
+    val isLiquidGlassEnabled: Boolean
+        get() = liquidGlassRequested &&
+            isBaseBlurEnabled &&
+            !advancedBlurQuality.renderProfile().usesRegionLocalRendering
+
     val isBaseBlurRequested: Boolean
         get() = sdkInt >= ADVANCED_GLASS_MIN_SDK &&
             advancedBlurEnabled &&
@@ -48,6 +55,7 @@ internal fun canSampleAdvancedGlassBackdrop(
 ): Boolean {
     val roleEnabled = when (role) {
         AdvancedGlassRole.MiniPlayer,
+        AdvancedGlassRole.NavigationRail,
         AdvancedGlassRole.BottomNavigation -> controller.isBaseBlurEnabled
         else -> controller.isEnabled && controller.advancedBlurQuality.supports(role)
     }

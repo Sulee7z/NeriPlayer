@@ -1,10 +1,13 @@
 package moe.ouom.neriplayer.core.startup.player
 
+import moe.ouom.neriplayer.data.identity.stableKey
+
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.data.model.SongItem
+import kotlin.time.Duration.Companion.milliseconds
 
 internal class PlayerStartupHistoryRecorder(
     private val currentSongFlow: StateFlow<SongItem?>,
@@ -29,7 +32,7 @@ internal class PlayerStartupHistoryRecorder(
                 if (songKey == lastRecordedSongKey) {
                     return@collect
                 }
-                delay(settleDelayMs)
+                delay(settleDelayMs.milliseconds)
                 if (currentSongFlow.value?.stableKey() != songKey) {
                     return@collect
                 }

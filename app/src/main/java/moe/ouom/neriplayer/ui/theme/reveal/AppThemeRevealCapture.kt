@@ -1,0 +1,218 @@
+package moe.ouom.neriplayer.ui.theme.reveal
+
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Handler
+import android.os.Looper
+import android.view.PixelCopy
+import android.view.View
+import android.view.ViewTreeObserver
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.createBitmap
+import androidx.lifecycle.findViewTreeLifecycleOwner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import moe.ouom.neriplayer.data.model.settings.appearance.ThemeMode
+import kotlin.coroutines.resume
+import kotlin.math.sqrt
+import kotlin.time.Duration.Companion.milliseconds
+
+// the snapshot and its GPU texture overlap during the reveal, so bound bytes as well as edges
+private const val THEME_REVEAL_SNAPSHOT_MAX_DIMENSION_PX = 4096
+private const val THEME_REVEAL_SNAPSHOT_MAX_BYTES = 18L * 1024 * 1024
+private const val THEME_REVEAL_SNAPSHOT_HEAP_DIVISOR = 16
+private const val THEME_REVEAL_SNAPSHOT_BYTES_PER_PIXEL = 4
+private const val THEME_REVEAL_STABLE_DRAW_PASSES = 1
+internal const val THEME_REVEAL_DURATION_MILLIS = 640
+internal const val THEME_REVEAL_REVERSE_DURATION_MILLIS = 560
+// the first themed frame recomposes the whole app; too short a watchdog cut the circle mid-way
+internal const val THEME_REVEAL_WATCHDOG_DELAY_MILLIS = 4000L
+private val THEME_REVEAL_SNAPSHOT_CONFIG = Bitmap.Config.ARGB_8888
+
+internal data class ThemeRevealSnapshotDimensions(
+    val width: Int,
+    val height: Int
+)
+
+internal fun resolveThemeRevealSnapshotByteBudget(maxMemoryBytes: Long): Long =
+    minOf(
+        THEME_REVEAL_SNAPSHOT_MAX_BYTES,
+        (maxMemoryBytes / THEME_REVEAL_SNAPSHOT_HEAP_DIVISOR)
+            .coerceAtLeast(THEME_REVEAL_SNAPSHOT_BYTES_PER_PIXEL.toLong())
+    )
+
+internal fun resolveThemeRevealSnapshotDimensions(
+    width: Int,
+    height: Int,
+    maxDimensionPx: Int = THEME_REVEAL_SNAPSHOT_MAX_DIMENSION_PX,
+    maxBitmapBytes: Long = THEME_REVEAL_SNAPSHOT_MAX_BYTES
+): ThemeRevealSnapshotDimensions {
+    val safeWidth = width.coerceAtLeast(1)
+    val safeHeight = height.coerceAtLeast(1)
+    val maxPixels = (maxBitmapBytes / THEME_REVEAL_SNAPSHOT_BYTES_PER_PIXEL).coerceAtLeast(1)
+    val dimensionLimit = minOf(maxDimensionPx.coerceAtLeast(1).toLong(), maxPixels).toDouble()
+    val downsampleRatio = maxOf(
+        1.0,
+        maxOf(safeWidth, safeHeight) / dimensionLimit,
+        sqrt(safeWidth.toDouble() * safeHeight / maxPixels)
+    )
+    return ThemeRevealSnapshotDimensions(
+        width = (safeWidth / downsampleRatio).toInt().coerceAtLeast(1),
+        height = (safeHeight / downsampleRatio).toInt().coerceAtLeast(1)
+    )
+}
+
+internal fun shouldBlockThemeModeChange(
+    captureInFlight: Boolean,
+    writeInFlight: Boolean,
+    revealActive: Boolean,
+    hasPendingThemePreference: Boolean
+): Boolean = captureInFlight || writeInFlight || revealActive || hasPendingThemePreference
+
+internal fun resolveThemeToggleTarget(isDark: Boolean): ThemeMode =
+    if (isDark) ThemeMode.LIGHT else ThemeMode.DARK
+
+private fun View.drawScaledThemeRevealBitmap(): Bitmap? {
+    return runCatching { drawScaledThemeRevealBitmapOrNull() }.getOrNull()
+}
+
+private fun View.drawScaledThemeRevealBitmapOrNull(): Bitmap? {
+    if (minOf(width, height) <= 0) return null
+    val snapshotDimensions = resolveThemeRevealSnapshotDimensions(
+        width = width,
+        height = height,
+        maxBitmapBytes = resolveThemeRevealSnapshotByteBudget(Runtime.getRuntime().maxMemory())
+    )
+    return createBitmap(
+        snapshotDimensions.width,
+        snapshotDimensions.height,
+        THEME_REVEAL_SNAPSHOT_CONFIG
+    ).also { bitmap ->
+        val canvas = Canvas(bitmap)
+        canvas.scale(
+            snapshotDimensions.width.toFloat() / width.toFloat(),
+            snapshotDimensions.height.toFloat() / height.toFloat()
+        )
+        draw(canvas)
+    }
+}
+
+internal suspend fun captureThemeRevealSnapshot(
+    activity: Activity?,
+    fallbackView: View,
+    windowCapture: suspend (Activity) -> Bitmap? = ::captureWindowThemeRevealSnapshot
+): ImageBitmap? {
+    val captureActivity = activity ?: fallbackView.findAttachedThemeRevealActivity()
+    return captureActivity?.let { windowCapture(it) }?.asImageBitmap()
+        ?: captureThemeRevealFallbackSnapshot(fallbackView)
+}
+
+private fun View.findAttachedThemeRevealActivity(): Activity? {
+    if (!isAttachedToWindow) return null
+    // DecorView 的 Context 可能不含 Activity，只接受当前窗口树的宿主
+    val activity = rootView.findViewTreeLifecycleOwner() as? Activity
+        ?: context.findThemeRevealActivity()
+    return activity?.takeIf { it.window.decorView.rootView === rootView }
+}
+
+private tailrec fun Context.findThemeRevealActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findThemeRevealActivity()
+    else -> null
+}
+
+private suspend fun captureWindowThemeRevealSnapshot(activity: Activity): Bitmap? =
+    suspendCancellableCoroutine { continuation ->
+        val decorView = activity.window.decorView
+        if (minOf(decorView.width, decorView.height) <= 0) {
+            continuation.resume(null)
+            return@suspendCancellableCoroutine
+        }
+        val snapshotDimensions = resolveThemeRevealSnapshotDimensions(
+            width = decorView.width,
+            height = decorView.height,
+            maxBitmapBytes = resolveThemeRevealSnapshotByteBudget(Runtime.getRuntime().maxMemory())
+        )
+        val bitmap = createBitmap(
+            snapshotDimensions.width,
+            snapshotDimensions.height,
+            THEME_REVEAL_SNAPSHOT_CONFIG
+        )
+        PixelCopy.request(
+            activity.window,
+            bitmap,
+            { result ->
+                continuation.resume(pixelCopyBitmapOrNull(result, bitmap)) { _, abandonedBitmap, _ ->
+                    abandonedBitmap?.recycle()
+                }
+            },
+            Handler(Looper.getMainLooper())
+        )
+    }
+
+private fun pixelCopyBitmapOrNull(result: Int, bitmap: Bitmap): Bitmap? {
+    if (result == PixelCopy.SUCCESS) return bitmap
+    bitmap.recycle()
+    return null
+}
+
+private suspend fun captureThemeRevealFallbackSnapshot(view: View): ImageBitmap? {
+    return withContext(Dispatchers.Main.immediate) {
+        // hardware images require window capture; a failed copy leaves the live page visible
+        if (view.isHardwareAccelerated) return@withContext null
+        runCatching { view.drawScaledThemeRevealBitmap()?.asImageBitmap() }.getOrNull()
+    }
+}
+
+private suspend fun awaitNextDraw(view: View) {
+    if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) {
+        return
+    }
+
+    withTimeoutOrNull(120L.milliseconds) {
+        suspendCancellableCoroutine { continuation ->
+            val observer = view.viewTreeObserver
+            var handled = false
+            val drawListener = object : ViewTreeObserver.OnDrawListener {
+                override fun onDraw() {
+                    if (handled) return
+                    handled = true
+                    view.post {
+                        if (observer.isAlive) {
+                            observer.removeOnDrawListener(this)
+                        }
+                        if (continuation.isActive) {
+                            continuation.resume(Unit)
+                        }
+                    }
+                }
+            }
+
+            observer.addOnDrawListener(drawListener)
+            continuation.invokeOnCancellation {
+                if (handled) {
+                    return@invokeOnCancellation
+                }
+                handled = true
+                view.post {
+                    if (observer.isAlive) {
+                        observer.removeOnDrawListener(drawListener)
+                    }
+                }
+            }
+            view.invalidate()
+        }
+    }
+}
+
+internal suspend fun awaitStableDraw(view: View) {
+    repeat(THEME_REVEAL_STABLE_DRAW_PASSES) {
+        awaitNextDraw(view)
+    }
+}

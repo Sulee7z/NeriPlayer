@@ -23,153 +23,30 @@ package moe.ouom.neriplayer.ui.screen.debug
  * Created: 2025/8/17
  */
 
-import android.annotation.SuppressLint
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.DeleteOutline
-import androidx.compose.material.icons.outlined.Description
-import androidx.compose.material3.*
-import moe.ouom.neriplayer.ui.component.overlay.DensityScaledAlertDialog as AlertDialog
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
-import moe.ouom.neriplayer.ui.feedback.NeriSnackbarHost
-import moe.ouom.neriplayer.ui.feedback.showNeriSnackbar
-import moe.ouom.neriplayer.core.logging.NPLogger
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import moe.ouom.neriplayer.common.logging.NPLogger
+import moe.ouom.neriplayer.R as AppR
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-@SuppressLint("LocalContextResourcesRead")
 fun LogListScreen(
     onBack: () -> Unit,
     onLogFileClick: (String) -> Unit
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
-    val showClearConfirmDialog = remember { mutableStateOf(false) }
-
-    val logFilesState = remember {
-        mutableStateOf(
-            NPLogger.getLogDirectory(context)?.listFiles { file ->
-                file.isFile && file.name.endsWith(".txt")
-            }?.sortedByDescending { it.lastModified() } ?: emptyList()
-        )
-    }
-
-    if (showClearConfirmDialog.value) {
-        AlertDialog(
-            onDismissRequest = { showClearConfirmDialog.value = false },
-            title = { Text(stringResource(R.string.dialog_confirm_clear)) },
-            text = { Text(stringResource(R.string.log_delete_confirm)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showClearConfirmDialog.value = false
-                        coroutineScope.launch {
-                            val directory = NPLogger.getLogDirectory(context)
-                            var clearedCount = 0
-                            withContext(Dispatchers.IO) {
-                                directory?.listFiles { file ->
-                                    file.isFile && file.name.endsWith(".txt")
-                                }?.forEach {
-                                    if (it.delete()) {
-                                        clearedCount++
-                                    }
-                                }
-                            }
-                            // 更新UI
-                            logFilesState.value = emptyList()
-                            snackbarHostState.showNeriSnackbar(
-                                context.resources.getQuantityString(
-                                    R.plurals.log_cleared_count,
-                                    clearedCount,
-                                    clearedCount
-                                )
-                            )
-                        }
-                    }
-                ) {
-                    Text(stringResource(R.string.common_clear_all), color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirmDialog.value = false }) {
-                    Text(stringResource(R.string.action_cancel))
-                }
-            }
-        )
-    }
-
-    Scaffold(
-        snackbarHost = {
-            val miniH = LocalMiniPlayerHeight.current
-            NeriSnackbarHost(
-                hostState = snackbarHostState,
-                bottomPadding = miniH
-            )
-        },
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.log_app)) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = stringResource(R.string.action_back))
-                    }
-                },
-                actions = {
-                    if (logFilesState.value.isNotEmpty()) {
-                        IconButton(onClick = { showClearConfirmDialog.value = true }) {
-                            Icon(Icons.Outlined.DeleteOutline, contentDescription = stringResource(R.string.log_clear))
-                        }
-                    }
-                }
-            )
-        }
-    ) { padding ->
-        val miniH = LocalMiniPlayerHeight.current
-
-        LazyColumn(modifier = Modifier
-            .padding(padding)
-            .padding(bottom = miniH)
-        ) {
-            if (logFilesState.value.isEmpty()) {
-                item {
-                    ListItem(
-                        headlineContent = { Text(stringResource(R.string.log_no_file)) },
-                        supportingContent = { Text(stringResource(R.string.log_enable_hint)) }
-                    )
-                }
-            } else {
-                items(logFilesState.value) { file ->
-                    ListItem(
-                        headlineContent = { Text(file.name) },
-                        supportingContent = { Text(formatFileMeta(file)) },
-                        leadingContent = { Icon(Icons.Outlined.Description, null) },
-                        modifier = Modifier.clickable { onLogFileClick(file.absolutePath) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-private fun formatFileMeta(file: File): String {
-    val date = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(file.lastModified()))
-    val size = file.length() / 1024 // KB
-    return "$date - ${size}KB"
+    TextLogFileListScreen(
+        titleRes = AppR.string.log_app,
+        clearConfirmRes = AppR.string.log_delete_confirm,
+        clearedCountRes = AppR.plurals.log_cleared_count,
+        emptyTitleRes = AppR.string.log_no_file,
+        emptyHintRes = AppR.string.log_enable_hint,
+        resolveDirectory = { NPLogger.getLogDirectory(context) },
+        onBack = onBack,
+        onLogFileClick = onLogFileClick,
+        fileIcon = Icons.Rounded.Description,
+        fileHue = Color(0xFF0A84FF)
+    )
 }

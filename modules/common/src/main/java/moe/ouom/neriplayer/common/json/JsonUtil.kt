@@ -1,0 +1,79 @@
+package moe.ouom.neriplayer.common.json
+
+/*
+ * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
+ * Copyright (C) 2025-2025 NeriPlayer developers
+ * https://github.com/cwuom/NeriPlayer
+ *
+ * This software is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software.
+ * If not, see <https://www.gnu.org/licenses/>.
+ *
+ * File: moe.ouom.neriplayer.util/JsonUtil
+ * Created: 2025/8/10
+ */
+
+object JsonUtil {
+    fun toJson(map: Map<String, Any>): String {
+        return toJsonObject(map)
+    }
+
+    private fun toJsonObject(map: Map<*, *>): String {
+        val sb = StringBuilder()
+        sb.append("{")
+        val it = map.entries.iterator()
+        while (it.hasNext()) {
+            val (k, v) = it.next()
+            sb.append(jsonQuote(k?.toString()))
+            sb.append(":")
+            sb.append(toJsonValue(v))
+            if (it.hasNext()) sb.append(",")
+        }
+        sb.append("}")
+        return sb.toString()
+    }
+
+    fun toJsonValue(v: Any?): String = when (v) {
+        null -> "null"
+        is String -> jsonQuote(v)
+        is Number, is Boolean -> v.toString()
+        is Map<*, *> -> toJsonObject(v)
+        is List<*> -> v.joinToString(prefix = "[", postfix = "]") { toJsonValue(it) }
+        else -> jsonQuote(v.toString())
+    }
+
+    fun jsonQuote(s: String?): String {
+        if (s == null) return "null"
+        val sb = StringBuilder(s.length + 16)
+        sb.append('"')
+        for (ch in s) {
+            val escaped = jsonEscape(ch)
+            if (escaped != null) sb.append(escaped) else sb.append(ch)
+        }
+        sb.append('"')
+        return sb.toString()
+    }
+
+    private val JsonCharEscapes = mapOf(
+        '\\' to "\\\\",
+        '"' to "\\\"",
+        '\b' to "\\b",
+        '\u000C' to "\\f",
+        '\n' to "\\n",
+        '\r' to "\\r",
+        '\t' to "\\t"
+    )
+
+    private fun jsonEscape(ch: Char): String? =
+        JsonCharEscapes[ch] ?: if (ch < ' ') String.format("\\u%04x", ch.code) else null
+}

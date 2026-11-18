@@ -1,0 +1,273 @@
+package moe.ouom.neriplayer.data.local.media
+
+import android.content.Context
+import android.content.ContentResolver
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import moe.ouom.neriplayer.data.model.SongItem
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.MediaType.Companion.toMediaType
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.`when`
+import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import okhttp3.Call
+
+class CustomSongCoverStorageTest {
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    @Test
+    fun `cancelling remote cover preparation cancels the request before any file is published`() = runBlocking {
+        val started = CompletableDeferred<Call>()
+        val release = CountDownLatch(1)
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            started.complete(chain.call())
+            check(release.await(5, TimeUnit.SECONDS))
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(200).message("OK").body(byteArrayOf(1, 2, 3).toResponseBody("image/png".toMediaType()))
+                .build()
+        }.build()
+        val previousClient = CustomSongCoverStorage.remoteCoverHttpClientProvider
+        CustomSongCoverStorage.remoteCoverHttpClientProvider = { client }
+        val lookup = launch {
+            CustomSongCoverStorage.persistManuallySelectedRemoteCover(context, "https://example.com/cancel.png")
+        }
+        try {
+            val call = withTimeout(5_000L) { started.await() }
+            lookup.cancel()
+            assertTrue("cancellation must reach the active cover request", call.isCanceled())
+            assertFalse(File(tempFolder.root, "custom_song_covers").exists())
+        } finally {
+            release.countDown()
+            lookup.cancelAndJoin()
+            CustomSongCoverStorage.remoteCoverHttpClientProvider = previousClient
+            client.dispatcher.executorService.shutdown()
+            client.connectionPool.evictAll()
+        }
+    }
+
+    @Test
+    fun `prepared covers are found by content and only covers inside the directory are deleted`() = runBlocking {
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        val previousValidator = CustomSongCoverStorage.remoteCoverImageValidator
+        CustomSongCoverStorage.remoteCoverImageValidator = { true }
+        try {
+            val bytes = byteArrayOf(9, 8, 7)
+            assertNull(CustomSongCoverStorage.findPreparedCover(context, bytes))
+
+            val persisted = requireNotNull(CustomSongCoverStorage.persistPreparedCover(context, bytes))
+            assertEquals(persisted, CustomSongCoverStorage.findPreparedCover(context, bytes))
+
+            val outside = tempFolder.newFile("outside.jpg")
+            assertFalse(CustomSongCoverStorage.deletePreparedCover(context, outside.toURI().toString()))
+            assertTrue(outside.isFile)
+            assertTrue(CustomSongCoverStorage.deletePreparedCover(context, persisted))
+            assertNull(CustomSongCoverStorage.findPreparedCover(context, bytes))
+        } finally {
+            CustomSongCoverStorage.remoteCoverImageValidator = previousValidator
+        }
+    }
+
+    @Test
+    fun `explicit manual remote cover is localized and mapped`() = runBlocking {
+        val reference = "HTTPS://example.com/cover.jpg"
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        var mappedLocal: String? = null
+        var mappedRemote: String? = null
+        val previousClient = CustomSongCoverStorage.remoteCoverHttpClientProvider
+        val previousValidator = CustomSongCoverStorage.remoteCoverImageValidator
+        val previousSink = CustomSongCoverStorage.remoteCoverMappingSink
+        CustomSongCoverStorage.remoteCoverHttpClientProvider = {
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .header("Content-Type", "image/png")
+                        .body(byteArrayOf(1, 2, 3).toResponseBody("image/png".toMediaType()))
+                        .build()
+                }
+                .build()
+        }
+        CustomSongCoverStorage.remoteCoverImageValidator = { true }
+        CustomSongCoverStorage.remoteCoverMappingSink = { local, remote ->
+            mappedLocal = local
+            mappedRemote = remote
+        }
+        try {
+            val persisted = CustomSongCoverStorage.persistManuallySelectedRemoteCover(
+                context = context,
+                sourceUrl = reference
+            )
+
+            assertNotNull(persisted)
+            assertTrue(persisted?.startsWith("file:") == true)
+            assertTrue(persisted?.contains("/custom_song_covers/") == true)
+            assertTrue(File(tempFolder.root, "custom_song_covers").isDirectory)
+            assertEquals(persisted, mappedLocal)
+            assertEquals(reference, mappedRemote)
+            assertEquals(
+                byteArrayOf(1, 2, 3).toList(),
+                File(tempFolder.root, "custom_song_covers").listFiles()?.single()?.readBytes()?.toList()
+            )
+        } finally {
+            CustomSongCoverStorage.remoteCoverHttpClientProvider = previousClient
+            CustomSongCoverStorage.remoteCoverImageValidator = previousValidator
+            CustomSongCoverStorage.remoteCoverMappingSink = previousSink
+        }
+    }
+
+    @Test
+    fun `remote cover is not downloaded without explicit persistence permission`() = runBlocking {
+        val reference = "https://example.com/cover.jpg"
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        val previousClient = CustomSongCoverStorage.remoteCoverHttpClientProvider
+        CustomSongCoverStorage.remoteCoverHttpClientProvider = {
+            error("playback must not fetch remote cover")
+        }
+        try {
+            val resolved = CustomSongCoverStorage.persistOriginalCover(
+                context = context,
+                song = testSong(),
+                reference = reference
+            )
+
+            assertEquals(reference, resolved)
+            assertTrue(!File(tempFolder.root, "bak").exists())
+        } finally {
+            CustomSongCoverStorage.remoteCoverHttpClientProvider = previousClient
+        }
+    }
+
+    @Test
+    fun `local original cover is copied to a stable private file`() = runBlocking {
+        val source = tempFolder.newFile("source-cover.png").apply {
+            writeBytes(byteArrayOf(1, 2, 3, 4))
+        }
+        val context = mock(Context::class.java)
+        val resolver = mock(ContentResolver::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        `when`(context.contentResolver).thenReturn(resolver)
+
+        val first = CustomSongCoverStorage.persistOriginalCover(
+            context = context,
+            song = testSong(),
+            reference = source.absolutePath
+        )
+        val storedFiles = File(tempFolder.root, "bak").listFiles()
+
+        assertNotNull(first)
+        assertTrue(first?.startsWith("file:") == true)
+        assertEquals(1, storedFiles?.size)
+        assertEquals(
+            CustomSongCoverStorage.originalCoverFileName(testSong(), "png"),
+            storedFiles?.single()?.name
+        )
+        assertEquals(byteArrayOf(1, 2, 3, 4).toList(), storedFiles?.single()?.readBytes()?.toList())
+
+        val second = CustomSongCoverStorage.persistOriginalCover(
+            context = context,
+            song = testSong(),
+            reference = first
+        )
+        assertEquals(first, second)
+    }
+
+    @Test
+    fun `backup directory resolves the song cover file`() = runBlocking {
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        val directory = File(tempFolder.root, "bak").apply { mkdirs() }
+        val stored = File(
+            directory,
+            CustomSongCoverStorage.originalCoverFileName(testSong(), "jpg")
+        ).apply {
+            writeBytes(byteArrayOf(8, 9, 10))
+        }
+
+        val resolved = CustomSongCoverStorage.persistOriginalCover(
+            context = context,
+            song = testSong(),
+            reference = directory.toURI().toString()
+        )
+
+        assertEquals(stored.toURI().toString(), resolved)
+    }
+
+    @Test
+    fun `backup lookup skips unrelated directories and resolves the original file`() = runBlocking {
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        val unrelated = tempFolder.newFolder("custom_song_covers")
+        val directory = File(tempFolder.root, "bak").apply { mkdirs() }
+        val stored = File(
+            directory,
+            CustomSongCoverStorage.originalCoverFileName(testSong(), "jpg")
+        ).apply {
+            writeBytes(byteArrayOf(8, 9, 10))
+        }
+
+        val resolved = CustomSongCoverStorage.resolveLegacyOriginalCoverReference(
+            context = context,
+            song = testSong(),
+            references = listOf(unrelated.toURI().toString(), directory.toURI().toString())
+        )
+
+        assertEquals(stored.toURI().toString(), resolved)
+    }
+
+    @Test
+    fun `unmatched original cover directory is rejected`() = runBlocking {
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        val directory = tempFolder.newFolder("invalid-cover-directory")
+
+        val resolved = CustomSongCoverStorage.persistOriginalCover(
+            context = context,
+            song = testSong(),
+            reference = directory.toURI().toString()
+        )
+
+        assertNull(resolved)
+    }
+
+    private fun testSong(): SongItem {
+        return SongItem(
+            id = 42L,
+            name = "Song",
+            artist = "Artist",
+            album = LocalSongSupport.LOCAL_ALBUM_IDENTITY,
+            albumId = 0L,
+            durationMs = 1_000L,
+            coverUrl = null,
+            mediaUri = "/music/song.mp3",
+            localFilePath = "/music/song.mp3",
+            channelId = "local",
+            audioId = "42"
+        )
+    }
+}

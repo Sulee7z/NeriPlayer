@@ -26,10 +26,11 @@ package moe.ouom.neriplayer.ui.screen.tab.settings.dialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsChoiceRow
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsDialog
 import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextButton
+import moe.ouom.neriplayer.R as AppR
 
 @Composable
 internal fun SettingsPreferenceDialogs(
@@ -53,14 +54,14 @@ internal fun SettingsPreferenceDialogs(
     if (showDefaultStartDestinationDialog) {
         MiuixSettingsDialog(
             onDismissRequest = { onShowDefaultStartDestinationDialogChange(false) },
-            title = { Text(stringResource(R.string.settings_default_start_screen)) },
+            title = { Text(stringResource(CoreCommonR.string.settings_default_start_screen)) },
             text = {
                 androidx.compose.foundation.layout.Column {
                     val options = listOfNotNull(
-                        ("home" to stringResource(R.string.nav_home)).takeUnless { !homeStartAvailable },
-                        "explore" to stringResource(R.string.nav_explore),
-                        "library" to stringResource(R.string.nav_library),
-                        "settings" to stringResource(R.string.nav_settings)
+                        ("home" to stringResource(AppR.string.nav_home)).takeUnless { !homeStartAvailable },
+                        "explore" to stringResource(AppR.string.nav_explore),
+                        "library" to stringResource(AppR.string.nav_library),
+                        "settings" to stringResource(AppR.string.nav_settings)
                     )
                     options.forEach { (route, label) ->
                         MiuixSettingsChoiceRow(
@@ -77,7 +78,7 @@ internal fun SettingsPreferenceDialogs(
             confirmButton = {
                 MiuixSettingsTextButton(
                     onClick = { onShowDefaultStartDestinationDialogChange(false) },
-                    text = { Text(stringResource(R.string.action_close)) }
+                    text = { Text(stringResource(CoreCommonR.string.action_close)) }
                 )
             }
         )

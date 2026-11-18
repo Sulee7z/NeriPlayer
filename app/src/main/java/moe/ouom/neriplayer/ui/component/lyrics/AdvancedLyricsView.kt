@@ -1,5 +1,15 @@
 package moe.ouom.neriplayer.ui.component.lyrics
 
+import moe.ouom.neriplayer.data.model.lyrics.LyricEntry
+import moe.ouom.neriplayer.lyrics.parser.hasWordTimedEntries
+import moe.ouom.neriplayer.lyrics.parser.isNeteaseYrc
+import moe.ouom.neriplayer.lyrics.parser.isTtmlLyrics
+import moe.ouom.neriplayer.lyrics.parser.matchTranslationsToLineIndices
+import moe.ouom.neriplayer.lyrics.parser.parseNeteaseLrc
+import moe.ouom.neriplayer.lyrics.parser.parseNeteaseLyricsAuto
+import moe.ouom.neriplayer.lyrics.parser.prepareBilingualLyricsForDisplay
+import moe.ouom.neriplayer.lyrics.parser.withoutLyricCredits
+
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -27,7 +37,7 @@ import com.mocharealm.accompanist.lyrics.core.model.karaoke.KaraokeSyllable
 import com.mocharealm.accompanist.lyrics.core.model.synced.SyncedLine
 import com.mocharealm.accompanist.lyrics.core.parser.AutoParser
 import com.mocharealm.accompanist.lyrics.ui.composable.lyrics.KaraokeLyricsView
-import moe.ouom.neriplayer.data.settings.scaledLyricFontSize
+import moe.ouom.neriplayer.data.settings.lyrics.scaledLyricFontSize
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -68,21 +78,15 @@ fun AdvancedLyricsView(
     onSeekTo: (Long) -> Unit = {}
 ) {
     val effectiveTranslatedLyrics = translatedLyrics.orEmpty()
-    val syncedLyrics = remember(
-        rawLyrics,
-        rawTranslatedLyrics,
-        lyrics,
-        effectiveTranslatedLyrics,
-        showPhoneticAsTranslation
-    ) {
-        buildAdvancedSyncedLyrics(
+    val syncedLyrics = rememberAdvancedSyncedLyrics(
+        AdvancedLyricsPreparationInput(
             rawLyrics = rawLyrics,
             rawTranslatedLyrics = rawTranslatedLyrics,
             lyrics = lyrics,
             translatedLyrics = effectiveTranslatedLyrics,
             showPhoneticAsTranslation = showPhoneticAsTranslation
         )
-    }
+    )
     if (syncedLyrics.lines.isEmpty()) {
         return
     }
@@ -261,19 +265,25 @@ internal fun buildAdvancedSyncedLyrics(
         rawLyrics = rawLyrics,
         lyrics = lyrics
     )
-    if (showPhoneticAsTranslation) {
-        return if (translatedLyrics.isNotEmpty()) {
-            baseLyrics.attachTranslations(translatedLyrics, replaceExisting = true)
-        } else {
-            baseLyrics.withPhoneticsAsTranslations()
+    val translatedBase = when {
+        rawTranslatedLyrics != null -> baseLyrics.withoutEmbeddedTranslations().attachTranslations(
+            parseNeteaseLyricsAuto(rawTranslatedLyrics), replaceExisting = true
+        )
+        showPhoneticAsTranslation -> {
+            val phoneticBase = baseLyrics.withoutEmbeddedTranslations()
+            if (translatedLyrics.isNotEmpty()) {
+                phoneticBase.attachTranslations(translatedLyrics, replaceExisting = true)
+            } else {
+                phoneticBase.withPhoneticsAsTranslations()
+            }
         }
+        else -> baseLyrics.attachTranslations(translatedLyrics)
     }
-    val translationEntries = when {
-        !rawTranslatedLyrics.isNullOrBlank() -> parseNeteaseLrc(rawTranslatedLyrics)
-        translatedLyrics.isNotEmpty() -> translatedLyrics
-        else -> emptyList()
+    return if (rawLyrics != null && (isTtmlLyrics(rawLyrics) || isNeteaseYrc(rawLyrics))) {
+        translatedBase
+    } else {
+        translatedBase.withBilingualDisplayLines()
     }
-    return baseLyrics.attachTranslations(translationEntries)
 }
 
 fun buildPhoneticLyricEntries(
@@ -312,7 +322,8 @@ private fun parseRawLyrics(rawLyrics: String?): SyncedLyrics {
     }
     return runCatching {
         if (isTtmlLyrics(rawLyrics) || isNeteaseYrc(rawLyrics)) {
-            AutoParser().parse(rawLyrics)
+            val parsed = AutoParser().parse(rawLyrics)
+            parsed.copy(lines = parsed.lines.withoutLyricCredits { it.plainText() })
         } else {
             parseNeteaseLrc(rawLyrics).toSyncedLyrics()
         }
@@ -325,6 +336,34 @@ private fun List<LyricEntry>.toSyncedLyrics(): SyncedLyrics {
         return SyncedLyrics(emptyList())
     }
     return SyncedLyrics(lines = map { it.toSyncedLine() })
+}
+
+private fun SyncedLyrics.withBilingualDisplayLines(): SyncedLyrics {
+    val displayed = mutableListOf<ISyncedLine>()
+    var index = 0
+    while (index < lines.size) {
+        val line = lines[index]
+        if (line !is SyncedLine) {
+            displayed += line
+            index++
+            continue
+        }
+        val ordinaryLines = buildList {
+            while (index < lines.size) {
+                val ordinaryLine = lines[index] as? SyncedLine ?: break
+                add(LyricEntry(
+                    text = ordinaryLine.content,
+                    startTimeMs = ordinaryLine.start.toLong(),
+                    endTimeMs = ordinaryLine.end.toLong(),
+                    translation = ordinaryLine.translation
+                ))
+                index++
+            }
+        }
+        // 先按原始行数完成翻译配对，再合并显示，避免同时间戳的多条译文丢失
+        displayed += prepareBilingualLyricsForDisplay(ordinaryLines).map { it.toSyncedLine() }
+    }
+    return copy(lines = displayed)
 }
 
 private fun LyricEntry.toSyncedLine(): ISyncedLine {
@@ -382,6 +421,17 @@ private fun LyricEntry.extractWordContent(index: Int): String {
     return ""
 }
 
+private fun SyncedLyrics.withoutEmbeddedTranslations(): SyncedLyrics =
+    copy(lines = lines.map(ISyncedLine::withoutEmbeddedTranslation))
+
+private fun ISyncedLine.withoutEmbeddedTranslation(): ISyncedLine = when (this) {
+    is KaraokeLine.MainKaraokeLine -> copy(translation = null,
+        accompanimentLines = accompanimentLines?.map { it.copy(translation = null) })
+    is KaraokeLine.AccompanimentKaraokeLine -> copy(translation = null)
+    is SyncedLine -> copy(translation = null)
+    else -> this
+}
+
 private fun SyncedLyrics.attachTranslations(
     translations: List<LyricEntry>,
     replaceExisting: Boolean = false
@@ -392,7 +442,7 @@ private fun SyncedLyrics.attachTranslations(
 
     val baseLyricEntries = lines.map { line ->
         LyricEntry(
-            text = "",
+            text = line.plainText(),
             startTimeMs = line.start.toLong(),
             endTimeMs = line.end.toLong()
         )

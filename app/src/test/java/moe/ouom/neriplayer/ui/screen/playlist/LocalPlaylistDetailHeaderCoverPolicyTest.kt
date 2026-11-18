@@ -1,6 +1,6 @@
 package moe.ouom.neriplayer.ui.screen.playlist
 
-import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
+import moe.ouom.neriplayer.data.model.playlist.LocalPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.playlist.LocalPlaylistDetailUiState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -8,6 +8,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LocalPlaylistDetailHeaderCoverPolicyTest {
+
+    @Test
+    fun `local playlist header cover fallback waits for artwork idle window`() {
+        assertFalse(shouldResolveLocalPlaylistHeaderCoverFallback(isListArtworkIdle = false))
+        assertTrue(shouldResolveLocalPlaylistHeaderCoverFallback(isListArtworkIdle = true))
+    }
 
     @Test
     fun `normalizeLocalPlaylistHeaderCoverModel uses blank model for null cover`() {

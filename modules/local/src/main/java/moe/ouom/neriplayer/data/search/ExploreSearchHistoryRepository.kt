@@ -1,0 +1,68 @@
+package moe.ouom.neriplayer.data.search
+
+import android.content.Context
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.serialization.json.Json
+import moe.ouom.neriplayer.common.logging.NPLogger
+import java.util.Locale
+
+private const val TAG = "ExploreSearchHistory"
+private val HistoryKey = stringPreferencesKey("history_v1")
+private val historyJson = Json { ignoreUnknownKeys = true }
+
+private val Context.exploreSearchHistoryDataStore by preferencesDataStore(
+    name = "explore_search_history",
+    corruptionHandler = ReplaceFileCorruptionHandler {
+        NPLogger.e(TAG, "explore search history DataStore is corrupted", it)
+        emptyPreferences()
+    }
+)
+
+class ExploreSearchHistoryRepository(context: Context) {
+    private val appContext = context.applicationContext
+
+    val historyFlow: Flow<List<String>> = appContext.exploreSearchHistoryDataStore.data
+        .map { prefs -> decodeExploreSearchHistory(prefs[HistoryKey]) }
+
+    suspend fun record(query: String) {
+        appContext.exploreSearchHistoryDataStore.edit { prefs ->
+            val next = updatedExploreSearchHistory(decodeExploreSearchHistory(prefs[HistoryKey]), query)
+            prefs[HistoryKey] = historyJson.encodeToString(next)
+        }
+    }
+
+    suspend fun remove(query: String) {
+        val target = query.trim().lowercase(Locale.ROOT)
+        appContext.exploreSearchHistoryDataStore.edit { prefs ->
+            val next = decodeExploreSearchHistory(prefs[HistoryKey])
+                .filterNot { it.lowercase(Locale.ROOT) == target }
+            prefs[HistoryKey] = historyJson.encodeToString(next)
+        }
+    }
+
+    suspend fun clear() {
+        appContext.exploreSearchHistoryDataStore.edit { prefs ->
+            prefs.remove(HistoryKey)
+        }
+    }
+}
+
+internal fun decodeExploreSearchHistory(raw: String?): List<String> {
+    if (raw.isNullOrBlank()) return emptyList()
+    return runCatching {
+        historyJson.decodeFromString<List<String>>(raw)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinctBy { it.lowercase(Locale.ROOT) }
+            .take(DEFAULT_EXPLORE_SEARCH_HISTORY_LIMIT)
+    }.getOrElse { error ->
+        NPLogger.w(TAG, "decode history failed: ${error.message}")
+        emptyList()
+    }
+}

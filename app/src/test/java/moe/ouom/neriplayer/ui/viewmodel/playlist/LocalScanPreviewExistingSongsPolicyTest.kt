@@ -1,10 +1,13 @@
 package moe.ouom.neriplayer.ui.viewmodel.playlist
 
+import moe.ouom.neriplayer.data.identity.stableKey
+
 import moe.ouom.neriplayer.data.local.media.LocalSongSupport
-import moe.ouom.neriplayer.data.local.playlist.model.LocalPlaylist
+import moe.ouom.neriplayer.data.model.playlist.LocalPlaylist
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.data.model.stableKey
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -39,7 +42,7 @@ class LocalScanPreviewExistingSongsPolicyTest {
     }
 
     @Test
-    fun `marks scanned content alias with existing local metadata fallback`() {
+    fun `does not mark a different source with matching metadata as existing`() {
         val path = File("/music/Artist - Existing.mp3").absolutePath
         val existing = localSong(
             id = 1L,
@@ -71,7 +74,7 @@ class LocalScanPreviewExistingSongsPolicyTest {
             )
         )
 
-        assertEquals(setOf(matchingScanResult.stableKey()), existingKeys)
+        assertTrue(existingKeys.isEmpty())
     }
 
     @Test

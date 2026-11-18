@@ -24,6 +24,10 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import java.security.MessageDigest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -31,11 +35,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.core.ftp.FtpClient
-import moe.ouom.neriplayer.core.ftp.FtpEntry
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.platform.ftp.FtpClient
+import moe.ouom.neriplayer.platform.ftp.FtpEntry
+import moe.ouom.neriplayer.common.logging.NPLogger
 import moe.ouom.neriplayer.core.player.PlayerManager
-import moe.ouom.neriplayer.data.ftp.FtpServerConfig
+import moe.ouom.neriplayer.platform.ftp.storage.FtpServerConfig
 import moe.ouom.neriplayer.data.model.SongItem
 import java.io.File
 
@@ -84,6 +88,10 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<FtpUiState> = _uiState.asStateFlow()
 
     private var pendingPath: String? = null
+    private var listingJob: Job? = null
+    private var downloadJob: Job? = null
+    private var scanJob: Job? = null
+    private var listingGeneration = 0L
 
     init {
         if (_uiState.value.configured) {
@@ -110,12 +118,15 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
                         basePath = basePath.trim().ifBlank { "/" }
                     )
                     FtpClient.testConnection(candidate)
+                    storage.saveConfig(candidate)
                     candidate
                 }
             }
             _uiState.update { it.copy(savingConfig = false) }
             result.onSuccess { config ->
-                storage.saveConfig(config)
+                listingJob?.cancel()
+                scanJob?.cancel()
+                downloadJob?.cancel()
                 _uiState.update {
                     it.copy(
                         config = config,
@@ -140,20 +151,34 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun clearConfig() {
-        storage.clear()
-        _uiState.value = FtpUiState()
+        listingGeneration++
+        listingJob?.cancel()
+        scanJob?.cancel()
+        downloadJob?.cancel()
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { storage.clear() }
+                _uiState.value = FtpUiState()
+            } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
+                _uiState.update { it.copy(configError = error.message) }
+            }
+        }
     }
 
     fun refresh() {
         val config = _uiState.value.config
         if (!config.isConfigured()) return
-        viewModelScope.launch {
+        val path = pendingPath ?: _uiState.value.currentPath
+        pendingPath = null
+        val generation = ++listingGeneration
+        listingJob?.cancel()
+        listingJob = viewModelScope.launch {
             _uiState.update { it.copy(loading = true, error = null) }
-            val path = pendingPath ?: _uiState.value.currentPath
-            pendingPath = null
             val result = withContext(Dispatchers.IO) {
                 runCatching { FtpClient.list(config, path) }
             }
+            if (generation != listingGeneration || config != _uiState.value.config) return@launch
             _uiState.update {
                 result.fold(
                     onSuccess = { entries ->
@@ -188,7 +213,8 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
     fun scanMedia() {
         val config = _uiState.value.config
         if (!config.isConfigured() || _uiState.value.scanning) return
-        viewModelScope.launch {
+        val path = _uiState.value.currentPath
+        scanJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     scanning = true,
@@ -199,7 +225,7 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
             }
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    FtpClient.scanMediaFiles(config, _uiState.value.currentPath)
+                    FtpClient.scanMediaFiles(config, path)
                 }
             }
             _uiState.update {
@@ -224,9 +250,10 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
 
     fun downloadAndPlay(entry: FtpEntry) {
         if (entry.isDirectory) return
+        if (downloadJob?.isActive == true) return
         val config = _uiState.value.config
         if (!config.isConfigured()) return
-        viewModelScope.launch {
+        downloadJob = viewModelScope.launch {
             val target = withContext(Dispatchers.IO) {
                 resolveTargetFile(config, entry)
             }
@@ -264,14 +291,18 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
         target: File
     ): File {
         target.parentFile?.mkdirs()
+        val partial = File(target.path + ".part")
+        try {
         withContext(Dispatchers.IO) {
-            target.outputStream().use { output ->
+            val jobContext = currentCoroutineContext()
+            partial.outputStream().use { output ->
                 FtpClient.download(
                     config = config,
                     remotePath = entry.path,
                     expectedSize = entry.size,
                     output = output,
                     onProgress = { bytes, total ->
+                        jobContext.ensureActive()
                         _uiState.update {
                             it.copy(
                                 downloading = FtpDownloadState(
@@ -284,12 +315,15 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 )
             }
+            jobContext.ensureActive()
+            if (!partial.renameTo(target)) throw java.io.IOException("FTP 缓存提交失败")
         }
+        } finally { withContext(kotlinx.coroutines.NonCancellable + Dispatchers.IO) { partial.delete() } }
         return target
     }
 
     private fun playLocalFile(file: File, entry: FtpEntry) {
-        val name = file.name.substringBeforeLast('.')
+        val name = entry.name.substringBeforeLast('.')
         val song = SongItem(
             id = file.absolutePath.hashCode().toLong() and 0x7fffffffL,
             name = name.ifBlank { file.name },
@@ -311,12 +345,11 @@ class FtpViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun resolveTargetFile(config: FtpServerConfig, entry: FtpEntry): File {
-        val hostDir = config.host.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-        val safePath = entry.path
-            .replace('\\', '/')
-            .split('/')
-            .filter { it.isNotBlank() && it != "." && it != ".." }
-            .joinToString("/")
+        fun hash(value: String) = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+        val hostDir = hash("${config.host}:${config.port}:${config.username}")
+        val extension = entry.name.substringAfterLast('.', "bin").takeIf { it.matches(Regex("[A-Za-z0-9]{1,8}")) } ?: "bin"
+        val safePath = hash("${entry.path}:${entry.size}:${entry.modifiedTime}") + ".$extension"
         return File(
             File(getApplication<Application>().cacheDir, "ftp/$hostDir"),
             safePath

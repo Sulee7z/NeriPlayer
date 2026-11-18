@@ -1,0 +1,211 @@
+package moe.ouom.neriplayer.core.player.engine.datasource
+
+/*
+ * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
+ * Copyright (C) 2025-2025 NeriPlayer developers
+ * https://github.com/cwuom/NeriPlayer
+ *
+ * This software is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software.
+ * If not, see <https://www.gnu.org/licenses/>.
+ *
+ * File: moe.ouom.neriplayer.core.player/ConditionalHttpDataSourceFactory
+ * Created: 2025/8/15
+ */
+
+import moe.ouom.neriplayer.platform.youtube.api.auth.normalized
+import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
+import androidx.media3.datasource.DataSpec
+import android.net.Uri
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import moe.ouom.neriplayer.platform.bilibili.auth.BiliCookieRepository
+import moe.ouom.neriplayer.data.model.youtube.auth.YouTubeAuthBundle
+import moe.ouom.neriplayer.platform.youtube.auth.YouTubeAuthRepository
+import moe.ouom.neriplayer.data.model.youtube.auth.YOUTUBE_MUSIC_ORIGIN
+import moe.ouom.neriplayer.platform.bilibili.api.stream.isBiliStreamHost
+import moe.ouom.neriplayer.platform.bilibili.api.stream.isBiliStreamUrl
+import moe.ouom.neriplayer.platform.youtube.api.transport.buildYouTubeStreamRequestHeaders
+import moe.ouom.neriplayer.platform.youtube.api.transport.isYouTubeGoogleVideoHost
+import moe.ouom.neriplayer.data.traffic.TrafficStatsRepository
+import moe.ouom.neriplayer.network.range.ResumableHttpRangeSupport
+import moe.ouom.neriplayer.network.security.normalizeTrustedHost
+
+internal fun removeExplicitRangeHeader(headers: Map<String, String>): Map<String, String> {
+    return LinkedHashMap<String, String>().apply {
+        headers.forEach { (name, value) ->
+            if (!name.equals("Range", ignoreCase = true)) {
+                put(name, value)
+            }
+        }
+    }
+}
+
+/**
+ * 自定义的 HttpDataSource.Factory:
+ * - 按 host/路径动态注入请求头 (B 站 / YouTube 拉流)
+ * - 监听鉴权仓库变化, 实时刷新注入的 Cookie 字符串
+ */
+@UnstableApi
+class ConditionalHttpDataSourceFactory(
+    private val baseFactory: HttpDataSource.Factory,
+    private val cookieRepo: BiliCookieRepository,
+    private val youtubeAuthRepo: YouTubeAuthRepository,
+    private val trafficStatsRepository: TrafficStatsRepository? = null
+) : HttpDataSource.Factory {
+
+    companion object {
+        private const val BILI_OVERSEAS_COS_HOST = "upos-sz-mirrorcosov.bilivideo.com"
+        private const val BILI_AKAMAI_HOST = "upos-hz-mirrorakam.akamaized.net"
+        private const val BILI_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/124.0.0.0 Safari/537.36"
+    }
+
+    @Volatile
+    private var latestCookieHeader: String = ""
+    @Volatile
+    private var latestYouTubeAuth: YouTubeAuthBundle = YouTubeAuthBundle()
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    init {
+        scope.launch {
+            cookieRepo.cookieFlow.collect { cookies ->
+                latestCookieHeader = cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+            }
+        }
+        scope.launch {
+            youtubeAuthRepo.authFlow.collect { auth ->
+                latestYouTubeAuth = auth.normalized()
+            }
+        }
+    }
+
+    override fun createDataSource(): HttpDataSource {
+        val dataSource = ServerAwareHttpDataSource(ResumableChunkedHttpDataSource(
+            upstreamFactory = baseFactory,
+            transformDataSpec = { dataSpec ->
+                val host = normalizeTrustedHost(dataSpec.uri.host)
+                when {
+                    shouldInjectBiliHeaders(dataSpec.uri, host) -> buildBiliDataSpec(dataSpec, host)
+                    shouldInjectYouTubeHeaders(dataSpec.uri) -> {
+                        buildYouTubeDataSpec(dataSpec)
+                    }
+                    else -> dataSpec
+                }
+            }
+        ))
+        val statsRepository = trafficStatsRepository
+        return if (statsRepository != null) {
+            TrafficCountingHttpDataSource(
+                delegate = dataSource,
+                trafficStatsRepository = statsRepository
+            )
+        } else {
+            dataSource
+        }
+    }
+
+    override fun setDefaultRequestProperties(defaultRequestProperties: Map<String, String>): HttpDataSource.Factory {
+        baseFactory.setDefaultRequestProperties(defaultRequestProperties)
+        return this
+    }
+
+    /** Server prefetch keeps the same resource/auth/traffic adapters with individually cancellable calls. */
+    internal fun forServerPrefetch(calls: okhttp3.Call.Factory): ConditionalHttpDataSourceFactory =
+        ConditionalHttpDataSourceFactory(androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(calls),
+            cookieRepo, youtubeAuthRepo, trafficStatsRepository)
+
+    fun close() {
+        scope.cancel()
+    }
+
+    /**
+     * 是否需要为该 URI 注入 B 站拉流所需的请求头
+     */
+    private fun shouldInjectBiliHeaders(uri: Uri, host: String): Boolean {
+        return (uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true)) &&
+            (host == BILI_AKAMAI_HOST || isBiliStreamHost(host) || isBiliStreamUrl(uri.toString()))
+    }
+
+    private fun shouldInjectYouTubeHeaders(uri: Uri): Boolean {
+        val host = uri.host?.lowercase() ?: return false
+        if (!isYouTubeGoogleVideoHost(host)) return false
+        val path = uri.path?.lowercase().orEmpty()
+        val rawUrl = uri.toString().lowercase()
+        return rawUrl.contains("source=youtube") ||
+            rawUrl.contains("/api/manifest/") ||
+            path.contains("/playlist/index.m3u8") ||
+            path.contains("/file/seg.ts") ||
+            rawUrl.contains("/videoplayback")
+    }
+
+    private fun buildBiliDataSpec(dataSpec: DataSpec, host: String): DataSpec {
+        val headers = LinkedHashMap(dataSpec.httpRequestHeaders)
+        headers["Referer"] = "https://www.bilibili.com"
+        headers["User-Agent"] = BILI_USER_AGENT
+        val allowCookies = dataSpec.uri.scheme.equals("https", ignoreCase = true) && host != BILI_AKAMAI_HOST
+        if (!allowCookies) {
+            headers.keys.removeAll { it.equals("Cookie", ignoreCase = true) }
+        } else if (latestCookieHeader.isNotBlank()) {
+            headers["Cookie"] = latestCookieHeader
+        }
+
+        // 海外 COS 会拒绝无 Range 的整段 GET，Media3 只会为有偏移或长度的请求生成 Range
+        if (host == BILI_OVERSEAS_COS_HOST &&
+            dataSpec.httpMethod == DataSpec.HTTP_METHOD_GET &&
+            dataSpec.position == 0L &&
+            dataSpec.length == C.LENGTH_UNSET.toLong() &&
+            !ResumableHttpRangeSupport.hasExplicitRangeHeader(headers)
+        ) {
+            headers["Range"] = "bytes=0-"
+        }
+
+        return dataSpec.buildUpon()
+            .setHttpRequestHeaders(headers)
+            .build()
+    }
+
+    private fun buildYouTubeHeaders(
+        original: Map<String, String>,
+        streamUrl: String
+    ): Map<String, String> {
+        val refererOrigin = original["Referer"].orEmpty()
+            .removeSuffix("/")
+            .ifBlank { latestYouTubeAuth.origin.ifBlank { YOUTUBE_MUSIC_ORIGIN } }
+        return latestYouTubeAuth.buildYouTubeStreamRequestHeaders(
+            original = original,
+            refererOrigin = refererOrigin,
+            streamUrl = streamUrl
+        )
+    }
+
+    private fun buildYouTubeDataSpec(dataSpec: DataSpec): DataSpec {
+        val streamUrl = dataSpec.uri.toString()
+        // media3 derives the only Range header from DataSpec position and length
+        val headers = removeExplicitRangeHeader(
+            buildYouTubeHeaders(
+                original = dataSpec.httpRequestHeaders,
+                streamUrl = streamUrl
+            )
+        )
+        return dataSpec.buildUpon()
+            .setHttpRequestHeaders(headers)
+            .build()
+    }
+}

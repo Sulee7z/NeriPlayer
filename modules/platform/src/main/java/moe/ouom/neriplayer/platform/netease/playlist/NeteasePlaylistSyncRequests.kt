@@ -1,0 +1,443 @@
+package moe.ouom.neriplayer.platform.netease.playlist
+
+import kotlinx.coroutines.CancellationException
+import moe.ouom.neriplayer.platform.netease.api.client.NeteaseClient
+import moe.ouom.neriplayer.common.logging.NPLogger
+import java.util.LinkedHashSet
+
+internal const val NETEASE_PLAYLIST_ADD_BATCH_SIZE = 50
+internal const val NETEASE_SONG_DETAIL_BATCH_SIZE = 300
+internal const val NETEASE_COMPARE_FAILED_MESSAGE =
+    "网易云云端比对失败，已停止同步以避免误同步"
+
+private const val NETEASE_LIKE_MAX_TRANSIENT_RETRIES = 3
+private const val NETEASE_LIKE_BACKOFF_MS = 1_000L
+
+internal class NeteasePlaylistAddSession(
+    private val client: NeteaseClient,
+    private val playlistId: Long,
+    private val pause: (Long) -> Unit
+) {
+    private var likedPlaylistIdentity: ParsedNeteasePlaylistId? = null
+    private val likeSong = client.createSongLiker()
+    private val verifiedAdd = client.createVerifiedPlaylistAdder(playlistId)
+    private var useVerifiedRequests = false
+    private var likeTransientRetries = 0
+
+    suspend fun add(ids: List<Long>): NeteasePlaylistAddOutcome {
+        val outcome = addBatch(ids)
+        if (ids.size != 1 || outcome !is NeteasePlaylistAddOutcome.Rejected || outcome.code != 524) {
+            return outcome
+        }
+        val identity = likedPlaylistIdentity ?: resolveLikedNeteasePlaylist(client).also {
+            if (it.success) likedPlaylistIdentity = it
+        }
+        return if (identity.playlistId == playlistId) addLikedSong(ids.single(), outcome) else outcome
+    }
+
+    private suspend fun addBatch(ids: List<Long>): NeteasePlaylistAddOutcome {
+        if (useVerifiedRequests) {
+            addVerifiedBatch(ids)?.let { return it }
+        }
+        val outcome = addNeteasePlaylistSongIdsBatch(client, playlistId, ids)
+        if (outcome is NeteasePlaylistAddOutcome.Rejected && outcome.code == 524) {
+            // 先完成云端校验，避免将需要令牌的整批歌曲反复拆分提交
+            val verified = addVerifiedBatch(ids) ?: return outcome
+            if (verified == NeteasePlaylistAddOutcome.Ok) useVerifiedRequests = true
+            return verified
+        }
+        return outcome
+    }
+
+    private suspend fun addVerifiedBatch(ids: List<Long>): NeteasePlaylistAddOutcome? {
+        return try {
+            verifiedAdd?.invoke(ids)?.let(::parseNeteasePlaylistAddOutcome)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            NPLogger.w("LocalPlaylistRepo", "Verified playlist add failed for playlistId=$playlistId")
+            NeteasePlaylistAddOutcome.Transient(-1, error.message)
+        }
+    }
+
+    private fun addLikedSong(
+        songId: Long,
+        rejected: NeteasePlaylistAddOutcome.Rejected
+    ): NeteasePlaylistAddOutcome {
+        var outcome = addNeteaseLikedSong(client, songId, likeSong)
+        while (outcome is NeteasePlaylistAddOutcome.Transient &&
+            likeTransientRetries < NETEASE_LIKE_MAX_TRANSIENT_RETRIES
+        ) {
+            pause(NETEASE_LIKE_BACKOFF_MS shl likeTransientRetries)
+            likeTransientRetries += 1
+            outcome = addNeteaseLikedSong(client, songId, likeSong)
+        }
+        // 喜欢接口不可用时保留原始拒绝，避免中止仍能正常添加的其它歌曲
+        return if (outcome is NeteasePlaylistAddOutcome.Transient) rejected else outcome
+    }
+}
+
+internal fun fetchNeteasePlaylistTrackSnapshot(
+    client: NeteaseClient,
+    playlistId: Long
+): NeteasePlaylistTrackSnapshot {
+    val raw = runCatching { client.getPlaylistDetail(playlistId) }
+        .getOrElse { error ->
+            NPLogger.e("LocalPlaylistRepo", "getPlaylistDetail failed: ${error.message}", error)
+            return NeteasePlaylistTrackSnapshot(
+                trackIds = emptySet(),
+                fingerprints = emptySet(),
+                compareSucceeded = false,
+                message = NETEASE_COMPARE_FAILED_MESSAGE
+            )
+        }
+    val retriedRaw = if (parseNeteaseCode(raw) == 301 && client.hasLogin()) {
+        retryNeteaseSessionRequest(
+            client = client,
+            ensureFailureMessage = "ensureWeapiSession retry failed",
+            retryFailureMessage = "getPlaylistDetail retry failed"
+        ) { client.getPlaylistDetail(playlistId) }
+            ?: return NeteasePlaylistTrackSnapshot(
+                trackIds = emptySet(),
+                fingerprints = emptySet(),
+                compareSucceeded = false,
+                message = NETEASE_COMPARE_FAILED_MESSAGE
+            )
+    } else {
+        raw
+    }
+
+    val parsed = parseNeteaseTrackIdsFromPlaylistDetail(retriedRaw)
+    if (!parsed.success) {
+        return NeteasePlaylistTrackSnapshot(
+            trackIds = emptySet(),
+            fingerprints = emptySet(),
+            compareSucceeded = false,
+            message = NETEASE_COMPARE_FAILED_MESSAGE
+        )
+    }
+    if (parsed.trackIds.isEmpty() && parsed.trackCount > 0) {
+        NPLogger.w(
+            "LocalPlaylistRepo",
+            "Playlist detail returned empty trackIds but trackCount=${parsed.trackCount} for playlistId=$playlistId"
+        )
+        return NeteasePlaylistTrackSnapshot(
+            trackIds = emptySet(),
+            fingerprints = emptySet(),
+            compareSucceeded = false,
+            message = NETEASE_COMPARE_FAILED_MESSAGE
+        )
+    }
+
+    val detailSummary = fetchNeteaseLikedSongDetailSummaryByPages(client, parsed.trackIds)
+    return NeteasePlaylistTrackSnapshot(
+        trackIds = LinkedHashSet(parsed.trackIds),
+        fingerprints = detailSummary.fingerprints,
+        compareSucceeded = true
+    )
+}
+
+internal fun addNeteasePlaylistSongIdsBatch(
+    client: NeteaseClient,
+    playlistId: Long,
+    songIds: List<Long>
+): NeteasePlaylistAddOutcome {
+    if (songIds.isEmpty()) return NeteasePlaylistAddOutcome.Ok
+    val raw = runCatching { client.addSongsToPlaylist(playlistId, songIds) }
+        .getOrElse { error ->
+            NPLogger.e(
+                "LocalPlaylistRepo",
+                "addSongsToPlaylist failed for playlistId=$playlistId: ${error.message}",
+                error
+            )
+            return NeteasePlaylistAddOutcome.Transient(-1, error.message)
+        }
+    val response = if (parseNeteaseCode(raw) == 301 && client.hasLogin()) {
+        retryNeteaseSessionRequest(
+            client = client,
+            ensureFailureMessage = "ensureWeapiSession retry failed",
+            retryFailureMessage = "addSongsToPlaylist retry failed for playlistId=$playlistId"
+        ) { client.addSongsToPlaylist(playlistId, songIds) }
+            ?: return NeteasePlaylistAddOutcome.Transient(-1, null)
+    } else {
+        raw
+    }
+    val outcome = parseNeteasePlaylistAddOutcome(response)
+    if (outcome != NeteasePlaylistAddOutcome.Ok) {
+        NPLogger.w(
+            "LocalPlaylistRepo",
+            "addSongsToPlaylist returned $outcome for playlistId=$playlistId, size=${songIds.size}"
+        )
+    }
+    return outcome
+}
+
+internal fun addNeteaseLikedSong(
+    client: NeteaseClient,
+    songId: Long,
+    likeSong: (Long) -> String
+): NeteasePlaylistAddOutcome {
+    val raw = runCatching { likeSong(songId) }
+        .getOrElse { error ->
+            NPLogger.e("LocalPlaylistRepo", "likeSong failed for songId=$songId: ${error.message}", error)
+            return NeteasePlaylistAddOutcome.Transient(-1, error.message)
+        }
+    val response = if (parseNeteaseCode(raw) == 301 && client.hasLogin()) {
+        retryNeteaseSessionRequest(
+            client = client,
+            ensureFailureMessage = "ensureWeapiSession retry failed",
+            retryFailureMessage = "likeSong retry failed for songId=$songId"
+        ) { likeSong(songId) }
+            ?: return NeteasePlaylistAddOutcome.Transient(-1, null)
+    } else {
+        raw
+    }
+    val outcome = parseNeteasePlaylistAddOutcome(response)
+    if (outcome != NeteasePlaylistAddOutcome.Ok) {
+        NPLogger.w("LocalPlaylistRepo", "likeSong returned $outcome for songId=$songId")
+    }
+    return outcome
+}
+
+/** 限流或服务暂不可用, 应退避后重试而不是拆分批次; -1 表示响应缺失或无法解析 */
+private val NETEASE_TRANSIENT_ADD_CODES = setOf(-1, -460, -462, 405, 406, 429, 503)
+
+internal fun parseNeteasePlaylistAddOutcome(raw: String): NeteasePlaylistAddOutcome {
+    val code = parseNeteaseCode(raw)
+    if (code == 200) return NeteasePlaylistAddOutcome.Ok
+    val message = parseNeteaseMessage(raw)
+    if (code in NETEASE_TRANSIENT_ADD_CODES) return NeteasePlaylistAddOutcome.Transient(code, message)
+    return NeteasePlaylistAddOutcome.Rejected(code, message)
+}
+
+internal fun validateNeteaseSyncCandidates(
+    client: NeteaseClient,
+    summary: LocalNeteaseCandidateSummary
+): NeteaseCandidateValidationResult {
+    if (summary.candidates.isEmpty()) {
+        return NeteaseCandidateValidationResult(
+            supportedSongs = 0,
+            skippedUnsupported = summary.skippedUnsupported,
+            skippedExisting = summary.skippedExisting,
+            candidates = emptyList()
+        )
+    }
+
+    val validatedCandidates = ArrayList<NeteaseResolvedCandidate>(summary.candidates.size)
+    var skippedUnsupported = summary.skippedUnsupported
+    summary.candidates.chunked(NETEASE_SONG_DETAIL_BATCH_SIZE).forEachIndexed { pageIndex, chunk ->
+        val resolvedIds = fetchResolvableNeteaseSongIds(
+            client = client,
+            ids = chunk.map(NeteaseResolvedCandidate::neteaseId),
+            logLabel = "validateNeteaseSyncCandidates page ${pageIndex + 1}"
+        )
+        if (resolvedIds == null) {
+            validatedCandidates.addAll(chunk)
+            return@forEachIndexed
+        }
+
+        chunk.forEach { candidate ->
+            if (candidate.neteaseId in resolvedIds) {
+                validatedCandidates += candidate
+            } else {
+                skippedUnsupported += 1
+                NPLogger.w(
+                    "LocalPlaylistRepo",
+                    "Filtered invalid netease songId before sync: songId=${candidate.neteaseId} name=${candidate.song.name}"
+                )
+            }
+        }
+    }
+
+    return NeteaseCandidateValidationResult(
+        supportedSongs = validatedCandidates.size,
+        skippedUnsupported = skippedUnsupported,
+        skippedExisting = summary.skippedExisting,
+        candidates = validatedCandidates
+    )
+}
+
+internal fun fetchNeteaseLikedSongDetailSummaryByPages(
+    client: NeteaseClient,
+    trackIds: List<Long>
+): NeteaseSongDetailSummary {
+    if (trackIds.isEmpty()) {
+        return NeteaseSongDetailSummary(
+            ids = emptySet(),
+            fingerprints = emptySet()
+        )
+    }
+
+    val resolvedIds = LinkedHashSet<Long>(trackIds.size)
+    val fingerprints = mutableSetOf<String>()
+    trackIds.chunked(NETEASE_SONG_DETAIL_BATCH_SIZE).forEachIndexed { pageIndex, ids ->
+        val raw = runCatching { client.getSongDetail(ids) }
+            .getOrElse { error ->
+                NPLogger.e(
+                    "LocalPlaylistRepo",
+                    "getSongDetail page ${pageIndex + 1} failed: ${error.message}",
+                    error
+                )
+                return@forEachIndexed
+            }
+        val parsed = parseNeteaseSongDetailSummary(raw)
+        if (!parsed.success) {
+            NPLogger.w(
+                "LocalPlaylistRepo",
+                "getSongDetail page ${pageIndex + 1} returned invalid payload"
+            )
+            return@forEachIndexed
+        }
+        resolvedIds.addAll(parsed.ids)
+        fingerprints.addAll(parsed.fingerprints)
+    }
+    return NeteaseSongDetailSummary(
+        ids = resolvedIds,
+        fingerprints = fingerprints
+    )
+}
+
+internal fun fetchResolvableNeteaseSongIds(
+    client: NeteaseClient,
+    ids: List<Long>,
+    logLabel: String
+): Set<Long>? {
+    if (ids.isEmpty()) return emptySet()
+
+    fun requestSongDetail(): String {
+        return client.getSongDetail(ids)
+    }
+
+    val raw = runCatching { requestSongDetail() }
+        .getOrElse { error ->
+            NPLogger.e("LocalPlaylistRepo", "$logLabel failed: ${error.message}", error)
+            return null
+        }
+
+    val retriedRaw = if (parseNeteaseCode(raw) == 301 && client.hasLogin()) {
+        retryNeteaseSessionRequest(
+            client = client,
+            ensureFailureMessage = "$logLabel ensureWeapiSession retry failed",
+            retryFailureMessage = "$logLabel retry failed"
+        ) { requestSongDetail() } ?: return null
+    } else {
+        raw
+    }
+
+    val parsed = parseNeteaseSongDetailSummary(retriedRaw)
+    if (!parsed.success) {
+        NPLogger.w("LocalPlaylistRepo", "$logLabel returned invalid payload")
+        return null
+    }
+    return parsed.ids
+}
+
+internal fun resolveLikedNeteasePlaylistId(client: NeteaseClient): Long? {
+    return resolveLikedNeteasePlaylist(client).playlistId
+}
+
+private fun resolveLikedNeteasePlaylist(client: NeteaseClient): ParsedNeteasePlaylistId {
+    val raw = runCatching { client.getLikedPlaylistId(0) }
+        .getOrElse { error ->
+            NPLogger.e("LocalPlaylistRepo", "getLikedPlaylistId failed: ${error.message}", error)
+            return ParsedNeteasePlaylistId(playlistId = null, success = false)
+        }
+    if (parseNeteaseCode(raw) == 301 && client.hasLogin()) {
+        val retried = retryNeteaseSessionRequest(
+            client = client,
+            ensureFailureMessage = "ensureWeapiSession retry failed",
+            retryFailureMessage = "getLikedPlaylistId retry failed"
+        ) { client.getLikedPlaylistId(0) }
+            ?: return ParsedNeteasePlaylistId(playlistId = null, success = false)
+        return parseNeteaseLikedPlaylistId(retried)
+    }
+    return parseNeteaseLikedPlaylistId(raw)
+}
+
+private fun retryNeteaseSessionRequest(
+    client: NeteaseClient,
+    ensureFailureMessage: String,
+    retryFailureMessage: String,
+    request: () -> String
+): String? {
+    runCatching { client.ensureWeapiSession() }.onFailure {
+        NPLogger.w("LocalPlaylistRepo", "$ensureFailureMessage: ${it.message}")
+    }
+    return runCatching(request).onFailure { error ->
+        NPLogger.e("LocalPlaylistRepo", "$retryFailureMessage: ${error.message}", error)
+    }.getOrNull()
+}
+
+internal fun buildNeteasePlaylistSyncPlan(
+    client: NeteaseClient,
+    targetPlaylistId: Long,
+    totalSongs: Int,
+    validatedSummary: NeteaseCandidateValidationResult,
+    allSyncedMessage: () -> String?
+): NeteaseRemotePlaylistSyncPlan {
+    val targetSnapshot = fetchNeteasePlaylistTrackSnapshot(client, targetPlaylistId)
+    if (!targetSnapshot.compareSucceeded) {
+        return NeteaseRemotePlaylistSyncPlan(
+            targetPlaylistId = targetPlaylistId,
+            totalSongs = totalSongs,
+            supportedSongs = validatedSummary.supportedSongs,
+            skippedUnsupported = validatedSummary.skippedUnsupported,
+            skippedExisting = validatedSummary.skippedExisting,
+            candidates = emptyList(),
+            compareSucceeded = false,
+            message = targetSnapshot.message ?: NETEASE_COMPARE_FAILED_MESSAGE
+        )
+    }
+
+    var skippedExisting = validatedSummary.skippedExisting
+    val pendingCandidates = ArrayList<NeteaseResolvedCandidate>(validatedSummary.candidates.size)
+    validatedSummary.candidates.forEach { candidate ->
+        val fingerprint = candidate.song.toNeteaseFingerprint()
+        if (candidate.neteaseId in targetSnapshot.trackIds ||
+            (fingerprint != null && fingerprint in targetSnapshot.fingerprints)
+        ) {
+            skippedExisting += 1
+        } else {
+            pendingCandidates += candidate
+        }
+    }
+
+    val message = if (pendingCandidates.isEmpty()) {
+        allSyncedMessage()
+    } else {
+        null
+    }
+
+    return NeteaseRemotePlaylistSyncPlan(
+        targetPlaylistId = targetPlaylistId,
+        totalSongs = totalSongs,
+        supportedSongs = validatedSummary.supportedSongs,
+        skippedUnsupported = validatedSummary.skippedUnsupported,
+        skippedExisting = skippedExisting,
+        candidates = pendingCandidates,
+        compareSucceeded = true,
+        message = message
+    )
+}
+
+internal fun reconcileNeteasePlaylistAddResult(
+    client: NeteaseClient,
+    targetPlaylistId: Long,
+    result: NeteasePlaylistBatchAddResult
+): NeteasePlaylistBatchAddResult {
+    val addedIds = LinkedHashSet(result.addedIds)
+    val failedIds = LinkedHashSet(result.failedIds)
+    if (failedIds.isNotEmpty()) {
+        val snapshot = fetchNeteasePlaylistTrackSnapshot(client, targetPlaylistId)
+        if (snapshot.compareSucceeded) {
+            val recovered = failedIds.filter { it in snapshot.trackIds }
+            addedIds.addAll(recovered)
+            failedIds.removeAll(recovered.toSet())
+        }
+    }
+    return NeteasePlaylistBatchAddResult(
+        addedIds = addedIds,
+        failedIds = failedIds,
+        rejections = result.rejections.filterKeys { it in failedIds }
+    )
+}

@@ -4,6 +4,27 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import moe.ouom.neriplayer.navigation.Destinations
 import moe.ouom.neriplayer.ui.effect.glass.DRAWER_BACKGROUND_SINK_FRACTION
 import moe.ouom.neriplayer.ui.effect.glass.DRAWER_RECESSED_CONTENT_SCALE
+import moe.ouom.neriplayer.ui.navigation.DRAWER_DETAIL_OPEN_DURATION_MS
+import moe.ouom.neriplayer.ui.navigation.MAIN_TAB_DETAIL_OPEN_DURATION_MS
+import moe.ouom.neriplayer.ui.navigation.MainTabBackgroundMotion
+import moe.ouom.neriplayer.ui.navigation.MainTabDetailHandoff
+import moe.ouom.neriplayer.ui.navigation.MainTabLayerScenePhase
+import moe.ouom.neriplayer.ui.navigation.mainTabDetailContentOffsetEasing
+import moe.ouom.neriplayer.ui.navigation.resolveMainStartDestination
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabBackgroundMotion
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabBackgroundMotionDurationMillis
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabBackgroundTransform
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabDetailHandoff
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabDetailInitialVisibility
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabLayerSceneOffsetFraction
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabLayerSceneTransform
+import moe.ouom.neriplayer.ui.navigation.resolveMainTabTransitionDirection
+import moe.ouom.neriplayer.ui.navigation.shouldAcceptObservedMainTabRoute
+import moe.ouom.neriplayer.ui.navigation.shouldApplyPersistedStartupDestination
+import moe.ouom.neriplayer.ui.navigation.shouldDispatchMainTabNavigation
+import moe.ouom.neriplayer.ui.navigation.shouldUseInstantBiliUploaderPlaylistTransition
+import moe.ouom.neriplayer.ui.navigation.shouldUseMainTabScaleTransition
+import moe.ouom.neriplayer.ui.navigation.shouldBlockMainTabSceneInput
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -11,6 +32,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NeriAppMainTabTransitionPolicyTest {
+    @Test
+    fun `exiting and fully hidden tab scenes cannot receive input`() {
+        assertTrue(shouldBlockMainTabSceneInput(MainTabLayerScenePhase.Exiting, 0f))
+        assertTrue(shouldBlockMainTabSceneInput(MainTabLayerScenePhase.Exiting, 0.5f))
+        assertTrue(shouldBlockMainTabSceneInput(MainTabLayerScenePhase.Entering, 1f))
+        assertTrue(shouldBlockMainTabSceneInput(MainTabLayerScenePhase.Entering, -1f))
+        assertFalse(shouldBlockMainTabSceneInput(MainTabLayerScenePhase.Entering, 0.5f))
+        assertFalse(shouldBlockMainTabSceneInput(MainTabLayerScenePhase.Settled, 0f))
+    }
+
     @Test
     fun `instant detail handoff starts visible without changing restored detail behavior`() {
         assertFalse(
@@ -34,11 +65,20 @@ class NeriAppMainTabTransitionPolicyTest {
     }
 
     @Test
-    fun `startup waits for the persisted default route before selecting a tab`() {
-        assertNull(
+    fun `missing persisted startup route falls back to an available tab`() {
+        assertEquals(
+            Destinations.Home.route,
             resolveMainStartDestination(
                 preferredRoute = null,
                 showHomeTab = true,
+                devModeEnabled = false
+            )
+        )
+        assertEquals(
+            Destinations.Explore.route,
+            resolveMainStartDestination(
+                preferredRoute = null,
+                showHomeTab = false,
                 devModeEnabled = false
             )
         )
@@ -63,7 +103,35 @@ class NeriAppMainTabTransitionPolicyTest {
     }
 
     @Test
-    fun `later tabs enter from the right`() {
+    fun `late persisted route replaces only the untouched fallback tab`() {
+        assertTrue(
+            shouldApplyPersistedStartupDestination(
+                awaitingPersistedRoute = true,
+                currentRoute = Destinations.Home.route,
+                initialFallbackRoute = Destinations.Home.route,
+                resolvedPersistedRoute = Destinations.Settings.route
+            )
+        )
+        assertFalse(
+            shouldApplyPersistedStartupDestination(
+                awaitingPersistedRoute = true,
+                currentRoute = Destinations.Library.route,
+                initialFallbackRoute = Destinations.Home.route,
+                resolvedPersistedRoute = Destinations.Settings.route
+            )
+        )
+        assertFalse(
+            shouldApplyPersistedStartupDestination(
+                awaitingPersistedRoute = false,
+                currentRoute = Destinations.Home.route,
+                initialFallbackRoute = Destinations.Home.route,
+                resolvedPersistedRoute = Destinations.Settings.route
+            )
+        )
+    }
+
+    @Test
+    fun `later tabs retain their forward navigation order`() {
         assertEquals(
             1,
             resolveMainTabTransitionDirection(
@@ -74,7 +142,7 @@ class NeriAppMainTabTransitionPolicyTest {
     }
 
     @Test
-    fun `earlier tabs enter from the left`() {
+    fun `earlier tabs retain their backward navigation order`() {
         assertEquals(
             -1,
             resolveMainTabTransitionDirection(
@@ -113,6 +181,39 @@ class NeriAppMainTabTransitionPolicyTest {
             ),
             0f
         )
+    }
+
+    @Test
+    fun `only tablet smallest width enables in place tab scale transition`() {
+        listOf(0, 360, 480, 599).forEach { smallestWidth ->
+            assertFalse(shouldUseMainTabScaleTransition(smallestWidth))
+        }
+        listOf(600, 800, 1280).forEach { smallestWidth ->
+            assertTrue(shouldUseMainTabScaleTransition(smallestWidth))
+        }
+    }
+
+    @Test
+    fun `tab scenes scale and fade identically in either navigation direction`() {
+        listOf(-1, 1).forEach { direction ->
+            val entering = resolveMainTabLayerSceneTransform(
+                resolveMainTabLayerSceneOffsetFraction(MainTabLayerScenePhase.Entering, direction, 0.4f)
+            )
+            val exiting = resolveMainTabLayerSceneTransform(
+                resolveMainTabLayerSceneOffsetFraction(MainTabLayerScenePhase.Exiting, direction, 0.4f)
+            )
+            assertEquals(0.4f, entering.alpha, 0.0001f)
+            assertEquals(0.6f, exiting.alpha, 0.0001f)
+            assertTrue(entering.scale < exiting.scale)
+            assertTrue(entering.scale > 0.94f && exiting.scale < 1f)
+        }
+        val visible = resolveMainTabLayerSceneTransform(0f)
+        val hidden = resolveMainTabLayerSceneTransform(1f)
+        assertEquals(1f, visible.scale, 0f)
+        assertEquals(1f, visible.alpha, 0f)
+        assertEquals(0.94f, hidden.scale, 0f)
+        assertEquals(0f, hidden.alpha, 0f)
+        assertEquals(hidden, resolveMainTabLayerSceneTransform(-2f))
     }
 
     @Test

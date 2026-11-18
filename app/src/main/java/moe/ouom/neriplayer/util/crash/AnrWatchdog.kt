@@ -9,10 +9,9 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Process
 import androidx.core.content.edit
-import moe.ouom.neriplayer.R
 import moe.ouom.neriplayer.BuildConfig
 import moe.ouom.neriplayer.core.crash.ExceptionHandler
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.logging.NPLogger
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -20,6 +19,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.min
+import moe.ouom.neriplayer.R as AppR
 
 internal object AnrWatchdog {
     private const val TAG = "AnrWatchdog"
@@ -49,7 +49,7 @@ internal object AnrWatchdog {
         if (!BuildConfig.DEBUG) {
             ExceptionHandler.handleException(
                 source = TAG,
-                throwable = IllegalStateException(context.getString(R.string.debug_anr_test_unavailable))
+                throwable = IllegalStateException(context.getString(AppR.string.debug_anr_test_unavailable))
             )
             return
         }
@@ -117,7 +117,7 @@ internal object AnrWatchdog {
             if (traceCopied == null) {
                 output.write("No trace stream is available\n".toByteArray(Charsets.UTF_8))
             } else if (traceCopied) {
-                output.write("\n\n[Trace truncated at ${MAX_EXIT_TRACE_BYTES} bytes]\n".toByteArray(Charsets.UTF_8))
+                output.write("\n\n[Trace truncated at $MAX_EXIT_TRACE_BYTES bytes]\n".toByteArray(Charsets.UTF_8))
             }
             output.fd.sync()
         }

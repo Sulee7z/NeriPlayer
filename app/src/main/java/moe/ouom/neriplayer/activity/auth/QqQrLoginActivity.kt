@@ -52,9 +52,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import com.google.android.material.appbar.AppBarLayout
 import com.google.android.material.appbar.MaterialToolbar
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.data.auth.web.ForegroundWebLoginGuard
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.R
+import moe.ouom.neriplayer.R as AppR
+import moe.ouom.neriplayer.network.weblogin.ForegroundWebLoginGuard
+import moe.ouom.neriplayer.common.logging.NPLogger
 import moe.ouom.neriplayer.util.platform.lockPortraitIfPhone
 import android.webkit.WebStorage
 
@@ -164,9 +165,9 @@ class QqQrLoginActivity : ComponentActivity() {
         }
         val toolbar = MaterialToolbar(this).apply {
             title = getString(R.string.qq_qr_login)
-            setNavigationIcon(R.drawable.ic_arrow_back_24)
+            setNavigationIcon(AppR.drawable.ic_arrow_back_24)
             setNavigationOnClickListener { finish() }
-            inflateMenu(R.menu.menu_netease_web_login)
+            inflateMenu(AppR.menu.menu_netease_web_login)
             setOnMenuItemClickListener { onToolbarMenu(it) }
         }
         appBar.addView(toolbar)
@@ -225,11 +226,11 @@ class QqQrLoginActivity : ComponentActivity() {
 
     private fun onToolbarMenu(item: MenuItem): Boolean {
         return when (item.itemId) {
-            R.id.action_refresh -> {
+            AppR.id.action_refresh -> {
                 webView.reload()
                 true
             }
-            R.id.action_read_cookie -> {
+            AppR.id.action_read_cookie -> {
                 readAndReturnCookies()
                 true
             }

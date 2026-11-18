@@ -34,10 +34,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.auth.common.parseRawCookieText
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
+import moe.ouom.neriplayer.network.http.parsing.parseRawCookieText
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthHealth
 import org.json.JSONObject
 
 data class QqAuthUiState(
@@ -92,7 +92,10 @@ class QqAuthViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearCookies() {
         viewModelScope.launch(Dispatchers.IO) {
-            repo.clear()
+            try { repo.clear() } catch (error: Exception) {
+                _events.send(QqAuthEvent.ShowSnack(error.message.orEmpty()))
+                return@launch
+            }
             _events.send(
                 QqAuthEvent.ShowSnack(
                     getApplication<Application>().getString(R.string.auth_cookie_cleared)
@@ -116,7 +119,7 @@ class QqAuthViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             if (map["uin"].isNullOrBlank() ||
-                (map["qm_keyst"].isNullOrBlank() && map["p_skey"].isNullOrBlank())
+                (map["qm_keyst"].isNullOrBlank() && map["p_skey"].isNullOrBlank() && map["skey"].isNullOrBlank())
             ) {
                 _events.send(
                     QqAuthEvent.ShowSnack(
@@ -126,7 +129,10 @@ class QqAuthViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
 
-            repo.saveCookies(map)
+            try { repo.saveCookies(map) } catch (error: Exception) {
+                _events.send(QqAuthEvent.ShowSnack(error.message.orEmpty()))
+                return@launch
+            }
             _events.send(QqAuthEvent.LoginSuccess)
         }
     }

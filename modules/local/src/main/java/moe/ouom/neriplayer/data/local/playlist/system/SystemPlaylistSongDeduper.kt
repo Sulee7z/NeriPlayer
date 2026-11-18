@@ -1,0 +1,134 @@
+package moe.ouom.neriplayer.data.local.playlist.system
+
+/*
+ * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
+ * Copyright (C) 2025-2025 NeriPlayer developers
+ * https://github.com/cwuom/NeriPlayer
+ *
+ * This software is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software.
+ * If not, see <https://www.gnu.org/licenses/>.
+ *
+ * File: moe.ouom.neriplayer.data.local.playlist.system/SystemPlaylistSongDeduper
+ * Updated: 2026/3/23
+ */
+
+import moe.ouom.neriplayer.data.identity.identity
+import moe.ouom.neriplayer.data.local.media.LocalSongSupport
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.data.model.SongIdentity
+
+internal fun List<SongItem>.distinctSystemSongs(): List<SongItem> {
+    if (size < 2) return this
+
+    return SystemPlaylistSongDeduper(size)
+        .apply { addAll(this@distinctSystemSongs) }
+        .songs()
+}
+
+internal class SystemPlaylistSongDeduper(
+    expectedSongCount: Int,
+    private val additionalIdentity: (SongItem) -> SongIdentity? = { null },
+    private val mergeSongs: (SongItem, SongItem) -> SongItem = ::mergeSystemPlaylistSong
+) {
+    private val initialCapacity = expectedSongCount.coerceIn(0, MAX_INITIAL_CAPACITY)
+    private val distinct = ArrayList<SongItem>(initialCapacity)
+    private val indexByIdentity = HashMap<SongIdentity, Int>(initialCapacity)
+    private val indexByLocalKey = HashMap<String, Int>()
+
+    fun addAll(songs: Iterable<SongItem>) {
+        songs.forEach(::add)
+    }
+
+    fun songs(): List<SongItem> = distinct
+
+    fun takeSongs(): MutableList<SongItem> = distinct
+
+    private fun add(song: SongItem) {
+        val identities = listOfNotNull(song.identity(), additionalIdentity(song))
+        val localKeys = LocalSongSupport.localDuplicateKeys(
+            song = song,
+            includeMetadataFallback = true
+        )
+        val matchingIndices = buildSet {
+            identities.mapNotNullTo(this, indexByIdentity::get)
+            localKeys.mapNotNullTo(this, indexByLocalKey::get)
+        }
+        if (matchingIndices.isNotEmpty()) {
+            val duplicateIndex = matchingIndices.min()
+            var merged = distinct[duplicateIndex]
+            matchingIndices.sorted().forEach { index ->
+                if (index != duplicateIndex) {
+                    merged = mergeSongs(merged, distinct[index])
+                }
+            }
+            distinct[duplicateIndex] = mergeSongs(merged, song)
+            collapseDuplicateIndices(duplicateIndex, matchingIndices - duplicateIndex)
+            identities.forEach { indexByIdentity[it] = duplicateIndex }
+            localKeys.forEach { key ->
+                indexByLocalKey[key] = duplicateIndex
+            }
+            return
+        }
+        val index = distinct.size
+        distinct += song
+        identities.forEach { indexByIdentity[it] = index }
+        localKeys.forEach { key ->
+            indexByLocalKey[key] = index
+        }
+    }
+
+    private fun collapseDuplicateIndices(targetIndex: Int, removedIndices: Set<Int>) {
+        if (removedIndices.isEmpty()) return
+        val sortedRemovedIndices = removedIndices.sorted()
+        sortedRemovedIndices.asReversed().forEach(distinct::removeAt)
+
+        fun remap(index: Int): Int {
+            val searchResult = sortedRemovedIndices.binarySearch(index)
+            if (searchResult >= 0) return targetIndex
+            val removedBeforeIndex = -searchResult - 1
+            return index - removedBeforeIndex
+        }
+        indexByIdentity.replaceAll { _, index -> remap(index) }
+        indexByLocalKey.replaceAll { _, index -> remap(index) }
+    }
+
+    private companion object {
+        const val MAX_INITIAL_CAPACITY = 4_096
+    }
+}
+
+internal fun mergeSystemPlaylistSong(existing: SongItem, candidate: SongItem): SongItem {
+    return existing.copy(
+        name = existing.name.ifBlank { candidate.name },
+        artist = existing.artist.ifBlank { candidate.artist },
+        album = existing.album.ifBlank { candidate.album },
+        durationMs = positiveOr(existing.durationMs, candidate.durationMs),
+        coverUrl = nonBlankOr(existing.coverUrl, candidate.coverUrl),
+        customCoverUrl = nonBlankOr(existing.customCoverUrl, candidate.customCoverUrl),
+        originalCoverUrl = nonBlankOr(existing.originalCoverUrl, candidate.originalCoverUrl),
+        matchedLyric = presentOr(existing.matchedLyric, candidate.matchedLyric),
+        matchedTranslatedLyric = presentOr(existing.matchedTranslatedLyric, candidate.matchedTranslatedLyric),
+        matchedRomanizedLyric = presentOr(existing.matchedRomanizedLyric, candidate.matchedRomanizedLyric),
+        originalLyric = presentOr(existing.originalLyric, candidate.originalLyric),
+        originalTranslatedLyric = presentOr(existing.originalTranslatedLyric, candidate.originalTranslatedLyric),
+        originalRomanizedLyric = presentOr(existing.originalRomanizedLyric, candidate.originalRomanizedLyric)
+    )
+}
+
+private fun positiveOr(existing: Long, candidate: Long): Long = if (existing > 0L) existing else candidate
+
+private fun nonBlankOr(existing: String?, candidate: String?): String? =
+    if (existing.isNullOrBlank()) candidate else existing
+
+private fun presentOr(existing: String?, candidate: String?): String? = existing ?: candidate

@@ -24,6 +24,7 @@ package moe.ouom.neriplayer.ui.component.settings
  */
 
 
+import moe.ouom.neriplayer.ui.settings.SettingRowIcon
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.*
@@ -38,9 +39,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.util.platform.LanguageManager
-import moe.ouom.neriplayer.util.platform.getDisplayName
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.common.locale.LanguageManager
+import moe.ouom.neriplayer.common.locale.getDisplayName
 
 private val LanguageSettingItemShape = RoundedCornerShape(18.dp)
 private val LanguageOptionShape = RoundedCornerShape(16.dp)
@@ -62,10 +63,11 @@ fun LanguageSettingItem(
         modifier = modifier
             .clip(LanguageSettingItemShape)
             .clickable { showDialog = true },
-        headlineContent = { Text(stringResource(R.string.language_setting_title)) },
+        headlineContent = { Text(stringResource(CoreCommonR.string.language_setting_title)) },
         supportingContent = { Text(currentLanguage.getDisplayName(context)) },
         leadingContent = {
-            Icon(
+            SettingRowIcon(
+                key = "language",
                 imageVector = Icons.Outlined.Language,
                 contentDescription = null
             )
@@ -76,7 +78,7 @@ fun LanguageSettingItem(
     if (showDialog) {
         AlertDialog(
             onDismissRequest = { showDialog = false },
-            title = { Text(stringResource(R.string.language_select_title)) },
+            title = { Text(stringResource(CoreCommonR.string.language_select_title)) },
             text = {
                 Column {
                     LanguageManager.Language.entries.forEach { language ->
@@ -115,7 +117,7 @@ fun LanguageSettingItem(
             },
             confirmButton = {
                 TextButton(onClick = { showDialog = false }) {
-                    Text(stringResource(R.string.action_close))
+                    Text(stringResource(CoreCommonR.string.action_close))
                 }
             }
         )

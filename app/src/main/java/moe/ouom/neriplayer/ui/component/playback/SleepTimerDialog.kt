@@ -40,8 +40,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.player.PlayerManager
-import moe.ouom.neriplayer.core.player.timer.SleepTimerMode
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.data.model.playback.SleepTimerMode
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.ui.theme.NeriDesign
+import moe.ouom.neriplayer.R as AppR
 
 @Composable
 fun SleepTimerDialog(
@@ -56,7 +58,7 @@ fun SleepTimerDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.Timer, contentDescription = null) },
-        title = { Text(stringResource(R.string.sleep_timer_title)) },
+        title = { Text(stringResource(CoreCommonR.string.sleep_timer_title)) },
         text = {
             Column(
                 modifier = Modifier
@@ -69,8 +71,10 @@ fun SleepTimerDialog(
                 if (timerState.isActive) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
+                        shape = if (NeriDesign.isClean) NeriDesign.tokens.cardShape else CardDefaults.shape,
                         colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                            containerColor = if (NeriDesign.isClean) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.04f)
+                                else MaterialTheme.colorScheme.primaryContainer
                         )
                     ) {
                         Column(
@@ -78,7 +82,7 @@ fun SleepTimerDialog(
                             horizontalAlignment = Alignment.Start
                         ) {
                             Text(
-                                text = stringResource(R.string.sleep_timer_running),
+                                text = stringResource(CoreCommonR.string.sleep_timer_running),
                                 style = MaterialTheme.typography.labelMedium
                             )
                             Spacer(modifier = Modifier.height(8.dp))
@@ -92,7 +96,7 @@ fun SleepTimerDialog(
                                     if (timerState.mode == SleepTimerMode.COUNTDOWN_FINISH_CURRENT) {
                                         Text(
                                             text = stringResource(
-                                                R.string.sleep_timer_countdown_finish_current
+                                                CoreCommonR.string.sleep_timer_countdown_finish_current
                                             ),
                                             style = MaterialTheme.typography.bodyMedium
                                         )
@@ -100,13 +104,13 @@ fun SleepTimerDialog(
                                 }
                                 SleepTimerMode.FINISH_CURRENT -> {
                                     Text(
-                                        text = stringResource(R.string.sleep_timer_finish_current),
+                                        text = stringResource(CoreCommonR.string.sleep_timer_finish_current),
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                 }
                                 SleepTimerMode.FINISH_PLAYLIST -> {
                                     Text(
-                                        text = stringResource(R.string.sleep_timer_finish_playlist),
+                                        text = stringResource(CoreCommonR.string.sleep_timer_finish_playlist),
                                         style = MaterialTheme.typography.bodyMedium
                                     )
                                 }
@@ -118,14 +122,14 @@ fun SleepTimerDialog(
 
                 // 倒计时滑块
                 Text(
-                    text = stringResource(R.string.sleep_timer_countdown),
+                    text = stringResource(CoreCommonR.string.sleep_timer_countdown),
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (NeriDesign.isClean) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary
                 )
 
                 Text(
                             text = pluralStringResource(
-                                R.plurals.sleep_timer_minutes,
+                                AppR.plurals.sleep_timer_minutes,
                                 sliderValue.toInt(),
                                 sliderValue.toInt()
                             ),
@@ -151,16 +155,16 @@ fun SleepTimerDialog(
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(stringResource(R.string.sleep_timer_start_countdown))
+                    Text(stringResource(CoreCommonR.string.sleep_timer_start_countdown))
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 // 其他模式
                 Text(
-                    text = stringResource(R.string.sleep_timer_other_modes),
+                    text = stringResource(CoreCommonR.string.sleep_timer_other_modes),
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (NeriDesign.isClean) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary
                 )
 
                 OutlinedButton(
@@ -176,7 +180,7 @@ fun SleepTimerDialog(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(stringResource(R.string.sleep_timer_finish_current))
+                    Text(stringResource(CoreCommonR.string.sleep_timer_finish_current))
                 }
 
                 OutlinedButton(
@@ -192,7 +196,7 @@ fun SleepTimerDialog(
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(stringResource(R.string.sleep_timer_finish_playlist))
+                    Text(stringResource(CoreCommonR.string.sleep_timer_finish_playlist))
                 }
             }
         },
@@ -202,13 +206,13 @@ fun SleepTimerDialog(
                     PlayerManager.sleepTimerManager.cancel()
                     onDismiss()
                 }) {
-                    Text(stringResource(R.string.sleep_timer_cancel))
+                    Text(stringResource(CoreCommonR.string.sleep_timer_cancel))
                 }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.sleep_timer_close))
+                Text(stringResource(CoreCommonR.string.sleep_timer_close))
             }
         }
     )

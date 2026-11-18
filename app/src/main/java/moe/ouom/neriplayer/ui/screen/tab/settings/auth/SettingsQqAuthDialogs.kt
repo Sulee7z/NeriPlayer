@@ -32,7 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R
 import moe.ouom.neriplayer.activity.auth.QqQrLoginActivity
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.ui.viewmodel.auth.QqAuthViewModel

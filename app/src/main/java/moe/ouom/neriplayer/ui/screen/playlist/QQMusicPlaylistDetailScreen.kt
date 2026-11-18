@@ -71,15 +71,15 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.qq.QQMusicApi
-import moe.ouom.neriplayer.core.api.qq.QQPlaylistDetail
-import moe.ouom.neriplayer.core.api.qq.QQMusicSongBuilder
-import moe.ouom.neriplayer.core.api.qq.toSongItem
+import moe.ouom.neriplayer.common.R
+import moe.ouom.neriplayer.platform.qq.api.QQMusicApi
+import moe.ouom.neriplayer.platform.qq.api.QQPlaylistDetail
+import moe.ouom.neriplayer.platform.qq.api.QQMusicSongBuilder
+import moe.ouom.neriplayer.platform.qq.api.toSongItem
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.data.model.stableKey
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.data.identity.stableKey
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 
@@ -101,7 +101,8 @@ fun QQMusicPlaylistDetailScreen(
     val offlineError = stringResource(R.string.qq_playlist_offline_unavailable)
     val state by produceState<QQPlaylistUiState>(
         initialValue = QQPlaylistUiState.Loading,
-        key1 = playlist.id
+        key1 = playlist.id,
+        key2 = offlineMode
     ) {
         value = if (offlineMode) {
             QQPlaylistUiState.Error(offlineError)

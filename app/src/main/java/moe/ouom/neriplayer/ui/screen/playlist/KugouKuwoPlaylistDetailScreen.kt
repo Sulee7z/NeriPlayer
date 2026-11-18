@@ -66,13 +66,13 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.kugou.KugouPlaylistDetail
-import moe.ouom.neriplayer.core.api.kuwo.KuwoPlaylistDetail
+import moe.ouom.neriplayer.common.R
+import moe.ouom.neriplayer.platform.kugou.api.KugouPlaylistDetail
+import moe.ouom.neriplayer.platform.kuwo.api.KuwoPlaylistDetail
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.data.model.stableKey
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.data.identity.stableKey
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 
@@ -103,7 +103,9 @@ fun KugouKuwoPlaylistDetailScreen(
     val offlineError = stringResource(R.string.qq_playlist_offline_unavailable)
     val state by produceState<KKPlaylistUiState>(
         initialValue = KKPlaylistUiState.Loading,
-        key1 = playlist.id
+        key1 = playlist.id,
+        key2 = platform,
+        key3 = offlineMode
     ) {
         value = if (offlineMode) {
             KKPlaylistUiState.Error(offlineError)
@@ -132,6 +134,7 @@ fun KugouKuwoPlaylistDetailScreen(
                                         durationMs = song.durationMs,
                                         coverUrl = null,
                                         audioId = mid,
+                                        channelId = "kugou",
                                         sourceStableKey = "kugou:$mid"
                                     )
                                 }
@@ -159,6 +162,7 @@ fun KugouKuwoPlaylistDetailScreen(
                                         durationMs = song.durationMs,
                                         coverUrl = null,
                                         audioId = mid,
+                                        channelId = "kuwo",
                                         sourceStableKey = "kuwo:$mid"
                                     )
                                 }

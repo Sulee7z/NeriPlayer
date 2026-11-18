@@ -66,10 +66,10 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -95,7 +95,7 @@ private sealed interface NeteaseRecentUiState {
 
 private fun parseRecentRecords(raw: String): List<NeteaseRecentRecord> {
     val root = JSONObject(raw)
-    if (root.optInt("code") != 200) return emptyList()
+    if (root.optInt("code") != 200) throw java.io.IOException("网易云接口返回 ${root.optInt("code")}")
     val list = root.optJSONObject("data")?.optJSONArray("list") ?: return emptyList()
     val out = ArrayList<NeteaseRecentRecord>(list.length())
     for (i in 0 until list.length()) {
@@ -139,7 +139,8 @@ fun NeteaseRecentScreen(
     val offlineError = stringResource(R.string.qq_playlist_offline_unavailable)
     val needLoginText = stringResource(R.string.netease_recent_need_login)
     val state by produceState<NeteaseRecentUiState>(
-        initialValue = NeteaseRecentUiState.Loading
+        initialValue = NeteaseRecentUiState.Loading,
+        key1 = offlineMode
     ) {
         value = if (offlineMode) {
             NeteaseRecentUiState.Error(offlineError)
@@ -152,14 +153,9 @@ fun NeteaseRecentScreen(
                     runCatching {
                         val raw = client.getRecentPlayRecords(limit = 100)
                         val records = parseRecentRecords(raw)
-                        if (records.isEmpty()) {
-                            NeteaseRecentUiState.Error(
-                                "code=" + JSONObject(raw).optInt("code") + ", 无记录"
-                            )
-                        } else {
-                            NeteaseRecentUiState.Ready(records)
-                        }
+                        NeteaseRecentUiState.Ready(records)
                     }.getOrElse { error ->
+                        if (error is kotlinx.coroutines.CancellationException) throw error
                         NeteaseRecentUiState.Error(error.message ?: "unknown")
                     }
                 }
@@ -182,6 +178,7 @@ fun NeteaseRecentScreen(
                 durationMs = 0L,
                 coverUrl = record.coverUrl,
                 audioId = record.songId.toString(),
+                channelId = "netease",
                 sourceStableKey = "netease:${record.songId}"
             )
         }

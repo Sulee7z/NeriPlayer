@@ -1,0 +1,1039 @@
+package moe.ouom.neriplayer.data.playlist.usage
+
+import moe.ouom.neriplayer.data.model.stats.UsageEntry
+
+import android.content.Context
+import android.content.SharedPreferences
+import android.content.res.Configuration
+import android.content.res.Resources
+import android.os.LocaleList
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.common.locale.LanguageManager
+import moe.ouom.neriplayer.data.local.media.LocalSongSupport
+import moe.ouom.neriplayer.data.model.playlist.LocalPlaylist
+import moe.ouom.neriplayer.data.local.playlist.artist.buildLocalArtistSummaries
+import moe.ouom.neriplayer.data.local.playlist.system.FavoritesPlaylist
+import moe.ouom.neriplayer.data.local.playlist.system.LocalFilesPlaylist
+import moe.ouom.neriplayer.data.local.media.displayCoverUrl
+import moe.ouom.neriplayer.data.local.media.source.CrashLogCleanup
+import moe.ouom.neriplayer.data.local.media.source.LocalMediaCoverAccess
+import moe.ouom.neriplayer.data.local.media.source.LocalMediaDownloadAccess
+import moe.ouom.neriplayer.data.local.media.source.LocalMediaHostAccess
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.data.model.sync.SyncPlaylistUsageStat
+import moe.ouom.neriplayer.data.model.sync.SyncPlaybackCounterShard
+import moe.ouom.neriplayer.data.sync.model.SyncCausalToken
+import moe.ouom.neriplayer.data.sync.store.github.SecureTokenStorage
+import moe.ouom.neriplayer.data.local.database.store.PlaylistUsageRoomStore
+import moe.ouom.neriplayer.data.local.database.store.mockPlaylistUsageRoomStore
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.io.IOException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyBoolean
+import org.mockito.ArgumentMatchers.anyLong
+import org.mockito.ArgumentMatchers.anyList
+import org.mockito.ArgumentMatchers.anyString
+import org.mockito.Mockito.doAnswer
+import org.mockito.Mockito.mock
+import org.mockito.Mockito.mockStatic
+import org.mockito.Mockito.CALLS_REAL_METHODS
+import org.mockito.Mockito.`when`
+import java.util.Locale
+
+class PlaylistUsageRepositoryTest {
+    private val ownedScopes = mutableListOf<CoroutineScope>()
+    private val cachedAppContextField = LanguageManager::class.java.getDeclaredField("cachedAppContext")
+        .also { it.isAccessible = true }
+    private val cachedAppLocaleField = LanguageManager::class.java.getDeclaredField("cachedAppLocale")
+        .also { it.isAccessible = true }
+    private var originalCachedAppContext: Context? = null
+    private var originalCachedAppLocale: Locale? = null
+    private lateinit var originalLocale: Locale
+
+    @After
+    fun cancelOwnedRepositories() {
+        try {
+            ownedScopes.forEach { it.cancel() }
+            ownedScopes.clear()
+        } finally {
+            cachedAppContextField.set(LanguageManager, originalCachedAppContext)
+            cachedAppLocaleField.set(LanguageManager, originalCachedAppLocale)
+            Locale.setDefault(originalLocale)
+        }
+    }
+
+    @Before
+    fun bindEmptyMediaLibrary() {
+        // 每个用例的应用 Context 都是独立 mock，语言缓存不能跨用例复用
+        originalCachedAppContext = cachedAppContextField.get(LanguageManager) as Context?
+        originalCachedAppLocale = cachedAppLocaleField.get(LanguageManager) as Locale?
+        originalLocale = Locale.getDefault()
+        cachedAppContextField.set(LanguageManager, null)
+        cachedAppLocaleField.set(LanguageManager, null)
+        LocalMediaHostAccess.bind(
+            downloads = mock(LocalMediaDownloadAccess::class.java) { invocation ->
+                throw AssertionError("Unexpected download query in usage fixture: ${invocation.method.name}")
+            },
+            covers = object : LocalMediaCoverAccess {
+                override fun peekLocalCoverUri(song: SongItem): String? = null
+
+                override fun getLocalCoverUri(
+                    context: Context,
+                    song: SongItem,
+                    resolveLocalMediaFallback: Boolean
+                ): String? = null
+            },
+            crashLogs = CrashLogCleanup {
+                throw AssertionError("Unexpected crash log cleanup in usage fixture")
+            }
+        )
+    }
+
+    @Test
+    fun `artist usage refresh replaces stale cover after local metadata changes`() {
+        val context = mockLocalizedContext()
+        val playlists = listOf(LocalPlaylist(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            songs = mutableListOf(localSong(null))
+        ))
+        val artist = buildLocalArtistSummaries(playlists, context).single()
+        val repo = createRepository(context)
+        repo.recordOpen(
+            id = artist.id,
+            name = artist.name,
+            picUrl = "file:///covers/stale.jpg",
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL_ARTIST,
+            now = 100L
+        )
+        mockStatic(Class.forName("moe.ouom.neriplayer.data.local.media.MediaDisplayExtensionsKt"), CALLS_REAL_METHODS).use { extensions ->
+            extensions.`when`<String?> { artist.displayCoverUrl(context, true) }
+                .thenReturn("file:///covers/refreshed.jpg")
+
+            repo.syncLocalArtistEntries(playlists, resolveLocalMetadataFallback = false)
+            assertEquals("file:///covers/stale.jpg", repo.frequentPlaylistsFlow.value.single().picUrl)
+            repo.syncLocalArtistEntries(playlists, resolveLocalMetadataFallback = true)
+            assertEquals("file:///covers/refreshed.jpg", repo.frequentPlaylistsFlow.value.single().picUrl)
+        }
+    }
+
+    @Test
+    fun `full local cover refresh replaces a stale cached cover`() {
+        assertEquals(
+            "file:///covers/refreshed.jpg",
+            resolveRefreshedLocalUsageCover(
+                immediateCover = null,
+                resolvedFallback = "file:///covers/refreshed.jpg",
+                cachedCover = "file:///covers/stale.jpg",
+                resolveLocalMetadataFallback = true
+            )
+        )
+        assertEquals(
+            "file:///covers/stale.jpg",
+            resolveRefreshedLocalUsageCover(
+                immediateCover = null,
+                resolvedFallback = "file:///covers/refreshed.jpg",
+                cachedCover = "file:///covers/stale.jpg",
+                resolveLocalMetadataFallback = false
+            )
+        )
+    }
+
+    @get:Rule
+    val tempFolder = TemporaryFolder()
+
+    @Test
+    fun `usage key keeps bili subtype to avoid compose key collisions`() {
+        val created = usageEntry(id = 6998514L, subtype = "CREATED_FAVORITE")
+        val collection = usageEntry(id = 6998514L, subtype = "COLLECTION")
+
+        assertEquals("bili:6998514:CREATED_FAVORITE", created.usageKey())
+        assertEquals("bili:6998514:COLLECTION", collection.usageKey())
+    }
+
+    @Test
+    fun `normalize usage entries keeps different subtypes and merges exact duplicates`() {
+        val olderCreated = usageEntry(
+            id = 6998514L,
+            subtype = "CREATED_FAVORITE",
+            lastOpened = 100L,
+            openCount = 2,
+            name = "旧收藏夹"
+        )
+        val newerCreated = olderCreated.copy(
+            name = "新收藏夹",
+            lastOpened = 300L,
+            openCount = 1
+        )
+        val collection = usageEntry(
+            id = 6998514L,
+            subtype = "COLLECTION",
+            lastOpened = 200L,
+            openCount = 4,
+            name = "合集"
+        )
+
+        val normalized = normalizeUsageEntries(listOf(olderCreated, collection, newerCreated))
+
+        assertEquals(2, normalized.size)
+        assertEquals("bili:6998514:CREATED_FAVORITE", normalized[0].usageKey())
+        assertEquals("新收藏夹", normalized[0].name)
+        assertEquals(3, normalized[0].openCount)
+        assertEquals("bili:6998514:COLLECTION", normalized[1].usageKey())
+    }
+
+    @Test
+    fun `blank subtype keeps legacy source id key`() {
+        assertEquals("bili:6998514", usageEntry(id = 6998514L, subtype = null).usageKey())
+        assertEquals("bili:6998514", usageEntry(id = 6998514L, subtype = " ").usageKey())
+    }
+
+    @Test
+    fun `normalize usage entries removes empty playlists`() {
+        val empty = usageEntry(id = 1L, subtype = "CREATED_FAVORITE", trackCount = 0)
+        val playable = usageEntry(id = 2L, subtype = "CREATED_FAVORITE", trackCount = 3)
+
+        val normalized = normalizeUsageEntries(listOf(empty, playable))
+
+        assertEquals(1, normalized.size)
+        assertEquals("bili:2:CREATED_FAVORITE", normalized.single().usageKey())
+    }
+
+    @Test
+    fun `normalization retains every distinct playlist statistic for sync`() {
+        val entries = (1L..101L).map { id ->
+            UsageEntry(
+                id = id,
+                name = "Playlist $id",
+                picUrl = null,
+                trackCount = 1,
+                source = "netease",
+                lastOpened = id,
+                openCount = 1
+            )
+        }
+
+        val normalized = normalizeUsageEntries(entries)
+
+        assertEquals(101, normalized.size)
+        assertEquals(
+            entries.map(UsageEntry::usageKey).toSet(),
+            normalized.map(UsageEntry::usageKey).toSet()
+        )
+    }
+
+    @Test
+    fun `normalization keeps local display cover when counter shards exist`() {
+        val repo = createRepository(mockContext())
+        val localCoverUrl = "file:///covers/local.jpg"
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = localCoverUrl,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+
+        assertEquals(localCoverUrl, repo.frequentPlaylistsFlow.value.single().picUrl)
+    }
+
+    @Test
+    fun `legacy usage JSON without counter shards loads without crashing`() {
+        tempFolder.newFile("playlist_usage.json").writeText(
+            """
+            [{
+              "id": 42,
+              "name": "旧歌单",
+              "picUrl": null,
+              "trackCount": 3,
+              "source": "netease",
+              "lastOpened": 100,
+              "openCount": 2
+            }]
+            """.trimIndent()
+        )
+
+        val repo = createRepository(mockContext())
+
+        val entry = repo.frequentPlaylistsFlow.value.single()
+        assertEquals(2, entry.openCount)
+        assertTrue(entry.counterShards.isEmpty())
+    }
+
+    @Test
+    fun `normalization ignores null legacy usage entries`() {
+        val valid = usageEntry(id = 42L, subtype = null, trackCount = 3)
+        @Suppress("UNCHECKED_CAST")
+        val legacyEntries = listOf(valid, null) as List<UsageEntry>
+
+        val normalized = normalizeUsageEntries(legacyEntries)
+
+        assertEquals(listOf(valid), normalized)
+    }
+
+    @Test
+    fun `record open removes stale empty playlist instead of keeping it`() {
+        val repo = createRepository(mockContext())
+
+        repo.recordOpen(
+            id = 42L,
+            name = "有效歌单",
+            picUrl = null,
+            trackCount = 3,
+            source = "netease",
+            now = 100L
+        )
+        repo.recordOpen(
+            id = 42L,
+            name = "空歌单",
+            picUrl = null,
+            trackCount = 0,
+            source = "netease",
+            now = 200L
+        )
+
+        assertTrue(repo.frequentPlaylistsFlow.value.isEmpty())
+    }
+
+    @Test
+    fun `update info promotes playlist only after detail has tracks`() {
+        val repo = createRepository(mockContext())
+
+        repo.updateInfo(
+            id = 7L,
+            name = "加载中的歌单",
+            picUrl = null,
+            trackCount = 0,
+            source = "youtubeMusic",
+            now = 100L
+        )
+        assertTrue(repo.frequentPlaylistsFlow.value.isEmpty())
+
+        repo.updateInfo(
+            id = 7L,
+            name = "已加载歌单",
+            picUrl = "cover",
+            trackCount = 8,
+            source = "youtubeMusic",
+            browseId = "VL7",
+            playlistId = "7",
+            now = 200L
+        )
+
+        val entry = repo.frequentPlaylistsFlow.value.single()
+        assertEquals("已加载歌单", entry.name)
+        assertEquals(8, entry.trackCount)
+        assertEquals(200L, entry.lastOpened)
+    }
+
+    @Test
+    fun `manual removal stays hidden when stale usage stats are merged`() {
+        val repo = createRepository(mockContext())
+
+        repo.recordOpen(
+            id = 42L,
+            name = "歌单",
+            picUrl = null,
+            trackCount = 3,
+            source = "netease",
+            now = 100L
+        )
+        repo.removeEntry(id = 42L, source = "netease")
+        repo.applyMergedStats(
+            listOf(
+                SyncPlaylistUsageStat(
+                    playlistKey = "netease:42",
+                    source = "netease",
+                    id = 42L,
+                    name = "歌单",
+                    trackCount = 3,
+                    lastOpenedAt = 100L,
+                    firstOpenedAt = 100L,
+                    openCount = 1
+                )
+            )
+        )
+
+        assertTrue(repo.frequentPlaylistsFlow.value.isEmpty())
+    }
+
+    @Test
+    fun `opening a manually removed playlist clears its hidden state`() {
+        val repo = createRepository(mockContext())
+
+        repo.recordOpen(
+            id = 42L,
+            name = "歌单",
+            picUrl = null,
+            trackCount = 3,
+            source = "netease",
+            now = 100L
+        )
+        repo.removeEntry(id = 42L, source = "netease")
+        repo.recordOpen(
+            id = 42L,
+            name = "歌单",
+            picUrl = null,
+            trackCount = 3,
+            source = "netease",
+            now = 300L
+        )
+
+        assertEquals(1, repo.frequentPlaylistsFlow.value.size)
+        assertEquals(300L, repo.frequentPlaylistsFlow.value.single().lastOpened)
+    }
+
+    @Test
+    fun `continue entry open keeps its display order`() {
+        val repo = createRepository(mockContext())
+        repo.recordOpen(
+            id = 1L,
+            name = "较早歌单",
+            picUrl = null,
+            trackCount = 1,
+            source = "netease",
+            now = 100L
+        )
+        repo.recordOpen(
+            id = 2L,
+            name = "较新歌单",
+            picUrl = null,
+            trackCount = 1,
+            source = "netease",
+            now = 200L
+        )
+        assertEquals(
+            listOf(200L, 100L),
+            repo.frequentPlaylistsFlow.value.map(UsageEntry::lastOpened)
+        )
+
+        repo.recordOpen(
+            id = 1L,
+            name = "较早歌单",
+            picUrl = null,
+            trackCount = 1,
+            source = "netease",
+            now = 300L,
+            updateLastOpened = false
+        )
+
+        assertEquals(
+            listOf(200L, 100L),
+            repo.frequentPlaylistsFlow.value.map(UsageEntry::lastOpened)
+        )
+        assertEquals(listOf(2L, 1L), repo.frequentPlaylistsFlow.value.map(UsageEntry::id))
+        assertEquals(100L, repo.frequentPlaylistsFlow.value.last().lastOpened)
+        assertEquals(2, repo.frequentPlaylistsFlow.value.last().openCount)
+        assertEquals(300L, repo.frequentPlaylistsFlow.value.last().counterShards.single().lastPlayedAt)
+    }
+
+    @Test
+    fun `bili usage keeps uploader subtitle when reopening and refreshing`() {
+        val repo = createRepository(mockContext())
+
+        repo.recordOpen(
+            id = 8801L,
+            name = "合集",
+            picUrl = "cover",
+            trackCount = 3,
+            source = "bili",
+            subtype = "COLLECTION",
+            subtitle = "UP 主",
+            now = 100L
+        )
+        repo.recordOpen(
+            id = 8801L,
+            name = "合集",
+            picUrl = "cover",
+            trackCount = 3,
+            source = "bili",
+            subtype = "COLLECTION",
+            now = 200L
+        )
+        repo.updateInfo(
+            id = 8801L,
+            name = "合集",
+            picUrl = "cover",
+            trackCount = 4,
+            source = "bili",
+            subtype = "COLLECTION",
+            now = 300L
+        )
+
+        val entry = repo.frequentPlaylistsFlow.value.single()
+        assertEquals("UP 主", entry.subtitle)
+        assertEquals(4, entry.trackCount)
+    }
+
+    @Test
+    fun `local playlist usage lookup keeps legacy local files cover`() {
+        val coverUrl = "file:///covers/local.jpg"
+        val legacyLocalFiles = LocalPlaylist(
+            id = -12L,
+            name = "本地文件",
+            songs = mutableListOf(localSong(coverUrl))
+        )
+
+        val lookup = buildLocalPlaylistUsageLookup(
+            playlists = listOf(legacyLocalFiles),
+            context = mockLocalizedContext()
+        )
+
+        val localFiles = lookup.getValue(LocalFilesPlaylist.SYSTEM_ID)
+        assertEquals(1, localFiles.songs.size)
+        assertEquals(coverUrl, localFiles.displayCoverUrl())
+    }
+
+    @Test
+    fun `canonical local playlists retain legacy system usage identity and durable counters`() = runTest {
+        val aliases = listOf(
+            Triple(-12L, "本地文件", LocalFilesPlaylist.SYSTEM_ID),
+            Triple(-12L, "Local Files", LocalFilesPlaylist.SYSTEM_ID),
+            Triple(-11L, "我喜欢的音乐", FavoritesPlaylist.SYSTEM_ID),
+            Triple(-11L, "My Favorite Music", FavoritesPlaylist.SYSTEM_ID)
+        )
+        for ((legacyId, legacyName, canonicalId) in aliases) {
+            val context = mockLocalizedContext()
+            val stored = UsageEntry(
+                id = legacyId, name = legacyName, picUrl = null, trackCount = 3,
+                source = PlaylistUsageRepository.SOURCE_LOCAL, lastOpened = 100, openCount = 7,
+                counterBaseOpenCount = 5,
+                counterShards = listOf(SyncPlaybackCounterShard(
+                    deviceId = "stored-device",
+                    epochStartedAt = 0,
+                    playCount = 2,
+                    firstPlayedAt = 80,
+                    lastPlayedAt = 100
+                )),
+                observedDeletionTokens = listOf(SyncCausalToken("removed-device", 2))
+            )
+            var durable = listOf(stored)
+            val room = mockPlaylistUsageRoomStore()
+            `when`(room.readIfRoomPrimary()).thenAnswer { durable }
+            doAnswer {
+                assertEquals(durable, it.getArgument<List<UsageEntry>>(0))
+                durable = it.getArgument<List<UsageEntry>>(1).toList()
+                Unit
+            }.`when`(room).writeIncremental(anyList(), anyList(), anyLong())
+            val repository = createRepository(context, room)
+            repository.syncLocalEntries(
+                playlists = listOf(LocalPlaylist(canonicalId, legacyName, mutableListOf(localSong(null)))),
+                resolveLocalMetadataFallback = false
+            )
+
+            assertEquals("legacy usage must not be mistaken for a deleted playlist", 1, repository.frequentPlaylistsFlow.value.size)
+            val retained = repository.frequentPlaylistsFlow.value.single()
+            assertEquals(legacyId, retained.id)
+            assertEquals(stored.usageKey(), retained.usageKey())
+            assertEquals(stored.openCount, retained.openCount)
+            assertEquals(stored.lastOpened, retained.lastOpened)
+            assertEquals(stored.counterShards, retained.counterShards)
+            assertEquals(stored.observedDeletionTokens, retained.observedDeletionTokens)
+            assertEquals(1, retained.trackCount)
+            assertTrue(repository.awaitInitialized())
+            assertEquals(listOf(retained), durable)
+            assertEquals(durable, createRepository(context, room).frequentPlaylistsFlow.value)
+        }
+    }
+
+    @Test
+    fun `legacy and canonical usage coexist without merging or incrementing either counter`() {
+        val context = mockLocalizedContext()
+        val repository = createRepository(context)
+        repository.recordOpen(-12, "本地文件", null, 3, source = PlaylistUsageRepository.SOURCE_LOCAL, now = 100)
+        repository.recordOpen(LocalFilesPlaylist.SYSTEM_ID, "本地文件", null, 3, source = PlaylistUsageRepository.SOURCE_LOCAL, now = 200)
+        val before = repository.frequentPlaylistsFlow.value.associateBy { it.id }
+
+        repository.syncLocalEntries(
+            playlists = listOf(LocalPlaylist(LocalFilesPlaylist.SYSTEM_ID, "本地文件", mutableListOf(localSong(null)))),
+            resolveLocalMetadataFallback = false
+        )
+
+        val after = repository.frequentPlaylistsFlow.value.associateBy { it.id }
+        assertEquals(before.keys, after.keys)
+        before.forEach { (id, original) ->
+            assertEquals(original.openCount, after.getValue(id).openCount)
+            assertEquals(original.counterShards, after.getValue(id).counterShards)
+            assertEquals(original.lastOpened, after.getValue(id).lastOpened)
+        }
+    }
+
+    @Test
+    fun `system usage aliases never match positive custom ids unrelated negative names or remote sources`() {
+        val context = mockLocalizedContext()
+        val repository = createRepository(context)
+        repository.recordOpen(12, "本地文件", null, 3, source = PlaylistUsageRepository.SOURCE_LOCAL, now = 100)
+        repository.recordOpen(-13, "custom playlist", null, 3, source = PlaylistUsageRepository.SOURCE_LOCAL, now = 200)
+        repository.recordOpen(-12, "本地文件", null, 3, source = "netease", now = 300)
+        val remote = repository.frequentPlaylistsFlow.value.single { it.source == "netease" }
+
+        repository.syncLocalEntries(
+            playlists = listOf(LocalPlaylist(LocalFilesPlaylist.SYSTEM_ID, "本地文件", mutableListOf(localSong(null)))),
+            resolveLocalMetadataFallback = false
+        )
+
+        assertEquals(listOf(remote), repository.frequentPlaylistsFlow.value)
+    }
+
+    @Test
+    fun `removing retained legacy system usage keeps its original tombstone and does not recreate canonical usage`() = runTest {
+        val context = mockLocalizedContext()
+        val repository = createRepository(context)
+        repository.recordOpen(-12, "Local Files", null, 3, source = PlaylistUsageRepository.SOURCE_LOCAL, now = 100)
+        val canonical = listOf(LocalPlaylist(LocalFilesPlaylist.SYSTEM_ID, "本地文件", mutableListOf(localSong(null))))
+        repository.syncLocalEntries(canonical, resolveLocalMetadataFallback = false)
+        assertEquals(-12L, repository.frequentPlaylistsFlow.value.single().id)
+
+        repository.removeEntry(-12, PlaylistUsageRepository.SOURCE_LOCAL)
+        repository.syncLocalEntries(canonical, resolveLocalMetadataFallback = false)
+
+        assertTrue(repository.awaitInitialized())
+        assertTrue(repository.frequentPlaylistsFlow.value.isEmpty())
+        assertEquals(listOf("local:-12"), repository.syncStatsAndDeletions().second.map { it.playlistKey })
+    }
+
+    @Test
+    fun `local files usage cover resolves with local metadata fallback`() {
+        val context = mockLocalizedContext()
+        val embeddedCoverUrl = "file://${tempFolder.root.resolve("local-cover.jpg").absolutePath}"
+        val localFiles = LocalPlaylist(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            songs = mutableListOf(
+                localSong(coverUrl = null).copy(customCoverUrl = embeddedCoverUrl)
+            )
+        )
+
+        val refreshedPicUrl = localFiles.displayCoverUrl(
+            context = context,
+            resolveLocalMetadataFallback = true
+        )
+
+        assertEquals(embeddedCoverUrl, refreshedPicUrl)
+    }
+
+    @Test
+    fun `sync local entries keeps favorites cover when newest song is local`() {
+        val context = mockLocalizedContext()
+        val repo = createRepository(context)
+        val localCoverUrl = "file:///covers/favorite-local.jpg"
+        val favorites = LocalPlaylist(
+            id = FavoritesPlaylist.SYSTEM_ID,
+            name = "我喜欢的音乐",
+            songs = mutableListOf(localSong(coverUrl = localCoverUrl))
+        )
+
+        repo.recordOpen(
+            id = FavoritesPlaylist.SYSTEM_ID,
+            name = "我喜欢的音乐",
+            picUrl = null,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.syncLocalEntries(playlists = listOf(favorites))
+
+        assertEquals(localCoverUrl, repo.frequentPlaylistsFlow.value.single().picUrl)
+    }
+
+    @Test
+    fun `sync local entries uses downloaded song cover for local files card`() {
+        val context = mockLocalizedContext()
+        val repo = createRepository(context)
+        val downloadedCoverUrl = "file:///covers/downloaded.jpg"
+        val localFiles = LocalPlaylist(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            songs = mutableListOf(localSong(coverUrl = null))
+        )
+        val downloadedCoverCandidates = listOf(localSong(coverUrl = downloadedCoverUrl))
+
+        assertEquals(
+            downloadedCoverUrl,
+            localFiles.displayCoverUrl(
+                context = context,
+                additionalCoverCandidates = downloadedCoverCandidates
+            )
+        )
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = null,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.syncLocalEntries(
+            playlists = listOf(localFiles),
+            localFilesCoverCandidates = downloadedCoverCandidates
+        )
+
+        val entry = repo.frequentPlaylistsFlow.value.single()
+        assertEquals(LocalFilesPlaylist.currentName(context), entry.name)
+        assertEquals(downloadedCoverUrl, entry.picUrl)
+        assertEquals(1, entry.trackCount)
+    }
+
+    @Test
+    fun `sync local entries keeps last known cover when fallback is temporarily blank`() {
+        val context = mockLocalizedContext()
+        val repo = createRepository(context)
+        val knownCoverUrl = "file:///covers/known-local.jpg"
+        val localFiles = LocalPlaylist(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            songs = mutableListOf(localSong(coverUrl = null))
+        )
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = knownCoverUrl,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.syncLocalEntries(playlists = listOf(localFiles))
+
+        assertEquals(knownCoverUrl, repo.frequentPlaylistsFlow.value.single().picUrl)
+    }
+
+    @Test
+    fun `lightweight local sync updates direct cover without media fallback`() {
+        val context = mockLocalizedContext()
+        val repo = createRepository(context)
+        val currentCoverUrl = "file:///covers/current-local.jpg"
+        val localFiles = LocalPlaylist(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            songs = mutableListOf(localSong(coverUrl = currentCoverUrl))
+        )
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = "file:///covers/stale-local.jpg",
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.syncLocalEntries(
+            playlists = listOf(localFiles),
+            resolveLocalMetadataFallback = false
+        )
+
+        assertEquals(currentCoverUrl, repo.frequentPlaylistsFlow.value.single().picUrl)
+    }
+
+    @Test
+    fun `sync local entries clears stale cover when local files becomes empty`() {
+        val context = mockLocalizedContext()
+        val repo = createRepository(context)
+        val knownCoverUrl = "file:///covers/stale-local.jpg"
+        val emptyLocalFiles = LocalPlaylist(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            songs = mutableListOf()
+        )
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = knownCoverUrl,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.syncLocalEntries(playlists = listOf(emptyLocalFiles))
+
+        assertTrue(repo.frequentPlaylistsFlow.value.isEmpty())
+    }
+
+    @Test
+    fun `opening local playlist without cover does not clear known cover`() {
+        val repo = createRepository(mockContext())
+        val knownCoverUrl = "file:///covers/known-local.jpg"
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = knownCoverUrl,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = null,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 200L
+        )
+
+        assertEquals(knownCoverUrl, repo.frequentPlaylistsFlow.value.single().picUrl)
+    }
+
+    @Test
+    fun `merged usage stats keep local cover when sync omits local file cover`() {
+        val repo = createRepository(mockContext())
+        val knownCoverUrl = "file:///covers/known-local.jpg"
+
+        repo.recordOpen(
+            id = LocalFilesPlaylist.SYSTEM_ID,
+            name = "本地文件",
+            picUrl = knownCoverUrl,
+            trackCount = 1,
+            source = PlaylistUsageRepository.SOURCE_LOCAL,
+            now = 100L
+        )
+        repo.applyMergedStats(
+            listOf(
+                SyncPlaylistUsageStat(
+                    playlistKey = "local:${LocalFilesPlaylist.SYSTEM_ID}",
+                    source = PlaylistUsageRepository.SOURCE_LOCAL,
+                    id = LocalFilesPlaylist.SYSTEM_ID,
+                    name = "本地文件",
+                    coverUrl = null,
+                    trackCount = 1,
+                    lastOpenedAt = 200L,
+                    firstOpenedAt = 100L,
+                    openCount = 2
+                )
+            )
+        )
+
+        assertEquals(knownCoverUrl, repo.frequentPlaylistsFlow.value.single().picUrl)
+    }
+
+    private fun usageEntry(
+        id: Long,
+        subtype: String?,
+        lastOpened: Long = 0L,
+        openCount: Int = 1,
+        name: String = "Bili",
+        trackCount: Int = 1
+    ): UsageEntry {
+        return UsageEntry(
+            id = id,
+            name = name,
+            picUrl = null,
+            trackCount = trackCount,
+            source = "bili",
+            lastOpened = lastOpened,
+            openCount = openCount,
+            subtype = subtype
+        )
+    }
+
+    @Test
+    fun `construction does not wait for usage loading and early mutations replay in order`() = runTest {
+        val stored = listOf(
+            UsageEntry(1, "stored", null, 3, "netease", lastOpened = 100, openCount = 1),
+            UsageEntry(2, "gone", null, 3, "netease", lastOpened = 90, openCount = 4)
+        )
+        val readStarted = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val room = mockPlaylistUsageRoomStore()
+        `when`(room.readIfRoomPrimary()).thenAnswer {
+            readStarted.countDown()
+            releaseRead.await()
+            stored
+        }
+        val reference = createRepository(mockContext(), roomReturning(stored))
+        val repository = createRepository(mockContext(), room, awaitInitialLoad = false)
+        assertTrue(readStarted.await(5, TimeUnit.SECONDS))
+
+        listOf(reference, repository).forEach { usage ->
+            usage.recordOpen(1, "renamed", null, 3, source = "netease", now = 300)
+            usage.removeEntry(2, "netease")
+            usage.updateInfo(3, "added", null, 5, source = "netease", now = 400)
+        }
+        assertTrue(repository.frequentPlaylistsFlow.value.isEmpty())
+        releaseRead.countDown()
+        repository.awaitInitialLoad()
+
+        val entries = repository.frequentPlaylistsFlow.value
+        assertEquals(reference.frequentPlaylistsFlow.value, entries)
+        assertEquals(listOf(3L to "added", 1L to "renamed"), entries.map { it.id to it.name })
+    }
+
+    @Test
+    fun `failed initial load retains early mutations until background recovery succeeds`() = runTest {
+        assertEarlyMutationsSurviveFailedLoad(backgroundRecovery = true)
+    }
+
+    @Test
+    fun `failed initial load retains early mutations until awaited recovery succeeds`() = runTest {
+        assertEarlyMutationsSurviveFailedLoad(backgroundRecovery = false)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private suspend fun TestScope.assertEarlyMutationsSurviveFailedLoad(backgroundRecovery: Boolean) {
+        var stored = listOf(
+            UsageEntry(1, "stored", null, 3, "netease", lastOpened = 100, openCount = 1),
+            UsageEntry(2, "gone", null, 3, "netease", lastOpened = 90, openCount = 4)
+        )
+        var unavailable = true
+        var firstRead = true
+        val readStarted = CountDownLatch(1)
+        val releaseRead = CountDownLatch(1)
+        val room = mockPlaylistUsageRoomStore()
+        `when`(room.readIfRoomPrimary()).thenAnswer {
+            if (firstRead) {
+                firstRead = false
+                readStarted.countDown()
+                releaseRead.await()
+            }
+            if (unavailable) throw IOException("primary temporarily unavailable")
+            stored
+        }
+        doAnswer {
+            assertEquals(stored, it.getArgument<List<UsageEntry>>(0))
+            stored = it.getArgument<List<UsageEntry>>(1).toList()
+            Unit
+        }.`when`(room).writeIncremental(anyList(), anyList(), anyLong())
+        val repository = createRepository(mockContext(), room, awaitInitialLoad = false)
+        try {
+            assertTrue(readStarted.await(5, TimeUnit.SECONDS))
+            val recoveryScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+            ownedScopes.add(recoveryScope)
+            PlaylistUsageRepository::class.java.getDeclaredField("scope")
+                .also { it.isAccessible = true }.set(repository, recoveryScope)
+
+            repository.recordOpen(1, "opened", null, 3, source = "netease", now = 300)
+            repository.updateInfo(1, "refreshed", null, 3, source = "netease", now = 400)
+            repository.removeEntry(2, "netease")
+            repository.updateInfo(3, "added", null, 5, source = "netease", now = 500)
+            releaseRead.countDown()
+            repository.awaitInitialLoad()
+            runCurrent()
+            assertTrue(repository.frequentPlaylistsFlow.value.isEmpty())
+            assertEquals(listOf(1L, 2L), stored.map { it.id })
+            assertTrue(!repository.awaitInitialized())
+
+            unavailable = false
+            if (backgroundRecovery) {
+                repository.recordOpen(9, "retry trigger", null, 1, source = "netease", now = 600)
+                runCurrent()
+            } else {
+                assertTrue(repository.awaitInitialized())
+            }
+            assertTrue(repository.awaitInitialized())
+            runCurrent()
+
+            val recovered = repository.frequentPlaylistsFlow.value
+            assertEquals(listOf(3L to "added", 1L to "refreshed"), recovered.map { it.id to it.name })
+            assertEquals(2, recovered.single { it.id == 1L }.openCount)
+            assertEquals(300L, recovered.single { it.id == 1L }.lastOpened)
+            assertEquals(recovered, stored)
+            assertTrue(repository.awaitInitialized())
+            runCurrent()
+            assertEquals(recovered, stored)
+            assertEquals(recovered, createRepository(mockContext(), room).frequentPlaylistsFlow.value)
+        } finally {
+            releaseRead.countDown()
+        }
+    }
+
+    private suspend fun roomReturning(entries: List<UsageEntry>): PlaylistUsageRoomStore {
+        return mockPlaylistUsageRoomStore().also { room ->
+            `when`(room.readIfRoomPrimary()).thenReturn(entries)
+        }
+    }
+
+    private fun createRepository(
+        context: Context,
+        room: PlaylistUsageRoomStore? = null,
+        awaitInitialLoad: Boolean = true
+    ): PlaylistUsageRepository {
+        val removals = mutableMapOf<String, Long>()
+        val storage = mock(SecureTokenStorage::class.java)
+        `when`(storage.getOrCreateDeviceId()).thenReturn("usage-fixture-device")
+        `when`(storage.getPlaylistUsageDeletions()).thenAnswer { removals.toMap() }
+        `when`(storage.getPlaylistUsageDeletionsConfirmed()).thenAnswer { removals.toMap() }
+        doAnswer {
+            val key = it.getArgument<String>(0)
+            val deletedAt = it.getArgument<Long>(1)
+            removals[key] = maxOf(removals[key] ?: 0L, deletedAt)
+            Unit
+        }.`when`(storage).addPlaylistUsageDeletion(anyString(), anyLong())
+        doAnswer {
+            removals.remove(it.getArgument<String>(0))
+            Unit
+        }.`when`(storage).removePlaylistUsageDeletion(anyString(), anyBoolean())
+        val repository = PlaylistUsageRepository(context, room)
+        PlaylistUsageRepository::class.java.getDeclaredField("syncStorage\$delegate")
+            .also { it.isAccessible = true }.set(repository, lazy { storage })
+        if (awaitInitialLoad) runBlocking { repository.awaitInitialLoad() }
+        val scope = PlaylistUsageRepository::class.java.getDeclaredField("scope")
+            .also { it.isAccessible = true }.get(repository) as CoroutineScope
+        ownedScopes.add(scope)
+        return repository
+    }
+
+    private fun mockContext(): Context {
+        val context = mock(Context::class.java)
+        `when`(context.filesDir).thenReturn(tempFolder.root)
+        `when`(context.applicationContext).thenReturn(context)
+        return context
+    }
+
+    private fun mockLocalizedContext(): Context {
+        val resources = mock(Resources::class.java)
+        val configuration = mock(Configuration::class.java)
+        val locales = mock(LocaleList::class.java)
+        val prefs = mock(SharedPreferences::class.java)
+        return mock(Context::class.java).apply {
+            `when`(resources.configuration).thenReturn(configuration)
+            `when`(configuration.locales).thenReturn(locales)
+            `when`(locales[0]).thenReturn(Locale.CHINA)
+            `when`(getSharedPreferences("language_settings", Context.MODE_PRIVATE)).thenReturn(prefs)
+            `when`(prefs.getString("selected_language", "")).thenReturn("")
+            `when`(filesDir).thenReturn(tempFolder.root)
+            `when`(applicationContext).thenReturn(this)
+            `when`(createConfigurationContext(any(Configuration::class.java))).thenReturn(this)
+            `when`(this.resources).thenReturn(resources)
+            `when`(getString(CoreCommonR.string.local_files)).thenReturn("本地文件")
+            `when`(getString(CoreCommonR.string.favorite_my_music)).thenReturn("我喜欢的音乐")
+            `when`(getString(CoreCommonR.string.music_unknown_artist)).thenReturn("未知歌手")
+        }
+    }
+
+    private fun localSong(coverUrl: String?): SongItem {
+        return SongItem(
+            id = 1L,
+            name = "Local Song",
+            artist = "Local Artist",
+            album = LocalSongSupport.LOCAL_ALBUM_IDENTITY,
+            albumId = 0L,
+            durationMs = 180_000L,
+            coverUrl = coverUrl,
+            mediaUri = "/music/local.mp3",
+            localFileName = "local.mp3",
+            localFilePath = "/music/local.mp3",
+            channelId = "local",
+            audioId = "1"
+        )
+    }
+}

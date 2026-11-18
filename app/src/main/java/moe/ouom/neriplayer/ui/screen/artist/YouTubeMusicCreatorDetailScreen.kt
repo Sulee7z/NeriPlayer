@@ -1,6 +1,9 @@
 package moe.ouom.neriplayer.ui.screen.artist
 
+import moe.ouom.neriplayer.ui.i18n.asString
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import android.app.Application
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -60,27 +64,34 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorDetail
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorItem
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorItemType
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSection
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSummary
+import coil.request.ImageRequest
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorDetail
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorHeader as CreatorHeader
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItem
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItemType
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSection
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSummary
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.ui.BlurTransformation
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.data.model.playlist.FavoritePlaylist
+import moe.ouom.neriplayer.data.playlist.favorite.FAVORITE_SOURCE_YOUTUBE_ARTIST
+import moe.ouom.neriplayer.platform.youtube.api.transport.stableYouTubeMusicId
+import moe.ouom.neriplayer.ui.theme.background.BlurTransformation
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.haptic.HapticTextButton
 import moe.ouom.neriplayer.ui.haptic.performHapticFeedback
-import moe.ouom.neriplayer.ui.util.currentWindowWidthDp
 import moe.ouom.neriplayer.ui.util.rememberSongDisplayCoverUrl
 import moe.ouom.neriplayer.ui.viewmodel.artist.YouTubeMusicCreatorDetailUiState
 import moe.ouom.neriplayer.ui.viewmodel.artist.YouTubeMusicCreatorDetailViewModel
@@ -125,6 +136,44 @@ internal fun youtubeMusicCreatorDetailViewModelKey(creatorBrowseId: String): Str
     return "youtube_music_creator_detail_view_model_$creatorBrowseId"
 }
 
+internal fun createYouTubeMusicCreatorFavorite(
+    creator: YouTubeMusicCreatorSummary,
+    header: CreatorHeader?
+): FavoritePlaylist {
+    val currentHeader = header.matchingCreatorOrBlank(creator)
+    return FavoritePlaylist(
+        id = stableYouTubeMusicId(creator.browseId),
+        name = currentHeader.title.ifBlank { creator.title },
+        coverUrl = currentHeader.coverUrl.ifBlank { creator.coverUrl }.takeIf { it.isNotBlank() },
+        trackCount = 0,
+        source = FAVORITE_SOURCE_YOUTUBE_ARTIST,
+        browseId = creator.browseId,
+        subtitle = currentHeader.subtitle.ifBlank { creator.subtitle }.takeIf { it.isNotBlank() },
+        songs = emptyList()
+    )
+}
+
+private fun CreatorHeader?.matchingCreatorOrBlank(creator: YouTubeMusicCreatorSummary): CreatorHeader =
+    this?.takeIf { it.browseId == creator.browseId }
+        ?: CreatorHeader(browseId = creator.browseId, title = "", subtitle = "", coverUrl = "")
+
+internal fun resolveYouTubeMusicCreatorDetail(
+    uiState: YouTubeMusicCreatorDetailUiState,
+    creator: YouTubeMusicCreatorSummary?
+): YouTubeMusicCreatorDetail? {
+    return uiState.detail ?: creator?.let {
+        YouTubeMusicCreatorDetail(
+            header = CreatorHeader(
+                browseId = it.browseId,
+                title = it.title,
+                subtitle = it.subtitle,
+                coverUrl = it.coverUrl
+            ),
+            sections = emptyList()
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YouTubeMusicCreatorDetailScreen(
@@ -149,7 +198,7 @@ fun YouTubeMusicCreatorDetailScreen(
     )
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val miniPlayerHeight = LocalMiniPlayerHeight.current
-    val isTabletLayout = currentWindowWidthDp() >= 720.dp
+    val isTabletLayout = LocalConfiguration.current.smallestScreenWidthDp >= 600
     val listState = rememberSaveable(creator.browseId, saver = LazyListState.Saver) {
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
     }
@@ -179,7 +228,7 @@ fun YouTubeMusicCreatorDetailScreen(
                     HapticIconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.cd_back)
+                            contentDescription = stringResource(CoreCommonR.string.cd_back)
                         )
                     }
                 },
@@ -203,7 +252,9 @@ fun YouTubeMusicCreatorDetailScreen(
                 },
                 onCreatorClick = onCreatorClick,
                 onSectionMoreClick = onSectionMoreClick,
-                isTabletLayout = isTabletLayout
+                isTabletLayout = isTabletLayout,
+                fallbackCreator = creator,
+                followFavorite = createYouTubeMusicCreatorFavorite(creator, uiState.detail?.header)
             )
         }
     }
@@ -223,9 +274,11 @@ internal fun YouTubeMusicCreatorDetailContent(
     onPlaylistClick: (YouTubeMusicPlaylist) -> Unit,
     onCreatorClick: (YouTubeMusicCreatorSummary) -> Unit,
     onSectionMoreClick: (YouTubeMusicCreatorSection) -> Unit,
-    isTabletLayout: Boolean
+    isTabletLayout: Boolean,
+    fallbackCreator: YouTubeMusicCreatorSummary? = null,
+    followFavorite: FavoritePlaylist? = null
 ) {
-    val detail = uiState.detail
+    val detail = resolveYouTubeMusicCreatorDetail(uiState, fallbackCreator)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -253,133 +306,236 @@ internal fun YouTubeMusicCreatorDetailContent(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = uiState.error.orEmpty(),
+                            text = uiState.error?.asString().orEmpty(),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error
                         )
                         Spacer(Modifier.height(12.dp))
                         HapticTextButton(onClick = onRetry) {
-                            Text(stringResource(R.string.action_retry))
+                            Text(stringResource(CoreCommonR.string.action_retry))
                         }
                     }
                 }
             }
             else -> {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .widthIn(max = 1080.dp)
-                        .fillMaxSize(),
-                    contentPadding = PaddingValues(
-                        start = if (isTabletLayout) 36.dp else 20.dp,
-                        end = if (isTabletLayout) 36.dp else 20.dp,
-                        top = 4.dp,
-                        bottom = 40.dp + miniPlayerHeight
-                    ),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                if (uiState.loading) {
-                    item(key = "creator-loading") {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                CreatorDetailAdaptiveLayout(
+                    tabletDevice = isTabletLayout,
+                    miniPlayerHeight = miniPlayerHeight,
+                    profile = {
+                        YouTubeMusicCreatorHeader(
+                            detail = detail,
+                            offlineMode = offlineMode,
+                            isTabletLayout = true,
+                            followFavorite = followFavorite
+                        )
                     }
-                }
-                item(key = "creator-header") {
-                    YouTubeMusicCreatorHeader(
-                        detail = detail,
-                        offlineMode = offlineMode,
-                        isTabletLayout = isTabletLayout
-                    )
-                }
-                if (!uiState.error.isNullOrBlank()) {
-                    item(key = "creator-error") {
-                        Row(
-                            modifier = Modifier.padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = uiState.error,
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            HapticTextButton(onClick = onRetry) {
-                                Text(stringResource(R.string.action_retry))
+                ) { splitLayout ->
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .widthIn(max = 1080.dp)
+                            .fillMaxSize()
+                            .testTag("youtubeCreatorWorksList"),
+                        contentPadding = PaddingValues(
+                            start = 20.dp,
+                            end = 20.dp,
+                            top = if (splitLayout) 8.dp else 4.dp,
+                            bottom = if (splitLayout) 20.dp else 40.dp + miniPlayerHeight
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (uiState.loading) {
+                            item(key = "creator-loading") {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                             }
                         }
-                    }
-                }
-                if (detail.sections.isEmpty()) {
-                    item(key = "creator-empty") {
-                        Text(
-                            text = stringResource(R.string.youtube_creator_sections_empty),
-                            modifier = Modifier.padding(vertical = 28.dp),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                } else {
-                    itemsIndexed(
-                        items = detail.sections,
-                        key = { index, section -> "creator-section-$index-${section.title}" }
-                    ) { sectionIndex, section ->
-                        YouTubeMusicCreatorSection(
-                            section = section,
-                            creatorBrowseId = creatorBrowseId,
-                            sectionIndex = sectionIndex,
-                            stateHolder = sectionStateHolder,
-                            offlineMode = offlineMode,
-                            isPlaybackQueueLoading =
-                                uiState.playbackQueueLoadingSectionKey ==
-                                    youtubeMusicCreatorSectionKey(section),
-                            playbackQueueError = uiState.playbackQueueError.takeIf {
-                                uiState.playbackQueueErrorSectionKey ==
-                                    youtubeMusicCreatorSectionKey(section)
-                            },
-                            onSongClick = onSongClick,
-                            onSectionSongClick = onSectionSongClick,
-                            onPlaylistClick = onPlaylistClick,
-                            onCreatorClick = onCreatorClick,
-                            onSectionMoreClick = onSectionMoreClick
-                        )
+                        item(key = "creator-header") {
+                            if (!splitLayout) {
+                                YouTubeMusicCreatorHeader(
+                                    detail = detail,
+                                    offlineMode = offlineMode,
+                                    isTabletLayout = false,
+                                    followFavorite = followFavorite
+                                )
+                            }
+                        }
+                        if (uiState.error != null) {
+                            item(key = "creator-error") {
+                                Row(
+                                    modifier = Modifier.padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = uiState.error.asString(),
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    HapticTextButton(onClick = onRetry) {
+                                        Text(stringResource(CoreCommonR.string.action_retry))
+                                    }
+                                }
+                            }
+                        }
+                        if (detail.sections.isEmpty() && uiState.detail != null) {
+                            item(key = "creator-empty") {
+                                Text(
+                                    text = stringResource(CoreCommonR.string.youtube_creator_sections_empty),
+                                    modifier = Modifier.padding(vertical = 28.dp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            }
+                        } else {
+                            itemsIndexed(
+                                items = detail.sections,
+                                key = { index, section -> "creator-section-$index-${section.title}" }
+                            ) { sectionIndex, section ->
+                                YouTubeMusicCreatorSection(
+                                    section = section,
+                                    creatorBrowseId = creatorBrowseId,
+                                    sectionIndex = sectionIndex,
+                                    stateHolder = sectionStateHolder,
+                                    offlineMode = offlineMode,
+                                    isPlaybackQueueLoading =
+                                        uiState.playbackQueueLoadingSectionKey ==
+                                            youtubeMusicCreatorSectionKey(section),
+                                    playbackQueueError = uiState.playbackQueueError.takeIf {
+                                        uiState.playbackQueueErrorSectionKey ==
+                                            youtubeMusicCreatorSectionKey(section)
+                                    }?.asString(),
+                                    onSongClick = onSongClick,
+                                    onSectionSongClick = onSectionSongClick,
+                                    onPlaylistClick = onPlaylistClick,
+                                    onCreatorClick = onCreatorClick,
+                                    onSectionMoreClick = onSectionMoreClick,
+                                    tabletLayout = splitLayout
+                                )
+                            }
+                        }
                     }
                 }
             }
         }
     }
 }
-}
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun YouTubeMusicCreatorHeader(
     detail: YouTubeMusicCreatorDetail,
     offlineMode: Boolean,
-    isTabletLayout: Boolean
+    isTabletLayout: Boolean,
+    followFavorite: FavoritePlaylist?
+) {
+    if (isTabletLayout) {
+        YouTubeMusicCreatorTabletProfile(detail.header, offlineMode, followFavorite)
+        return
+    }
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        shape = neriRoundedShape(28.dp)
+    ) {
+        YouTubeMusicCreatorPhoneHero(header = detail.header, offlineMode = offlineMode)
+        YouTubeMusicCreatorPhoneDetails(header = detail.header, followFavorite = followFavorite)
+    }
+}
+
+internal fun youtubeMusicCreatorPhoneMetadata(header: CreatorHeader): List<String> = listOfNotNull(
+    header.monthlyListenerCountText.takeIf { it.isNotBlank() },
+    header.subscriberCountText.takeIf { it.isNotBlank() }
+).distinct()
+
+private fun creatorHeaderBackdropRequest(
+    context: Context,
+    coverUrl: String?,
+    offlineMode: Boolean
+): ImageRequest = offlineCachedImageRequest(
+    context = context,
+    data = coverUrl,
+    sizePx = CREATOR_HEADER_BACKDROP_SIZE_PX,
+    allowHardware = false,
+    offlineMode = offlineMode,
+    transformations = if (coverUrl != null) {
+        listOf(
+            BlurTransformation(
+                context = context,
+                radius = CREATOR_HEADER_BACKDROP_BLUR_RADIUS
+            )
+        )
+    } else {
+        emptyList()
+    }
+)
+
+@Composable
+private fun YouTubeMusicCreatorPhoneHero(
+    header: CreatorHeader,
+    offlineMode: Boolean
 ) {
     val context = LocalContext.current
-    val header = detail.header
     val coverUrl = header.coverUrl.takeIf { it.isNotBlank() }
-    val heroHeight = if (isTabletLayout) 260.dp else 210.dp
-    val avatarSize = if (isTabletLayout) 82.dp else 64.dp
     val backdropRequest = remember(context, coverUrl, offlineMode) {
-        offlineCachedImageRequest(
-            context = context,
-            data = coverUrl,
-            sizePx = CREATOR_HEADER_BACKDROP_SIZE_PX,
-            allowHardware = false,
-            offlineMode = offlineMode,
-            transformations = if (coverUrl != null) {
-                listOf(
-                    BlurTransformation(
-                        context = context,
-                        radius = CREATOR_HEADER_BACKDROP_BLUR_RADIUS
-                    )
-                )
-            } else {
-                emptyList()
-            }
-        )
+        creatorHeaderBackdropRequest(context, coverUrl, offlineMode)
     }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 210.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        if (coverUrl != null) {
+            AsyncImage(
+                model = backdropRequest,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize()
+            )
+        }
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(Color.Black.copy(alpha = 0.32f))
+        )
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            YouTubeMusicCreatorHeroAvatar(coverUrl = coverUrl, title = header.title, offlineMode = offlineMode)
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = header.title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.White,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (header.subtitle.isNotBlank()) {
+                    Text(
+                        text = header.subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.82f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun YouTubeMusicCreatorHeroAvatar(
+    coverUrl: String?,
+    title: String,
+    offlineMode: Boolean
+) {
+    val context = LocalContext.current
+    val avatarSize = 64.dp
     val avatarRequest = remember(context, coverUrl, offlineMode) {
         offlineCachedImageRequest(
             context = context,
@@ -389,111 +545,76 @@ private fun YouTubeMusicCreatorHeader(
             offlineMode = offlineMode
         )
     }
-    ElevatedCard(
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        shape = RoundedCornerShape(28.dp)
+            .size(avatarSize)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(heroHeight)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            if (coverUrl != null) {
-                AsyncImage(
-                    model = backdropRequest,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f))
+        if (coverUrl != null) {
+            AsyncImage(
+                model = avatarRequest,
+                contentDescription = title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(avatarSize)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (coverUrl != null) {
-                        AsyncImage(
-                            model = avatarRequest,
-                            contentDescription = header.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Filled.AccountCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(avatarSize * 0.68f),
-                            tint = Color.White
-                        )
-                    }
-                }
-                Spacer(Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = header.title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = Color.White,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (header.subtitle.isNotBlank()) {
-                        Text(
-                            text = header.subtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = Color.White.copy(alpha = 0.82f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-            }
+        } else {
+            Icon(
+                imageVector = Icons.Filled.AccountCircle,
+                contentDescription = null,
+                modifier = Modifier.size(avatarSize * 0.68f),
+                tint = Color.White
+            )
         }
-        Column(modifier = Modifier.padding(20.dp)) {
-            val metadata = listOfNotNull(
-                header.monthlyListenerCountText.takeIf { it.isNotBlank() },
-                header.subscriberCountText.takeIf { it.isNotBlank() }
-            ).distinct()
-            if (metadata.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    metadata.forEach { value ->
-                        AssistChip(
-                            onClick = {},
-                            label = { Text(value) }
-                        )
-                    }
-                }
+    }
+}
+
+@Composable
+private fun YouTubeMusicCreatorPhoneDetails(
+    header: CreatorHeader,
+    followFavorite: FavoritePlaylist?
+) {
+    Column(modifier = Modifier.padding(20.dp)) {
+        val metadata = youtubeMusicCreatorPhoneMetadata(header)
+        val hasMetadata = metadata.isNotEmpty()
+        val hasDescription = header.description.isNotBlank()
+        if (hasMetadata) {
+            CreatorMetadataChips(metadata = metadata, verticalSpacing = 8.dp)
+        }
+        if (hasDescription) {
+            if (hasMetadata) {
+                Spacer(Modifier.height(10.dp))
             }
-            if (header.description.isNotBlank()) {
-                if (metadata.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                }
-                Text(
-                    text = header.description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 4,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Text(
+                text = header.description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (followFavorite != null) {
+            if (hasMetadata || hasDescription) {
+                Spacer(Modifier.height(14.dp))
             }
+            CreatorFollowButton(favorite = followFavorite)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun CreatorMetadataChips(metadata: List<String>, verticalSpacing: Dp) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(verticalSpacing)
+    ) {
+        metadata.forEach { value ->
+            AssistChip(
+                onClick = {},
+                label = { Text(value) }
+            )
         }
     }
 }
@@ -511,7 +632,8 @@ private fun YouTubeMusicCreatorSection(
     onSectionSongClick: (YouTubeMusicCreatorSection, YouTubeMusicCreatorItem) -> Unit,
     onPlaylistClick: (YouTubeMusicPlaylist) -> Unit,
     onCreatorClick: (YouTubeMusicCreatorSummary) -> Unit,
-    onSectionMoreClick: (YouTubeMusicCreatorSection) -> Unit
+    onSectionMoreClick: (YouTubeMusicCreatorSection) -> Unit,
+    tabletLayout: Boolean
 ) {
     val playableItems = section.items.mapNotNull { item ->
         item.toCreatorSongItem()?.let { item to it }
@@ -540,7 +662,7 @@ private fun YouTubeMusicCreatorSection(
                     Icon(
                         imageVector = Icons.AutoMirrored.Outlined.KeyboardArrowRight,
                         contentDescription = stringResource(
-                            R.string.youtube_creator_view_all,
+                            CoreCommonR.string.youtube_creator_view_all,
                             section.title
                         )
                     )
@@ -602,7 +724,8 @@ private fun YouTubeMusicCreatorSection(
                             offlineMode = offlineMode,
                             onSongClick = onSongClick,
                             onPlaylistClick = onPlaylistClick,
-                            onCreatorClick = onCreatorClick
+                            onCreatorClick = onCreatorClick,
+                            tabletLayout = tabletLayout
                         )
                     }
                 }
@@ -612,7 +735,7 @@ private fun YouTubeMusicCreatorSection(
 }
 
 @Composable
-private fun CreatorPlayableRow(
+internal fun CreatorPlayableRow(
     song: SongItem,
     index: Int,
     offlineMode: Boolean,
@@ -637,32 +760,7 @@ private fun CreatorPlayableRow(
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!coverUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = fastScrollableImageRequest(
-                        context = context,
-                        data = coverUrl,
-                        sizePx = 128,
-                        offlineMode = offlineMode
-                    ),
-                    contentDescription = song.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.PlayCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
+        CreatorSongCover(coverUrl = coverUrl, contentDescription = song.name, offlineMode = offlineMode)
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -690,43 +788,61 @@ private fun CreatorPlayableRow(
 }
 
 @Composable
+internal fun CreatorSongCover(
+    coverUrl: String?,
+    contentDescription: String,
+    offlineMode: Boolean
+) {
+    val context = LocalContext.current
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .clip(neriRoundedShape(8.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (!coverUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = fastScrollableImageRequest(
+                    context = context,
+                    data = coverUrl,
+                    sizePx = 128,
+                    offlineMode = offlineMode
+                ),
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Filled.PlayCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
 private fun CreatorSectionCard(
     item: YouTubeMusicCreatorItem,
     offlineMode: Boolean,
     onSongClick: (List<SongItem>, Int) -> Unit,
     onPlaylistClick: (YouTubeMusicPlaylist) -> Unit,
-    onCreatorClick: (YouTubeMusicCreatorSummary) -> Unit
+    onCreatorClick: (YouTubeMusicCreatorSummary) -> Unit,
+    tabletLayout: Boolean
 ) {
     val context = LocalContext.current
-    val onClick: () -> Unit = {
-        context.performHapticFeedback()
-        val song = item.toCreatorSongItem()
-        if (song != null) {
-            onSongClick(listOf(song), 0)
-        } else {
-            when (item.type) {
-                YouTubeMusicCreatorItemType.Creator -> {
-                    item.toCreatorSummary()?.let(onCreatorClick)
-                }
-                YouTubeMusicCreatorItemType.Album,
-                YouTubeMusicCreatorItemType.Playlist -> {
-                    item.toCreatorPlaylist()?.let(onPlaylistClick)
-                }
-                YouTubeMusicCreatorItemType.Song,
-                YouTubeMusicCreatorItemType.Video -> Unit
-            }
-        }
-    }
+    val onClick = creatorItemClickAction(context, item, onSongClick, onPlaylistClick, onCreatorClick)
     Column(
         modifier = Modifier
-            .width(148.dp)
+            .width(if (tabletLayout) 176.dp else 148.dp)
             .clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .clip(RoundedCornerShape(8.dp)),
+                .clip(neriRoundedShape(8.dp)),
             contentAlignment = Alignment.Center
         ) {
             if (item.coverUrl.isNotBlank()) {
@@ -766,6 +882,41 @@ private fun CreatorSectionCard(
                 overflow = TextOverflow.Ellipsis
             )
         }
+    }
+}
+
+private fun creatorItemClickAction(
+    context: Context,
+    item: YouTubeMusicCreatorItem,
+    onSongClick: (List<SongItem>, Int) -> Unit,
+    onPlaylistClick: (YouTubeMusicPlaylist) -> Unit,
+    onCreatorClick: (YouTubeMusicCreatorSummary) -> Unit
+): () -> Unit = {
+    context.performHapticFeedback()
+    openYouTubeMusicCreatorItem(item, onSongClick, onPlaylistClick, onCreatorClick)
+}
+
+internal fun openYouTubeMusicCreatorItem(
+    item: YouTubeMusicCreatorItem,
+    onSongClick: (List<SongItem>, Int) -> Unit,
+    onPlaylistClick: (YouTubeMusicPlaylist) -> Unit,
+    onCreatorClick: (YouTubeMusicCreatorSummary) -> Unit
+) {
+    val song = item.toCreatorSongItem()
+    if (song != null) {
+        onSongClick(listOf(song), 0)
+        return
+    }
+    when (item.type) {
+        YouTubeMusicCreatorItemType.Creator -> {
+            item.toCreatorSummary()?.let(onCreatorClick)
+        }
+        YouTubeMusicCreatorItemType.Album,
+        YouTubeMusicCreatorItemType.Playlist -> {
+            item.toCreatorPlaylist()?.let(onPlaylistClick)
+        }
+        YouTubeMusicCreatorItemType.Song,
+        YouTubeMusicCreatorItemType.Video -> Unit
     }
 }
 

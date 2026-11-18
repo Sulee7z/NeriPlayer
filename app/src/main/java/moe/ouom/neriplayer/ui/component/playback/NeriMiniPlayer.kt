@@ -23,15 +23,22 @@ package moe.ouom.neriplayer.ui.component.playback
  * Created: 2025/8/8
  */
 
+import androidx.compose.runtime.SideEffect
+import android.graphics.Bitmap
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -41,6 +48,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.SkipNext
+import androidx.compose.material.icons.outlined.SkipPrevious
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -49,44 +58,94 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.drawable.toBitmap
 import coil.compose.AsyncImage
+import moe.ouom.neriplayer.ui.animation.sharedCoverSource
+import moe.ouom.neriplayer.ui.animation.shouldOpenNowPlayingFromDrag
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import moe.ouom.neriplayer.ui.animation.LocalSharedCoverFlight
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import moe.ouom.neriplayer.ui.theme.LocalHasCustomBackground
+import moe.ouom.neriplayer.ui.theme.NeriDesign
+import moe.ouom.neriplayer.ui.theme.supportsContinuousCornerOutline
+import moe.ouom.neriplayer.ui.playback.visual.shouldUseNowPlayingContainerMorph
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassRole
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSurface
-import moe.ouom.neriplayer.util.media.fastScrollableImageRequest
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
+import moe.ouom.neriplayer.util.media.copyBitmapForRetainedDisplay
+import moe.ouom.neriplayer.util.media.fastScrollableImageRequest
+import moe.ouom.neriplayer.util.media.RetainedPlaybackCoverBitmapCache
+import moe.ouom.neriplayer.util.media.PLAYBACK_COVER_BITMAP_MAX_DIMENSION_PX
+import moe.ouom.neriplayer.util.format.formatDuration
+import moe.ouom.neriplayer.util.platform.PHONE_SMALLEST_SCREEN_WIDTH_DP
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sign
+import kotlin.time.Duration.Companion.milliseconds
 
 object NeriMiniPlayerDefaults {
     val Height = 64.dp
+    val TabletHeight = 80.dp
+    internal val TabletProgressHeight = 12.dp
+    internal val TabletProgressThickness = 4.dp
+    internal val TabletMetadataVerticalPadding = 2.dp
     internal val ContentVerticalPadding = 8.dp
+    internal val ContentHorizontalPadding = 12.dp
+    internal val ContentSpacing = 12.dp
+    internal val CoverSize = 40.dp
+    internal val ControlButtonSize = 48.dp
+    internal val MinMetadataWidthWithSkipControls = 144.dp
+}
+
+internal fun shouldShowMiniPlayerSkipControls(
+    smallestScreenWidthDp: Int,
+    availableSurfaceWidth: Dp
+): Boolean {
+    val requiredWidth = NeriMiniPlayerDefaults.ContentHorizontalPadding * 2 +
+        NeriMiniPlayerDefaults.CoverSize + NeriMiniPlayerDefaults.ContentSpacing * 2 +
+        NeriMiniPlayerDefaults.MinMetadataWidthWithSkipControls +
+        NeriMiniPlayerDefaults.ControlButtonSize * 3
+    return smallestScreenWidthDp >= PHONE_SMALLEST_SCREEN_WIDTH_DP &&
+        availableSurfaceWidth >= requiredWidth
 }
 
 private const val MINI_PLAYER_COVER_CLEAR_DELAY_MS = 900L
@@ -96,6 +155,7 @@ private const val MINI_PLAYER_ARTIST_LINE_HEIGHT_DP = 20f
 private const val MINI_PLAYER_TITLE_MIN_VISUAL_FONT_SIZE_SP = 10f
 private const val MINI_PLAYER_ARTIST_MIN_VISUAL_FONT_SIZE_SP = 9f
 private const val MINI_PLAYER_METADATA_AUTO_SIZE_STEP_SP = 0.25f
+private const val MINI_PLAYER_COVER_FRAME_CACHE_LIMIT = 4
 
 internal data class MiniPlayerTextAutoSizeRange(
     val minFontSizeSp: Float,
@@ -125,33 +185,25 @@ internal fun resolveMiniPlayerTextAutoSizeRange(
     )
 }
 
+internal fun resolveMiniPlayerBaseFontSizeSp(fontSize: TextUnit): Float {
+    val value = fontSize.value
+    return if (fontSize.isSp && value.isFinite() && value > 0f) value else 16f
+}
+
 @Composable
-private fun rememberMiniPlayerTextAutoSizeRange(
+private fun currentMiniPlayerTextAutoSizeRange(
     style: TextStyle,
     maxLineHeightDp: Float,
     minVisualFontSizeSp: Float,
     lineHeightEm: Float
 ): MiniPlayerTextAutoSizeRange {
-    val fontScale = LocalDensity.current.fontScale
-    val baseFontSizeSp = style.fontSize.value.takeIf {
-        style.fontSize.isSp && it.isFinite() && it > 0f
-    } ?: 16f
-    val range = remember(
-        baseFontSizeSp,
-        maxLineHeightDp,
-        fontScale,
-        minVisualFontSizeSp,
-        lineHeightEm
-    ) {
-        resolveMiniPlayerTextAutoSizeRange(
-            baseFontSizeSp = baseFontSizeSp,
-            maxLineHeightDp = maxLineHeightDp,
-            fontScale = fontScale,
-            minVisualFontSizeSp = minVisualFontSizeSp,
-            lineHeightEm = lineHeightEm
-        )
-    }
-    return range
+    return resolveMiniPlayerTextAutoSizeRange(
+        baseFontSizeSp = resolveMiniPlayerBaseFontSizeSp(style.fontSize),
+        maxLineHeightDp = maxLineHeightDp,
+        fontScale = LocalDensity.current.fontScale,
+        minVisualFontSizeSp = minVisualFontSizeSp,
+        lineHeightEm = lineHeightEm
+    )
 }
 
 @Composable
@@ -168,7 +220,7 @@ private fun rememberMiniPlayerTextAutoSize(
     }
 }
 
-private fun TextStyle.miniPlayerLineHeightEm(): Float {
+internal fun TextStyle.miniPlayerLineHeightEm(): Float {
     val fontSizeUnit = fontSize
     val lineHeightUnit = lineHeight
     val fontSizeValue = fontSizeUnit.value
@@ -189,20 +241,169 @@ private fun TextStyle.withMiniPlayerLineHeight(lineHeightEm: Float): TextStyle =
     lineHeight = lineHeightEm.em
 )
 
+private fun String?.trimmedNonEmptyOrNull(): String? = this?.trim()?.takeIf(String::isNotEmpty)
+
 internal fun resolveMiniPlayerDisplayedCoverUrl(
     requestedCoverUrl: String?,
     displayedCoverUrl: String?,
     requestSucceeded: Boolean,
     clearDelayElapsed: Boolean = false
 ): String? {
-    val requested = requestedCoverUrl?.trim()?.takeIf { it.isNotEmpty() }
-    val displayed = displayedCoverUrl?.trim()?.takeIf { it.isNotEmpty() }
+    val requested = requestedCoverUrl.trimmedNonEmptyOrNull()
+    val displayed = displayedCoverUrl.trimmedNonEmptyOrNull()
     return when {
         requested == null && clearDelayElapsed -> null
         requested == null -> displayed
         requested == displayed || requestSucceeded -> requested
         else -> displayed
     }
+}
+
+internal data class MiniPlayerCoverFrame(
+    val coverUrl: String,
+    val identityKey: String,
+    val decodedBitmap: ImageBitmap? = null,
+    /**
+     * 每次重新进入同一封面时使用新的令牌, 防止旧的 Coil 回调污染新请求
+     */
+    val requestToken: Any = Unit
+)
+
+internal fun miniPlayerCoverIdentityKey(
+    identityKey: String?,
+    coverUrl: String?
+): String? {
+    return identityKey.trimmedNonEmptyOrNull() ?: coverUrl.trimmedNonEmptyOrNull()
+}
+
+internal fun sameMiniPlayerCoverRequest(
+    first: MiniPlayerCoverFrame?,
+    second: MiniPlayerCoverFrame?
+): Boolean {
+    if (first == null || second == null) return first == second
+    return first.coverUrl == second.coverUrl &&
+        first.identityKey == second.identityKey &&
+        first.requestToken == second.requestToken
+}
+
+internal fun sameMiniPlayerCoverFrame(
+    first: MiniPlayerCoverFrame?,
+    second: MiniPlayerCoverFrame?
+): Boolean {
+    if (first == null || second == null) return first == second
+    return first.coverUrl == second.coverUrl && first.identityKey == second.identityKey
+}
+
+internal fun shouldCommitMiniPlayerCoverRequest(
+    completedRequest: MiniPlayerCoverFrame,
+    latestRequest: MiniPlayerCoverFrame?
+): Boolean = sameMiniPlayerCoverRequest(completedRequest, latestRequest)
+
+internal fun shouldCommitMiniPlayerCoverFrame(
+    completedFrame: MiniPlayerCoverFrame,
+    latestRequestedFrame: MiniPlayerCoverFrame?,
+    latestRetainedFrame: MiniPlayerCoverFrame?,
+    currentIdentityKey: String?
+): Boolean {
+    latestRequestedFrame?.let { requestedFrame ->
+        return sameMiniPlayerCoverRequest(completedFrame, requestedFrame)
+    }
+    val retainedFrame = latestRetainedFrame ?: return false
+    if (!sameMiniPlayerCoverRequest(completedFrame, retainedFrame)) return false
+    val normalizedCurrentIdentity = currentIdentityKey.trimmedNonEmptyOrNull()
+    return normalizedCurrentIdentity == null ||
+        completedFrame.identityKey == normalizedCurrentIdentity
+}
+
+internal fun shouldClearMiniPlayerRetainedCoverAfterGrace(
+    requestedFrame: MiniPlayerCoverFrame?,
+    retainedFrame: MiniPlayerCoverFrame?,
+    failedFrame: MiniPlayerCoverFrame?,
+    clearDelayElapsed: Boolean,
+    hasCurrentSong: Boolean = true
+): Boolean {
+    if (!clearDelayElapsed || retainedFrame == null || hasCurrentSong) return false
+    if (requestedFrame == null) return true
+    return failedFrame != null &&
+        sameMiniPlayerCoverRequest(requestedFrame, failedFrame)
+}
+
+internal fun resolveMiniPlayerVisibleCoverFrame(
+    requestedFrame: MiniPlayerCoverFrame?,
+    displayedFrame: MiniPlayerCoverFrame?,
+    cachedFrame: MiniPlayerCoverFrame?,
+    retainedFrame: MiniPlayerCoverFrame?,
+    hasCurrentSong: Boolean = true,
+    failedFrame: MiniPlayerCoverFrame? = null,
+    clearRetainedFrame: Boolean = false
+): MiniPlayerCoverFrame? {
+    if (!hasCurrentSong || clearRetainedFrame) return null
+    val retained = resolveMiniPlayerRetainedCoverFrame(
+        requestedFrame = requestedFrame,
+        cachedFrame = cachedFrame,
+        displayedFrame = displayedFrame,
+        retainedFrame = retainedFrame
+    )
+    if (
+        retained != null &&
+        (retained.decodedBitmap != null || !isFailedMiniPlayerCoverRequest(retained, failedFrame))
+    ) {
+        return retained
+    }
+    return requestedFrame?.takeUnless { frame -> isFailedMiniPlayerCoverRequest(frame, failedFrame) }
+}
+
+// 尚未解码的旧封面若与新请求是同一张图, 改用新请求的令牌, 避免旧回调覆盖新请求
+private fun resolveMiniPlayerRetainedCoverFrame(
+    requestedFrame: MiniPlayerCoverFrame?,
+    cachedFrame: MiniPlayerCoverFrame?,
+    displayedFrame: MiniPlayerCoverFrame?,
+    retainedFrame: MiniPlayerCoverFrame?
+): MiniPlayerCoverFrame? {
+    val retainedCandidate = cachedFrame ?: displayedFrame ?: retainedFrame
+    val adoptRequest = retainedCandidate != null &&
+        requestedFrame != null &&
+        retainedCandidate.decodedBitmap == null &&
+        sameMiniPlayerCoverFrame(retainedCandidate, requestedFrame)
+    return if (adoptRequest) requestedFrame else retainedCandidate
+}
+
+private fun isFailedMiniPlayerCoverRequest(
+    frame: MiniPlayerCoverFrame,
+    failedFrame: MiniPlayerCoverFrame?
+): Boolean = failedFrame != null && sameMiniPlayerCoverRequest(frame, failedFrame)
+
+internal fun miniPlayerCoverCacheKey(frame: MiniPlayerCoverFrame): String {
+    return "${frame.identityKey}|data=${frame.coverUrl}"
+}
+
+internal fun resolveMiniPlayerCoverBitmap(drawable: Drawable): ImageBitmap? {
+    return runCatching {
+        val maxDimension = PLAYBACK_COVER_BITMAP_MAX_DIMENSION_PX
+        if (drawable is BitmapDrawable) {
+            val sourceBitmap = drawable.bitmap
+            val scale = min(
+                maxDimension.toFloat() / sourceBitmap.width.coerceAtLeast(1),
+                maxDimension.toFloat() / sourceBitmap.height.coerceAtLeast(1)
+            ).coerceAtMost(1f)
+            if (scale < 1f) {
+                Bitmap.createScaledBitmap(
+                    sourceBitmap,
+                    (sourceBitmap.width * scale).roundToInt().coerceAtLeast(1),
+                    (sourceBitmap.height * scale).roundToInt().coerceAtLeast(1),
+                    true
+                ).asImageBitmap()
+            } else {
+                copyBitmapForRetainedDisplay(sourceBitmap)?.asImageBitmap()
+            }
+        } else {
+            drawable.toBitmap(
+                width = maxDimension,
+                height = maxDimension,
+                config = Bitmap.Config.ARGB_8888
+            ).asImageBitmap()
+        }
+    }.getOrNull()
 }
 
 @Composable
@@ -216,7 +417,7 @@ internal fun AutoSizingMiniPlayerText(
     onTextLayout: (TextLayoutResult) -> Unit = {}
 ) {
     val lineHeightEm = style.miniPlayerLineHeightEm()
-    val range = rememberMiniPlayerTextAutoSizeRange(
+    val range = currentMiniPlayerTextAutoSizeRange(
         style = style,
         maxLineHeightDp = maxLineHeightDp,
         minVisualFontSizeSp = minVisualFontSizeSp,
@@ -247,7 +448,7 @@ internal fun EllipsizingMiniPlayerText(
     onTextLayout: (TextLayoutResult) -> Unit = {}
 ) {
     val lineHeightEm = style.miniPlayerLineHeightEm()
-    val range = rememberMiniPlayerTextAutoSizeRange(
+    val range = currentMiniPlayerTextAutoSizeRange(
         style = style,
         maxLineHeightDp = maxLineHeightDp,
         minVisualFontSizeSp = minVisualFontSizeSp,
@@ -282,14 +483,98 @@ fun NeriMiniPlayer(
     enableBlur: Boolean = true,
     offlineMode: Boolean = false,
     isPlaybackWaiting: Boolean = false,
-    isAudioRouteMuted: Boolean = false
+    isAudioRouteMuted: Boolean = false,
+    visualCoverUrl: String? = null,
+    coverIdentityKey: String? = null,
+    visualCoverIdentityKey: String? = null,
+    hasCurrentSong: Boolean = true,
+    tabletControls: MiniPlayerTabletControls? = null,
+    clearCover: Boolean = false
 ) {
-    val shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
     val context = LocalContext.current
-    val requestedCoverUrl = coverUrl?.trim()?.takeIf { it.isNotEmpty() }
-    var displayedCoverUrl by remember { mutableStateOf(requestedCoverUrl) }
-    val latestRequestedCoverUrl by rememberUpdatedState(requestedCoverUrl)
+    val smallestScreenWidthDp = LocalConfiguration.current.smallestScreenWidthDp
+    val useTabletControls = tabletControls != null &&
+        smallestScreenWidthDp >= PHONE_SMALLEST_SCREEN_WIDTH_DP
+    val cleanStyle = NeriDesign.isClean
+    val useContainerMorph = shouldUseNowPlayingContainerMorph(smallestScreenWidthDp)
+    val sharedCoverFlight = LocalSharedCoverFlight.current
+    val miniContentColor = if (cleanStyle) {
+        MaterialTheme.colorScheme.onSurface
+    } else {
+        MaterialTheme.colorScheme.onSecondaryContainer
+    }
+    val shape = when {
+        useTabletControls -> RectangleShape
+        cleanStyle -> NeriDesign.tokens.miniPlayerShape
+        else -> RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+    }
+    val requestedCoverUrl = coverUrl.trimmedNonEmptyOrNull().takeUnless { clearCover }
+    val retainedCoverUrl = visualCoverUrl.trimmedNonEmptyOrNull().takeUnless { clearCover }
+    val requestedIdentityKey = miniPlayerCoverIdentityKey(
+        identityKey = coverIdentityKey,
+        coverUrl = requestedCoverUrl
+    )
+    val retainedIdentityKey = miniPlayerCoverIdentityKey(
+        identityKey = visualCoverIdentityKey,
+        coverUrl = retainedCoverUrl
+    )
+    val requestedFrame = remember(requestedCoverUrl, requestedIdentityKey) {
+        requestedCoverUrl?.let { url ->
+            requestedIdentityKey?.let { key ->
+                MiniPlayerCoverFrame(
+                    coverUrl = url,
+                    identityKey = key,
+                    requestToken = Any()
+                )
+            }
+        }
+    }
+    val retainedFrame = remember(retainedCoverUrl, retainedIdentityKey) {
+        retainedCoverUrl?.let { url ->
+            retainedIdentityKey?.let { key ->
+                MiniPlayerCoverFrame(
+                    coverUrl = url,
+                    identityKey = key,
+                    requestToken = Any()
+                )
+            }
+        }
+    }
+    val effectiveRetainedFrame = if (
+        retainedFrame?.decodedBitmap == null &&
+            sameMiniPlayerCoverFrame(requestedFrame, retainedFrame)
+    ) {
+        requestedFrame
+    } else {
+        retainedFrame
+    }
+    var displayedFrame by remember(clearCover) { mutableStateOf<MiniPlayerCoverFrame?>(null) }
+    var failedCoverFrame by remember(requestedFrame, effectiveRetainedFrame) {
+        mutableStateOf<MiniPlayerCoverFrame?>(null)
+    }
+    var clearRetainedFrame by remember(requestedFrame, effectiveRetainedFrame) {
+        mutableStateOf(false)
+    }
+    val decodedFramesByIdentity = remember(clearCover) {
+        mutableStateMapOf<String, MiniPlayerCoverFrame>()
+    }
+    val latestClearCover by rememberUpdatedState(clearCover)
+    val latestRequestedFrame by rememberUpdatedState(requestedFrame)
+    val latestRetainedFrame by rememberUpdatedState(effectiveRetainedFrame)
+    val failedFrameForVisibleState = failedCoverFrame?.takeIf { failed ->
+        when {
+            requestedFrame != null -> sameMiniPlayerCoverRequest(failed, requestedFrame)
+            effectiveRetainedFrame != null ->
+                sameMiniPlayerCoverRequest(failed, effectiveRetainedFrame)
+            else -> false
+        }
+    }
+    val latestFailedFrame by rememberUpdatedState(failedFrameForVisibleState)
     val currentOnPrevious by rememberUpdatedState(onPrevious)
+    val currentOnExpand by rememberUpdatedState(onExpand)
+    val openDragDistancePx = with(LocalDensity.current) {
+        (LocalConfiguration.current.screenHeightDp.dp * 0.5f).toPx()
+    }
     val currentOnNext by rememberUpdatedState(onNext)
     val swipeOffset = remember { Animatable(0f) }
     val coroutineScope = rememberCoroutineScope()
@@ -318,28 +603,296 @@ fun NeriMiniPlayer(
         }
     }
 
-    LaunchedEffect(requestedCoverUrl) {
-        if (requestedCoverUrl == null) {
-            delay(MINI_PLAYER_COVER_CLEAR_DELAY_MS)
-            if (latestRequestedCoverUrl == null) {
-                displayedCoverUrl = resolveMiniPlayerDisplayedCoverUrl(
-                    requestedCoverUrl = null,
-                    displayedCoverUrl = displayedCoverUrl,
-                    requestSucceeded = false,
-                    clearDelayElapsed = true
+    val cachedRequestedFrame = requestedFrame?.let { frame ->
+        decodedFramesByIdentity[frame.identityKey]?.takeIf {
+            it.decodedBitmap != null && it.coverUrl == frame.coverUrl
+        }
+    }
+    val cachedRetainedFrame = retainedFrame?.let { frame ->
+        decodedFramesByIdentity[frame.identityKey]?.takeIf {
+            it.decodedBitmap != null && it.coverUrl == frame.coverUrl
+        }
+    }
+    val sharedFrameForCurrentIdentity = sequenceOf(
+        requestedIdentityKey,
+        retainedIdentityKey
+    ).filterNotNull()
+        .distinct()
+        .firstNotNullOfOrNull(RetainedPlaybackCoverBitmapCache::getLatestForOwner)
+        ?.let { entry ->
+            MiniPlayerCoverFrame(
+                coverUrl = entry.coverUrl,
+                identityKey = entry.ownerKey,
+                decodedBitmap = entry.bitmap,
+                requestToken = requestedFrame?.requestToken ?: Any()
+            )
+        }
+    val effectiveCachedRequestedFrame = cachedRequestedFrame
+        ?: requestedFrame?.let { frame ->
+            RetainedPlaybackCoverBitmapCache.getExact(
+                ownerKey = frame.identityKey,
+                coverUrl = frame.coverUrl
+            )
+        }?.let { entry ->
+            requestedFrame.copy(decodedBitmap = entry.bitmap)
+        }
+    val visibleFrame = resolveMiniPlayerVisibleCoverFrame(
+        requestedFrame = requestedFrame,
+        displayedFrame = displayedFrame,
+        cachedFrame = effectiveCachedRequestedFrame ?: sharedFrameForCurrentIdentity,
+        retainedFrame = cachedRetainedFrame ?: effectiveRetainedFrame,
+        failedFrame = failedFrameForVisibleState,
+        clearRetainedFrame = clearRetainedFrame || clearCover
+    )
+    SideEffect {
+        if (clearCover) sharedCoverFlight?.clearArtwork()
+    }
+
+    fun publishDecodedFrame(
+        completedFrame: MiniPlayerCoverFrame,
+        decodedBitmap: ImageBitmap?
+    ) {
+        if (
+            latestClearCover || decodedBitmap == null ||
+                !shouldCommitMiniPlayerCoverFrame(
+                    completedFrame = completedFrame,
+                    latestRequestedFrame = latestRequestedFrame,
+                    latestRetainedFrame = latestRetainedFrame,
+                    currentIdentityKey = coverIdentityKey
                 )
+        ) {
+            return
+        }
+        val decodedFrame = completedFrame.copy(decodedBitmap = decodedBitmap)
+        displayedFrame = decodedFrame
+        failedCoverFrame = null
+        clearRetainedFrame = false
+        decodedFramesByIdentity[decodedFrame.identityKey] = decodedFrame
+        RetainedPlaybackCoverBitmapCache.put(
+            ownerKey = decodedFrame.identityKey,
+            coverUrl = decodedFrame.coverUrl,
+            cacheKey = null,
+            bitmap = decodedBitmap
+        )
+        while (decodedFramesByIdentity.size > MINI_PLAYER_COVER_FRAME_CACHE_LIMIT) {
+            val oldestKey = decodedFramesByIdentity.keys.firstOrNull() ?: break
+            decodedFramesByIdentity.remove(oldestKey)
+        }
+    }
+
+    fun rejectCoverFrame(failedFrame: MiniPlayerCoverFrame?) {
+        if (failedFrame == null) return
+        val displayedDecodedFrame = displayedFrame?.takeIf {
+            it.decodedBitmap != null && sameMiniPlayerCoverRequest(it, failedFrame)
+        }
+        val cachedDecodedFrame = decodedFramesByIdentity[failedFrame.identityKey]
+            ?.takeIf {
+                it.decodedBitmap != null && sameMiniPlayerCoverRequest(it, failedFrame)
+            }
+        if (displayedDecodedFrame != null || cachedDecodedFrame != null) return
+        val latestFrame = latestRequestedFrame
+        if (latestFrame == null) {
+            val retainedFrame = latestRetainedFrame
+            if (
+                retainedFrame != null &&
+                    sameMiniPlayerCoverRequest(failedFrame, retainedFrame)
+            ) {
+                failedCoverFrame = failedFrame
+            }
+            return
+        }
+        if (!sameMiniPlayerCoverRequest(failedFrame, latestFrame)) return
+        failedCoverFrame = failedFrame
+        clearRetainedFrame = false
+        if (
+            displayedFrame != null &&
+            sameMiniPlayerCoverRequest(displayedFrame, failedFrame)
+        ) {
+            displayedFrame = null
+        }
+        decodedFramesByIdentity.entries.removeAll { (_, cachedFrame) ->
+            sameMiniPlayerCoverRequest(cachedFrame, failedFrame)
+        }
+    }
+
+    LaunchedEffect(
+        requestedFrame,
+        effectiveRetainedFrame,
+        failedFrameForVisibleState,
+        hasCurrentSong
+    ) {
+        if (clearRetainedFrame || hasCurrentSong) return@LaunchedEffect
+        val retainedFrame = effectiveRetainedFrame ?: displayedFrame
+        val failedFrame = failedFrameForVisibleState
+        val shouldWait = when {
+            requestedFrame == null -> retainedFrame != null
+            failedFrame != null -> sameMiniPlayerCoverRequest(failedFrame, requestedFrame)
+            else -> false
+        }
+        if (!shouldWait) return@LaunchedEffect
+        val requestAtStart = requestedFrame
+        val retainedAtStart = effectiveRetainedFrame
+        delay(MINI_PLAYER_COVER_CLEAR_DELAY_MS.milliseconds)
+        val currentRetained = latestRetainedFrame ?: displayedFrame
+        val currentFailed = latestFailedFrame
+        if (
+            latestRequestedFrame == requestAtStart &&
+                latestRetainedFrame == retainedAtStart &&
+                shouldClearMiniPlayerRetainedCoverAfterGrace(
+                    requestedFrame = latestRequestedFrame,
+                    retainedFrame = currentRetained,
+                    failedFrame = currentFailed,
+                    clearDelayElapsed = true,
+                    hasCurrentSong = hasCurrentSong
+                )
+        ) {
+            clearRetainedFrame = true
+            displayedFrame = null
+        }
+    }
+
+    val coverCornerRadius = if (cleanStyle) 10.dp else 8.dp
+    val coverShape = if (cleanStyle) NeriDesign.tokens.coverSmallShape else RoundedCornerShape(8.dp)
+    val coverSizePx = with(density) { NeriMiniPlayerDefaults.CoverSize.toPx() }
+    val continuousCoverCorners = cleanStyle && supportsContinuousCornerOutline(coverSizePx, coverSizePx)
+    val cover: @Composable () -> Unit = {
+        Box(
+            modifier = Modifier
+                .size(NeriMiniPlayerDefaults.CoverSize)
+                .sharedCoverSource(coverCornerRadius, visibleFrame?.decodedBitmap, continuousCoverCorners)
+                .background(
+                    color = if (visibleFrame != null) {
+                        Color.Transparent
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer
+                    },
+                    shape = coverShape
+                )
+        ) {
+            if (visibleFrame?.decodedBitmap != null) {
+                Image(
+                    bitmap = visibleFrame.decodedBitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .clip(coverShape)
+                )
+            } else if (visibleFrame != null) {
+                key(visibleFrame.requestToken) {
+                    AsyncImage(
+                        model = fastScrollableImageRequest(
+                            context = context,
+                            data = visibleFrame.coverUrl,
+                            sizePx = PLAYBACK_COVER_BITMAP_MAX_DIMENSION_PX,
+                            crossfade = false,
+                            offlineMode = offlineMode,
+                            cacheKey = miniPlayerCoverCacheKey(visibleFrame)
+                        ),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clip(coverShape),
+                        onSuccess = { state ->
+                            val bitmap = resolveMiniPlayerCoverBitmap(state.result.drawable)
+                            if (bitmap != null &&
+                                shouldCommitMiniPlayerCoverFrame(
+                                    completedFrame = visibleFrame,
+                                    latestRequestedFrame = latestRequestedFrame,
+                                    latestRetainedFrame = latestRetainedFrame,
+                                    currentIdentityKey = coverIdentityKey
+                                )
+                            ) {
+                                publishDecodedFrame(visibleFrame, bitmap)
+                            } else if (bitmap == null) {
+                                rejectCoverFrame(visibleFrame)
+                            }
+                        },
+                        onError = { rejectCoverFrame(visibleFrame) }
+                    )
+                }
+            }
+
+            if (
+                requestedFrame != null &&
+                failedFrameForVisibleState == null &&
+                !sameMiniPlayerCoverFrame(requestedFrame, visibleFrame)
+            ) {
+                key(requestedFrame.requestToken) {
+                    AsyncImage(
+                        model = fastScrollableImageRequest(
+                            context = context,
+                            data = requestedFrame.coverUrl,
+                            sizePx = PLAYBACK_COVER_BITMAP_MAX_DIMENSION_PX,
+                            crossfade = false,
+                            offlineMode = offlineMode,
+                            cacheKey = miniPlayerCoverCacheKey(requestedFrame)
+                        ),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .matchParentSize()
+                            .graphicsLayer { alpha = 0f },
+                        onSuccess = { state ->
+                            resolveMiniPlayerCoverBitmap(state.result.drawable)?.let { bitmap ->
+                                publishDecodedFrame(requestedFrame, bitmap)
+                            } ?: rejectCoverFrame(requestedFrame)
+                        },
+                        onError = { rejectCoverFrame(requestedFrame) }
+                    )
+                }
+            }
+
+            if (visibleFrame == null) {
+                Box(
+                    modifier = Modifier.matchParentSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MusicNote,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
             }
         }
     }
 
+    val capsuleColor = if (cleanStyle) {
+        MaterialTheme.colorScheme.surfaceContainerLow.copy(
+            alpha = if (LocalHasCustomBackground.current) 0.72f else 1f
+        )
+    } else {
+        MaterialTheme.colorScheme.secondaryContainer
+    }
+    SideEffect { sharedCoverFlight?.miniPlayerContainerColor = capsuleColor }
     AdvancedGlassSurface(
         role = AdvancedGlassRole.MiniPlayer,
         modifier = modifier
             .fillMaxWidth()
-            .height(NeriMiniPlayerDefaults.Height)
-            .padding(horizontal = 8.dp)
+            .height(if (useTabletControls) NeriMiniPlayerDefaults.TabletHeight else NeriMiniPlayerDefaults.Height)
+            // aligned with the floating tab bar's side margins, with a small gap above it
+            .padding(horizontal = if (useTabletControls) 0.dp else if (cleanStyle) 16.dp else 8.dp)
+            .padding(bottom = if (cleanStyle && !useTabletControls) 6.dp else 0.dp)
+            .onGloballyPositioned { coordinates ->
+                sharedCoverFlight?.reportMiniPlayerContainer(coordinates.boundsInWindow())
+            }
             .clip(shape)
-            .pointerInput(Unit) {
+            .then(
+                if (cleanStyle && !useTabletControls) {
+                    Modifier.border(
+                        width = 0.5.dp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+                        shape = shape
+                    )
+                } else {
+                    Modifier
+                }
+            )
+            .pointerInput(useTabletControls) {
+                if (useTabletControls) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = {
                         swipeJob?.cancel()
@@ -390,10 +943,41 @@ fun NeriMiniPlayer(
                     }
                 )
             }
+            .pointerInput(useTabletControls, useContainerMorph, density.density, openDragDistancePx) {
+                if (useTabletControls) return@pointerInput
+                val tracker = VelocityTracker()
+                var dragTotalPx = 0f
+                fun dragProgress() = (-dragTotalPx / openDragDistancePx).coerceIn(0f, 1f)
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        tracker.resetTracking()
+                        dragTotalPx = 0f
+                    },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        tracker.addPosition(change.uptimeMillis, change.position)
+                        dragTotalPx += dragAmount
+                        // 手机容器跟随手指，平板和默认转场只在松手后打开
+                        if (useContainerMorph) sharedCoverFlight?.dragOpenProgress = dragProgress()
+                    },
+                    onDragEnd = {
+                        val open = shouldOpenNowPlayingFromDrag(
+                            dragProgress(), tracker.calculateVelocity().y / density.density
+                        )
+                        if (open) currentOnExpand()
+                        sharedCoverFlight?.dragOpenProgress = null
+                    },
+                    onDragCancel = { sharedCoverFlight?.dragOpenProgress = null }
+                )
+            }
             .clickable { onExpand() },
         shape = shape,
-        fallbackColor = MaterialTheme.colorScheme.secondaryContainer,
-        tintColor = MaterialTheme.colorScheme.secondaryContainer,
+        fallbackColor = capsuleColor,
+        tintColor = if (cleanStyle) {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        } else {
+            MaterialTheme.colorScheme.secondaryContainer
+        },
         enabled = enableBlur
     ) {
         Card(
@@ -401,124 +985,152 @@ fun NeriMiniPlayer(
             shape = shape,
             modifier = Modifier.matchParentSize()
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                modifier = Modifier
-                    .graphicsLayer {
-                        translationX = swipeOffset.value
-                        val offsetRatio = (abs(swipeOffset.value) / reboundPeakPx).coerceIn(0f, 1f)
-                        scaleX = 1f - offsetRatio * 0.025f
-                        scaleY = 1f - offsetRatio * 0.025f
-                    }
-                    .padding(
-                        horizontal = 12.dp,
-                        vertical = NeriMiniPlayerDefaults.ContentVerticalPadding
-                    )
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(
-                            color = if (displayedCoverUrl != null || requestedCoverUrl != null) {
-                                Color.Transparent
-                            } else {
-                                MaterialTheme.colorScheme.primaryContainer
-                            },
-                            shape = RoundedCornerShape(8.dp)
+            if (useTabletControls) {
+                TabletMiniPlayerContent(
+                    controls = tabletControls,
+                    playPauseEnabled = playPauseEnabled,
+                    onPlayPause = onPlayPause,
+                    onPrevious = onPrevious,
+                    onNext = onNext,
+                    onExpand = onExpand,
+                    cover = cover,
+                    metadata = { metadataModifier ->
+                        Column(metadataModifier.padding(vertical = NeriMiniPlayerDefaults.TabletMetadataVerticalPadding)) {
+                            EllipsizingMiniPlayerText(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = miniContentColor,
+                                maxLineHeightDp = 20f,
+                                minVisualFontSizeSp = MINI_PLAYER_TITLE_MIN_VISUAL_FONT_SIZE_SP,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            AutoSizingMiniPlayerText(
+                                text = artist,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = miniContentColor.copy(alpha = 0.8f),
+                                maxLineHeightDp = 16f,
+                                minVisualFontSizeSp = MINI_PLAYER_ARTIST_MIN_VISUAL_FONT_SIZE_SP,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            AutoSizingMiniPlayerText(
+                                text = "${formatDuration(tabletControls.positionMs.coerceAtLeast(0L))} / " +
+                                    formatDuration(tabletControls.durationMs.coerceAtLeast(0L)),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = miniContentColor.copy(alpha = 0.65f),
+                                maxLineHeightDp = 12f,
+                                minVisualFontSizeSp = 9f,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    },
+                    playPauseIcon = {
+                        PlaybackControlIndicator(
+                            isPlaying = isPlaying,
+                            isPlaybackWaiting = isPlaybackWaiting,
+                            isAudioRouteMuted = isAudioRouteMuted,
+                            playContentDescription = stringResource(CoreCommonR.string.lyrics_play),
+                            pauseContentDescription = stringResource(CoreCommonR.string.lyrics_pause),
+                            restoreVolumeContentDescription = stringResource(CoreCommonR.string.player_restore_volume),
+                            waitingContentDescription = stringResource(CoreCommonR.string.player_waiting),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            progressIndicatorSize = 22.dp,
+                            progressStrokeWidth = 2.dp
                         )
-                ) {
-                    if (displayedCoverUrl != null) {
-                        AsyncImage(
-                            model = fastScrollableImageRequest(
-                                context = context,
-                                data = displayedCoverUrl,
-                                sizePx = 128,
-                                crossfade = false,
-                                offlineMode = offlineMode
-                            ),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .matchParentSize()
-                                .clip(RoundedCornerShape(8.dp))
-                        )
                     }
+                )
+            } else {
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    // 窄窗口优先保留歌曲文字，切歌仍可使用原来的左右滑动
+                    val showSkipControls = shouldShowMiniPlayerSkipControls(smallestScreenWidthDp, maxWidth)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(NeriMiniPlayerDefaults.ContentSpacing),
+                        modifier = Modifier
+                            .graphicsLayer {
+                                translationX = swipeOffset.value
+                                val offsetRatio = (abs(swipeOffset.value) / reboundPeakPx).coerceIn(0f, 1f)
+                                scaleX = 1f - offsetRatio * 0.025f
+                                scaleY = 1f - offsetRatio * 0.025f
+                            }
+                            .padding(
+                                horizontal = NeriMiniPlayerDefaults.ContentHorizontalPadding,
+                                vertical = NeriMiniPlayerDefaults.ContentVerticalPadding
+                            )
+                    ) {
+                        cover()
 
-                    if (requestedCoverUrl != null && requestedCoverUrl != displayedCoverUrl) {
-                        AsyncImage(
-                            model = fastScrollableImageRequest(
-                                context = context,
-                                data = requestedCoverUrl,
-                                sizePx = 128,
-                                crossfade = false,
-                                offlineMode = offlineMode
-                            ),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .matchParentSize()
-                                .graphicsLayer { alpha = 0f },
-                            onSuccess = {
-                                if (latestRequestedCoverUrl == requestedCoverUrl) {
-                                    displayedCoverUrl = resolveMiniPlayerDisplayedCoverUrl(
-                                        requestedCoverUrl = requestedCoverUrl,
-                                        displayedCoverUrl = displayedCoverUrl,
-                                        requestSucceeded = true
+                        Column(modifier = Modifier.weight(1f).testTag("miniPlayerMetadata")) {
+                            EllipsizingMiniPlayerText(
+                                text = title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = miniContentColor,
+                                maxLineHeightDp = MINI_PLAYER_TITLE_LINE_HEIGHT_DP,
+                                minVisualFontSizeSp = MINI_PLAYER_TITLE_MIN_VISUAL_FONT_SIZE_SP,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            AutoSizingMiniPlayerText(
+                                text = artist,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = miniContentColor.copy(alpha = 0.8f),
+                                maxLineHeightDp = MINI_PLAYER_ARTIST_LINE_HEIGHT_DP,
+                                minVisualFontSizeSp = MINI_PLAYER_ARTIST_MIN_VISUAL_FONT_SIZE_SP,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (showSkipControls) {
+                                HapticIconButton(
+                                    onClick = onPrevious,
+                                    modifier = Modifier
+                                        .size(NeriMiniPlayerDefaults.ControlButtonSize)
+                                        .testTag("miniPlayerPrevious")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.SkipPrevious,
+                                        contentDescription = stringResource(CoreCommonR.string.player_previous),
+                                        tint = miniContentColor
                                     )
                                 }
                             }
-                        )
-                    } else if (displayedCoverUrl == null) {
-                        Box(
-                            modifier = Modifier.matchParentSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.MusicNote,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
+                            HapticIconButton(
+                                onClick = { onPlayPause() },
+                                enabled = playPauseEnabled,
+                                modifier = (if (showSkipControls) {
+                                    Modifier.size(NeriMiniPlayerDefaults.ControlButtonSize)
+                                } else {
+                                    Modifier
+                                }).testTag("miniPlayerPlayPause")
+                            ) {
+                                PlaybackControlIndicator(
+                                    isPlaying = isPlaying,
+                                    isPlaybackWaiting = isPlaybackWaiting,
+                                    isAudioRouteMuted = isAudioRouteMuted,
+                                    playContentDescription = stringResource(CoreCommonR.string.lyrics_play),
+                                    pauseContentDescription = stringResource(CoreCommonR.string.lyrics_pause),
+                                    restoreVolumeContentDescription = stringResource(CoreCommonR.string.player_restore_volume),
+                                    waitingContentDescription = stringResource(CoreCommonR.string.player_waiting),
+                                    color = miniContentColor,
+                                    progressIndicatorSize = 22.dp,
+                                    progressStrokeWidth = 2.dp
+                                )
+                            }
+                            if (showSkipControls) {
+                                HapticIconButton(
+                                    onClick = onNext,
+                                    modifier = Modifier
+                                        .size(NeriMiniPlayerDefaults.ControlButtonSize)
+                                        .testTag("miniPlayerNext")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.SkipNext,
+                                        contentDescription = stringResource(CoreCommonR.string.player_next),
+                                        tint = miniContentColor
+                                    )
+                                }
+                            }
                         }
                     }
-                }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    EllipsizingMiniPlayerText(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        maxLineHeightDp = MINI_PLAYER_TITLE_LINE_HEIGHT_DP,
-                        minVisualFontSizeSp = MINI_PLAYER_TITLE_MIN_VISUAL_FONT_SIZE_SP,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    AutoSizingMiniPlayerText(
-                        text = artist,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f),
-                        maxLineHeightDp = MINI_PLAYER_ARTIST_LINE_HEIGHT_DP,
-                        minVisualFontSizeSp = MINI_PLAYER_ARTIST_MIN_VISUAL_FONT_SIZE_SP,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                HapticIconButton(
-                    onClick = { onPlayPause() },
-                    enabled = playPauseEnabled
-                ) {
-                    PlaybackControlIndicator(
-                        isPlaying = isPlaying,
-                        isPlaybackWaiting = isPlaybackWaiting,
-                        isAudioRouteMuted = isAudioRouteMuted,
-                        playContentDescription = stringResource(R.string.lyrics_play),
-                        pauseContentDescription = stringResource(R.string.lyrics_pause),
-                        restoreVolumeContentDescription = stringResource(R.string.player_restore_volume),
-                        waitingContentDescription = stringResource(R.string.player_waiting),
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        progressIndicatorSize = 22.dp,
-                        progressStrokeWidth = 2.dp
-                    )
                 }
             }
         }

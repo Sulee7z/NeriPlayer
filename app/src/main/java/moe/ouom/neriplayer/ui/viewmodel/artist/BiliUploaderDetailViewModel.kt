@@ -23,6 +23,8 @@ package moe.ouom.neriplayer.ui.viewmodel.artist
  * Created: 2026/8/3
  */
 
+import moe.ouom.neriplayer.ui.i18n.UiText
+import moe.ouom.neriplayer.ui.viewmodel.feedbackText
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -36,10 +38,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.bili.BiliClient
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.bilibili.uploader.UploaderContent
+import moe.ouom.neriplayer.data.model.bilibili.uploader.UploaderVideo
+import moe.ouom.neriplayer.data.model.bilibili.video.VideoBasicInfo
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.logging.NPLogger
 import moe.ouom.neriplayer.data.model.BiliUploaderSummary
 import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
 
@@ -55,11 +59,11 @@ data class BiliUploaderHeader(
 
 data class BiliUploaderDetailUiState(
     val loading: Boolean = true,
-    val error: String? = null,
+    val error: UiText? = null,
     val header: BiliUploaderHeader? = null,
-    val videos: List<BiliClient.UploaderVideo> = emptyList(),
-    val collections: List<BiliClient.UploaderContent> = emptyList(),
-    val series: List<BiliClient.UploaderContent> = emptyList(),
+    val videos: List<UploaderVideo> = emptyList(),
+    val collections: List<UploaderContent> = emptyList(),
+    val series: List<UploaderContent> = emptyList(),
     val videosHasMore: Boolean = false,
     val contentsHasMore: Boolean = false,
     val videosLoadingMore: Boolean = false,
@@ -108,8 +112,8 @@ class BiliUploaderDetailViewModel(application: Application) : AndroidViewModel(a
                 _uiState.update {
                     it.copy(
                         loading = false,
-                        error = getApplication<Application>().getString(
-                            R.string.bili_uploader_load_failed,
+                        error = feedbackText(
+                            CoreCommonR.string.bili_uploader_load_failed,
                             error.message ?: error.javaClass.simpleName
                         )
                     )
@@ -153,8 +157,8 @@ class BiliUploaderDetailViewModel(application: Application) : AndroidViewModel(a
                 _uiState.update {
                     it.copy(
                         videosLoadingMore = false,
-                        error = getApplication<Application>().getString(
-                            R.string.bili_uploader_load_failed,
+                        error = feedbackText(
+                            CoreCommonR.string.bili_uploader_load_failed,
                             error.message ?: error.javaClass.simpleName
                         )
                     )
@@ -189,8 +193,8 @@ class BiliUploaderDetailViewModel(application: Application) : AndroidViewModel(a
                 _uiState.update {
                     it.copy(
                         contentsLoadingMore = false,
-                        error = getApplication<Application>().getString(
-                            R.string.bili_uploader_load_failed,
+                        error = feedbackText(
+                            CoreCommonR.string.bili_uploader_load_failed,
                             error.message ?: error.javaClass.simpleName
                         )
                     )
@@ -199,7 +203,7 @@ class BiliUploaderDetailViewModel(application: Application) : AndroidViewModel(a
         }
     }
 
-    suspend fun getVideoInfo(bvid: String): BiliClient.VideoBasicInfo =
+    suspend fun getVideoInfo(bvid: String): VideoBasicInfo =
         withContext(Dispatchers.IO) { client.getVideoBasicInfoByBvid(bvid) }
 
     private fun shouldKeepCurrentUploader(mid: Long): Boolean {
@@ -242,7 +246,7 @@ class BiliUploaderDetailViewModel(application: Application) : AndroidViewModel(a
     )
 }
 
-internal fun BiliClient.UploaderVideo.toBiliVideoItem(): BiliVideoItem {
+internal fun UploaderVideo.toBiliVideoItem(): BiliVideoItem {
     return BiliVideoItem(
         id = aid,
         bvid = bvid,

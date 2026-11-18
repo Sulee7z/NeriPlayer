@@ -1,5 +1,7 @@
 package moe.ouom.neriplayer.ui.viewmodel.artist
 
+import moe.ouom.neriplayer.ui.i18n.UiText
+import moe.ouom.neriplayer.ui.viewmodel.feedbackText
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -14,25 +16,27 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorDetail
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorItem
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSection
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSummary
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorBrowseEndpoint
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorDetail
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItem
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItemsPage
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSection
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSummary
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.data.platform.youtube.buildYouTubeMusicMediaUri
-import moe.ouom.neriplayer.data.platform.youtube.stableYouTubeMusicId
-import moe.ouom.neriplayer.data.platform.youtube.youtubeMusicThumbnailUrl
+import moe.ouom.neriplayer.platform.youtube.api.transport.buildYouTubeMusicMediaUri
+import moe.ouom.neriplayer.platform.youtube.api.transport.stableYouTubeMusicId
+import moe.ouom.neriplayer.platform.youtube.api.transport.youtubeMusicThumbnailUrl
 import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeMusicPlaylist
 
 data class YouTubeMusicCreatorDetailUiState(
     val loading: Boolean = true,
-    val error: String? = null,
+    val error: UiText? = null,
     val detail: YouTubeMusicCreatorDetail? = null,
     val playbackQueueLoadingSectionKey: String? = null,
     val playbackQueueErrorSectionKey: String? = null,
-    val playbackQueueError: String? = null
+    val playbackQueueError: UiText? = null
 )
 
 class YouTubeMusicCreatorDetailViewModel(
@@ -42,6 +46,10 @@ class YouTubeMusicCreatorDetailViewModel(
     }
 ) : AndroidViewModel(application) {
     private val client by lazy { AppContainer.youtubeMusicClient }
+    internal var fetchCreatorItems: suspend (YouTubeMusicCreatorBrowseEndpoint, String) -> YouTubeMusicCreatorItemsPage =
+        { endpoint, fallbackTitle -> client.getCreatorItems(endpoint, fallbackTitle) }
+    internal var fetchCreatorItemsContinuation: suspend (String) -> YouTubeMusicCreatorItemsPage =
+        { continuation -> client.getCreatorItemsContinuation(continuation) }
     private val _uiState = MutableStateFlow(YouTubeMusicCreatorDetailUiState())
     val uiState: StateFlow<YouTubeMusicCreatorDetailUiState> = _uiState
     private val _playbackRequests = MutableSharedFlow<YouTubeMusicCreatorPlaybackQueue>()
@@ -74,20 +82,20 @@ class YouTubeMusicCreatorDetailViewModel(
                 val detail = withContext(Dispatchers.IO) {
                     loadDetail(creator)
                 }
-                if (currentCreator?.browseId != creator.browseId) {
+                if (!isCurrentCreator(creator.browseId)) {
                     return@launch
                 }
                 _uiState.value = YouTubeMusicCreatorDetailUiState(detail = detail, loading = false)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                if (currentCreator?.browseId != creator.browseId) {
+                if (!isCurrentCreator(creator.browseId)) {
                     return@launch
                 }
                 _uiState.value = _uiState.value.copy(
                     loading = false,
-                    error = getApplication<Application>().getString(
-                        R.string.youtube_creator_load_failed,
+                    error = feedbackText(
+                        CoreCommonR.string.youtube_creator_load_failed,
                         error.message ?: error.javaClass.simpleName
                     )
                 )
@@ -109,55 +117,69 @@ class YouTubeMusicCreatorDetailViewModel(
         val creatorBrowseId = currentCreator?.browseId ?: return
         val sectionKey = youtubeMusicCreatorSectionKey(section)
         playbackQueueJob = viewModelScope.launch {
-            _uiState.update { current ->
-                if (currentCreator?.browseId != creatorBrowseId) {
-                    current
-                } else {
-                    current.copy(
-                        playbackQueueLoadingSectionKey = sectionKey,
-                        playbackQueueErrorSectionKey = null,
-                        playbackQueueError = null
-                    )
-                }
-            }
+            markPlaybackQueueLoading(creatorBrowseId, sectionKey)
             try {
                 val queue = withContext(Dispatchers.IO) {
                     loadYouTubeMusicCreatorPlaybackQueue(
                         section = section,
                         selectedItem = selectedItem,
-                        fetchFirstPage = client::getCreatorItems,
-                        fetchContinuation = client::getCreatorItemsContinuation
+                        fetchFirstPage = fetchCreatorItems,
+                        fetchContinuation = fetchCreatorItemsContinuation
                     )
                 } ?: throw IllegalStateException("No playable YouTube Music items")
-                if (currentCreator?.browseId != creatorBrowseId) {
+                if (!isCurrentCreator(creatorBrowseId)) {
                     return@launch
                 }
                 _playbackRequests.emit(queue)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                if (currentCreator?.browseId != creatorBrowseId) {
+                if (!isCurrentCreator(creatorBrowseId)) {
                     return@launch
                 }
-                _uiState.update { current ->
-                    current.copy(
-                        playbackQueueErrorSectionKey = sectionKey,
-                        playbackQueueError = creatorItemsError(section.title, error)
-                    )
-                }
+                publishPlaybackQueueError(sectionKey, section.title, error)
             } finally {
-                if (currentCreator?.browseId == creatorBrowseId) {
-                    _uiState.update { current ->
-                        current.copy(playbackQueueLoadingSectionKey = null)
-                    }
-                }
+                clearPlaybackQueueLoading(creatorBrowseId)
             }
         }
     }
 
-    private fun creatorItemsError(sectionTitle: String, error: Exception): String {
-        return getApplication<Application>().getString(
-            R.string.youtube_creator_items_load_failed,
+    private fun isCurrentCreator(browseId: String): Boolean = currentCreator?.browseId == browseId
+
+    private fun markPlaybackQueueLoading(creatorBrowseId: String, sectionKey: String) {
+        _uiState.update { current ->
+            if (!isCurrentCreator(creatorBrowseId)) {
+                current
+            } else {
+                current.copy(
+                    playbackQueueLoadingSectionKey = sectionKey,
+                    playbackQueueErrorSectionKey = null,
+                    playbackQueueError = null
+                )
+            }
+        }
+    }
+
+    private fun publishPlaybackQueueError(sectionKey: String, sectionTitle: String, error: Exception) {
+        _uiState.update { current ->
+            current.copy(
+                playbackQueueErrorSectionKey = sectionKey,
+                playbackQueueError = creatorItemsError(sectionTitle, error)
+            )
+        }
+    }
+
+    private fun clearPlaybackQueueLoading(creatorBrowseId: String) {
+        if (isCurrentCreator(creatorBrowseId)) {
+            _uiState.update { current ->
+                current.copy(playbackQueueLoadingSectionKey = null)
+            }
+        }
+    }
+
+    private fun creatorItemsError(sectionTitle: String, error: Exception): UiText {
+        return feedbackText(
+            CoreCommonR.string.youtube_creator_items_load_failed,
             sectionTitle,
             error.message ?: error.javaClass.simpleName
         )

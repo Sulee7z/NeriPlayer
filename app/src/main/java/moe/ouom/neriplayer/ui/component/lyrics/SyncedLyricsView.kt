@@ -23,6 +23,13 @@ package moe.ouom.neriplayer.ui.component.lyrics
  * Created: 2025/8/13
  */
 
+import moe.ouom.neriplayer.data.model.lyrics.LyricEntry
+import moe.ouom.neriplayer.data.model.lyrics.WordTiming
+import moe.ouom.neriplayer.lyrics.parser.calculateLineProgress
+import moe.ouom.neriplayer.lyrics.parser.findCurrentLineIndex
+import moe.ouom.neriplayer.lyrics.parser.matchTranslationsToLineIndices
+import moe.ouom.neriplayer.lyrics.parser.prepareBilingualLyricDisplay
+import moe.ouom.neriplayer.lyrics.parser.BilingualLyricDisplay
 import android.annotation.SuppressLint
 import android.graphics.Paint
 import android.graphics.Rect
@@ -39,7 +46,6 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -77,6 +83,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
@@ -87,10 +94,12 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -98,14 +107,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mocharealm.accompanist.lyrics.core.model.ISyncedLine
-import com.mocharealm.accompanist.lyrics.core.model.karaoke.KaraokeLine
-import com.mocharealm.accompanist.lyrics.core.model.synced.SyncedLine
-import com.mocharealm.accompanist.lyrics.core.parser.AutoParser
 import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.roundToLong
-import moe.ouom.neriplayer.core.player.metadata.normalizeLegacyLrcTimestamps
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.withFrameNanos
+import moe.ouom.neriplayer.ui.animation.AMBIENT_ANIMATION_FRAME_INTERVAL_NANOS
+import moe.ouom.neriplayer.ui.animation.isNewAmbientFrameSlot
 
 private const val LYRIC_TIME_SMOOTHING_DURATION_MS = 96
 private const val LYRIC_TIME_SMOOTHING_MAX_DELTA_MS = 180L
@@ -224,15 +232,17 @@ internal fun resolveActiveLyricRevealHorizontalPadding(): Dp {
     return ACTIVE_LYRIC_REVEAL_HORIZONTAL_PADDING
 }
 
+private fun Float.positiveFiniteOrNull(): Float? = takeIf { it.isFinite() && it > 0f }
+
 internal fun resolveLyricRevealClipBounds(
     lineLeft: Float,
     lineRight: Float,
     horizontalBleedPx: Float,
     containerWidth: Float
 ): LyricRevealClipBounds {
-    val safeContainerWidth = containerWidth.takeIf { it.isFinite() && it > 0f }
+    val safeContainerWidth = containerWidth.positiveFiniteOrNull()
         ?: lineRight.coerceAtLeast(lineLeft)
-    val safeBleed = horizontalBleedPx.takeIf { it.isFinite() && it > 0f } ?: 0f
+    val safeBleed = horizontalBleedPx.positiveFiniteOrNull() ?: 0f
     val safeLeft = lineLeft.coerceIn(0f, safeContainerWidth)
     val safeRight = lineRight.coerceIn(safeLeft, safeContainerWidth)
     return LyricRevealClipBounds(
@@ -349,12 +359,18 @@ private fun interpolateLyricVisualValue(
     return playbackValue + (clearValue - playbackValue) * clearPresentationProgress
 }
 
+private val JAPANESE_KANA_RANGES = arrayOf(
+    '\u3040'..'\u30FF',
+    '\u31F0'..'\u31FF',
+    '\uFF66'..'\uFF9F'
+)
+
+private fun isJapaneseKana(char: Char): Boolean {
+    return JAPANESE_KANA_RANGES.any { range -> char in range }
+}
+
 internal fun containsJapaneseKana(text: String): Boolean {
-    return text.any { char ->
-        char in '\u3040'..'\u30FF' ||
-            char in '\u31F0'..'\u31FF' ||
-            char in '\uFF66'..'\uFF9F'
-    }
+    return text.any(::isJapaneseKana)
 }
 
 internal fun resolveLyricTranslationExtraGap(
@@ -375,8 +391,8 @@ internal fun resolveLyricTranslationGap(
     translationGlyphCoverage: Float = 1f,
     fontScale: Float = 1f
 ): Dp {
-    val lyricSize = lyricFontSize.value.takeIf { it.isFinite() && it > 0f }
-    val translationSize = translationFontSize.value.takeIf { it.isFinite() && it > 0f }
+    val lyricSize = lyricFontSize.value.positiveFiniteOrNull()
+    val translationSize = translationFontSize.value.positiveFiniteOrNull()
     val referenceFontSize = when {
         lyricSize != null && translationSize != null -> (lyricSize + translationSize) / 2f
         lyricSize != null -> lyricSize
@@ -400,8 +416,7 @@ private fun measureLyricInkMetrics(
     fontSize: TextUnit,
     typeface: Typeface
 ): LyricInkMetrics {
-    val sizeSp = fontSize.value.takeIf { it.isFinite() && it > 0f }
-        ?: LYRIC_TRANSLATION_GAP_REFERENCE_SP
+    val sizeSp = fontSize.value.positiveFiniteOrNull() ?: LYRIC_TRANSLATION_GAP_REFERENCE_SP
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = sizeSp
         this.typeface = typeface
@@ -427,13 +442,11 @@ private fun resolveLyricFontTypeface(fontWeight: FontWeight): Typeface {
     }
 }
 
-private fun resolveLyricLineHeight(fontSize: TextUnit, multiplier: Float): TextUnit {
-    val size = fontSize.value.takeIf { it.isFinite() && it > 0f }
-        ?: LYRIC_TRANSLATION_GAP_REFERENCE_SP
-    return if (fontSize.value.isFinite() && fontSize.value > 0f) {
+internal fun resolveLyricLineHeight(fontSize: TextUnit, multiplier: Float): TextUnit {
+    return if (fontSize.value.positiveFiniteOrNull() != null) {
         fontSize * multiplier
     } else {
-        (size * multiplier).sp
+        (LYRIC_TRANSLATION_GAP_REFERENCE_SP * multiplier).sp
     }
 }
 
@@ -451,177 +464,6 @@ data class LyricVisualSpec(
     val inactiveBlurFar: Dp = 3.dp,
     val flipDurationMs: Int = 260
 )
-
-/** 单词/字的时间戳 */
-data class WordTiming(
-    val startTimeMs: Long,
-    val endTimeMs: Long,
-    val charCount: Int = 0
-)
-
-/** 一行歌词 */
-data class LyricEntry(
-    val text: String,
-    val startTimeMs: Long,
-    val endTimeMs: Long,
-    val words: List<WordTiming>? = null,
-    val translation: String? = null
-)
-
-private val NeteaseYrcLineRegex = Regex("""\[\d{1,19},\s*\d{1,19}]\(\d{1,19},""")
-private val TtmlTagRegex = Regex("""<\s*tt(?:\s|>)""", RegexOption.IGNORE_CASE)
-private val TtmlLayoutWhitespaceRegex = Regex("""[\r\n]\s*""")
-private val EnhancedLrcLineTimestampRegex = Regex(
-    """\[(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?]"""
-)
-private val EnhancedLrcWordTimestampRegex = Regex(
-    """<(\d{1,3}):(\d{2})(?:\.(\d{1,3}))?>"""
-)
-private val LrcCreditLineRegex = Regex(
-    """^(?:作词|作曲|编曲|填词|演唱|歌手|混音|母带|制作|监制|录音|和声|配唱|吉他(?:solo)?|贝斯|鼓|键盘|弦乐|vo(?:/mix)?|mix|tune|inst|guitar|bass|drums?|vocal|lyrics|music|arrangement|produced)\s*[:：]""",
-    RegexOption.IGNORE_CASE
-)
-
-private data class LrcTimelineEntry(
-    val startTimeMs: Long,
-    val text: String,
-    val words: List<EnhancedLrcWord>? = null,
-    val explicitEndTimeMs: Long? = null,
-    val sourceLineIndex: Int = 0,
-    val timestampIndex: Int = 0
-)
-
-private data class EnhancedLrcWord(
-    val text: String,
-    val startTimeMs: Long,
-    val endTimeMs: Long?
-)
-
-private data class EnhancedLrcTimelineEntry(
-    val startTimeMs: Long,
-    val text: String,
-    val words: List<EnhancedLrcWord>
-)
-
-fun isNeteaseYrc(content: String): Boolean = content.contains(NeteaseYrcLineRegex)
-
-internal fun isTtmlLyrics(content: String): Boolean = TtmlTagRegex.containsMatchIn(content)
-
-fun parseNeteaseLyricsAuto(content: String): List<LyricEntry> {
-    return when {
-        isTtmlLyrics(content) -> parseTtmlLyrics(content)
-        isNeteaseYrc(content) -> runCatching { parseNeteaseYrc(content) }.getOrDefault(emptyList())
-        isEnhancedLrc(content) -> parseEnhancedLrc(content)
-        else -> parseNeteaseLrc(content)
-    }
-}
-
-fun parseTtmlLyrics(content: String): List<LyricEntry> {
-    return runCatching {
-        AutoParser().parse(content).lines
-            .mapNotNull(::toLyricEntry)
-            .filter { it.text.isNotBlank() }
-            .sortedBy { it.startTimeMs }
-    }.getOrDefault(emptyList())
-}
-
-private fun toLyricEntry(line: ISyncedLine): LyricEntry? {
-    val startMs = line.start.toLong()
-    val endMs = line.end.toLong().coerceAtLeast(startMs)
-    return when (line) {
-        is KaraokeLine -> {
-            val syllables = line.syllables
-                .map { syllable -> syllable to syllable.content.withoutTtmlLayoutWhitespace() }
-                .filter { (_, content) -> content.isNotBlank() }
-            val text = syllables.joinToString(separator = "") { (_, content) -> content }
-            LyricEntry(
-                text = text,
-                startTimeMs = startMs,
-                endTimeMs = endMs,
-                words = syllables.map { (syllable, content) ->
-                    WordTiming(
-                        startTimeMs = syllable.start.toLong(),
-                        endTimeMs = syllable.end.toLong().coerceAtLeast(syllable.start.toLong()),
-                        charCount = content.length
-                    )
-                }.takeIf { it.isNotEmpty() },
-                translation = line.translation
-                    ?.withoutTtmlLayoutWhitespace()
-                    ?.takeIf { it.isNotBlank() }
-            )
-        }
-        is SyncedLine -> LyricEntry(
-            text = line.content.withoutTtmlLayoutWhitespace(),
-            startTimeMs = startMs,
-            endTimeMs = endMs,
-            translation = line.translation
-                ?.withoutTtmlLayoutWhitespace()
-                ?.takeIf { it.isNotBlank() }
-        )
-        else -> null
-    }
-}
-
-private fun String.withoutTtmlLayoutWhitespace(): String {
-    return replace(TtmlLayoutWhitespaceRegex, "")
-}
-
-/**
- * 根据当前时间计算该行的高亮进度 (0f..1f) , 基于字符数进行精确计算
- */
-fun calculateLineProgress(line: LyricEntry, currentTimeMs: Long): Float {
-    val start = line.startTimeMs
-    val end = line.endTimeMs
-
-    if (currentTimeMs <= start) return 0f
-    if (currentTimeMs >= end) return 1f
-
-    val words = line.words
-    val totalChars = line.text.length
-    if (words.isNullOrEmpty() || totalChars == 0) {
-        val lineDur = (end - start).coerceAtLeast(1)
-        return ((currentTimeMs - start).toFloat() / lineDur).coerceIn(0f, 1f)
-    }
-
-    var completedChars = 0
-    for (word in words) {
-        val ws = word.startTimeMs
-        val we = word.endTimeMs
-
-        if (currentTimeMs < ws) {
-            return completedChars.toFloat() / totalChars
-        }
-
-        if (currentTimeMs < we) {
-            val wordDur = (we - ws).coerceAtLeast(1)
-            val timeInWord = currentTimeMs - ws
-            val partialProgress = timeInWord.toFloat() / wordDur
-            val partialChars = partialProgress * word.charCount
-            return ((completedChars + partialChars) / totalChars).coerceIn(0f, 1f)
-        }
-
-        completedChars += word.charCount
-    }
-
-    return 1f
-}
-/** 找到当前时间所在的行索引 */
-fun findCurrentLineIndex(lines: List<LyricEntry>, currentTimeMs: Long): Int {
-    if (lines.isEmpty()) return -1
-    var low = 0
-    var high = lines.lastIndex
-    var result = 0
-    while (low <= high) {
-        val mid = (low + high) ushr 1
-        if (lines[mid].startTimeMs <= currentTimeMs) {
-            result = mid
-            low = mid + 1
-        } else {
-            high = mid - 1
-        }
-    }
-    return result
-}
 
 internal fun shouldSnapLyricTimeSmoothing(
     displayedTimeMs: Long,
@@ -671,57 +513,74 @@ private fun animateFloatWhenEnabled(
     return if (enabled) animated else immediate
 }
 
+/**
+ * 线性过渡到新的歌词时间；按播放页共用的帧格推进，
+ * 不跟随 120 Hz 屏逐帧刷新，否则歌词会单独把整个窗口拉到满帧
+ */
 @Composable
 private fun rememberSmoothedLyricTimeMs(
     targetTimeMs: Long
 ): Long {
-    val smoothedTime = remember { Animatable(targetTimeMs.toFloat()) }
+    var displayedTimeMs by remember { mutableLongStateOf(targetTimeMs) }
 
     LaunchedEffect(targetTimeMs) {
-        val displayedTimeMs = smoothedTime.value.roundToLong()
-        if (shouldSnapLyricTimeSmoothing(displayedTimeMs, targetTimeMs)) {
-            smoothedTime.snapTo(targetTimeMs.toFloat())
-        } else {
-            smoothedTime.animateTo(
-                targetValue = targetTimeMs.toFloat(),
-                animationSpec = tween(
-                    durationMillis = LYRIC_TIME_SMOOTHING_DURATION_MS,
-                    easing = LinearEasing
-                )
-            )
+        val startTimeMs = displayedTimeMs
+        if (shouldSnapLyricTimeSmoothing(startTimeMs, targetTimeMs)) {
+            displayedTimeMs = targetTimeMs
+            return@LaunchedEffect
+        }
+        val durationNanos = LYRIC_TIME_SMOOTHING_DURATION_MS * 1_000_000L
+        var startFrameNanos = 0L
+        var lastRenderedFrameNanos = 0L
+        while (displayedTimeMs != targetTimeMs) {
+            withFrameNanos { frameNanos ->
+                if (startFrameNanos == 0L) startFrameNanos = frameNanos
+                if (!isNewAmbientFrameSlot(lastRenderedFrameNanos, frameNanos, AMBIENT_ANIMATION_FRAME_INTERVAL_NANOS)) {
+                    return@withFrameNanos
+                }
+                lastRenderedFrameNanos = frameNanos
+                val fraction = ((frameNanos - startFrameNanos).toDouble() / durationNanos).coerceIn(0.0, 1.0)
+                displayedTimeMs = startTimeMs + ((targetTimeMs - startTimeMs) * fraction).roundToLong()
+            }
         }
     }
 
-    return smoothedTime.value.roundToLong()
+    return displayedTimeMs
 }
 
 /** 上下渐隐 */
 fun Modifier.verticalEdgeFade(fadeHeight: Dp): Modifier = this
     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-    .drawWithContent {
-        drawContent()
+    .drawWithCache {
+        // 遮罩只随尺寸变化，滚动和逐帧重绘时复用同一个渐变
         val edge = (fadeHeight.toPx() / size.height).coerceIn(0f, 0.44f)
-        if (edge <= 0f) return@drawWithContent
-        val transparentMask = Color.Black.copy(alpha = 0f)
-        val lightMask = Color.Black.copy(alpha = 0.12f)
-        val mediumMask = Color.Black.copy(alpha = 0.58f)
-        val nearOpaqueMask = Color.Black.copy(alpha = 0.9f)
-        val brush = Brush.verticalGradient(
-            colorStops = arrayOf(
-                0.0f to transparentMask,
-                edge * 0.3f to lightMask,
-                edge * 0.65f to mediumMask,
-                edge to nearOpaqueMask,
-                edge * 1.12f to Color.Black,
-                1f - edge * 1.12f to Color.Black,
-                1f - edge to nearOpaqueMask,
-                1f - edge * 0.65f to mediumMask,
-                1f - edge * 0.3f to lightMask,
-                1.0f to transparentMask
-            )
-        )
-        drawRect(brush = brush, size = size, blendMode = BlendMode.DstIn)
+        val brush = if (edge > 0f) verticalEdgeFadeBrush(edge) else null
+        onDrawWithContent {
+            drawContent()
+            if (brush != null) drawRect(brush = brush, size = size, blendMode = BlendMode.DstIn)
+        }
     }
+
+internal fun verticalEdgeFadeBrush(edge: Float): Brush {
+    val transparentMask = Color.Black.copy(alpha = 0f)
+    val lightMask = Color.Black.copy(alpha = 0.12f)
+    val mediumMask = Color.Black.copy(alpha = 0.58f)
+    val nearOpaqueMask = Color.Black.copy(alpha = 0.9f)
+    return Brush.verticalGradient(
+        colorStops = arrayOf(
+            0.0f to transparentMask,
+            edge * 0.3f to lightMask,
+            edge * 0.65f to mediumMask,
+            edge to nearOpaqueMask,
+            edge * 1.12f to Color.Black,
+            1f - edge * 1.12f to Color.Black,
+            1f - edge to nearOpaqueMask,
+            1f - edge * 0.65f to mediumMask,
+            1f - edge * 0.3f to lightMask,
+            1.0f to transparentMask
+        )
+    )
+}
 
 internal fun resolveLyricEdgeFadeHeight(isEmbedded: Boolean): Dp {
     return if (isEmbedded) 56.dp else 72.dp
@@ -757,21 +616,44 @@ fun SyncedLyricsView(
     edgeFadeHeight: Dp = resolveLyricEdgeFadeHeight(isEmbedded = false),
     showEmbeddedTranslations: Boolean = true,
     playbackSessionKey: String? = null,
-    stableEmbeddedViewport: Boolean = false
+    stableEmbeddedViewport: Boolean = false,
+    bilingualDisplayEnabled: Boolean = true
 ) {
+    val translationMatchesByIndex = remember(lyrics, translatedLyrics) {
+        matchTranslationsToLineIndices(
+            lines = lyrics,
+            translations = translatedLyrics.orEmpty().filter { it.text.isNotBlank() }
+        )
+    }
+    val display = remember(lyrics, translationMatchesByIndex, showEmbeddedTranslations, bilingualDisplayEnabled) {
+        val translatedLines = lyrics.mapIndexed { index, line ->
+            val translation = resolveLyricTranslationText(
+                line = line,
+                matchedTranslation = translationMatchesByIndex[index],
+                showEmbeddedTranslations = showEmbeddedTranslations
+            )
+            if (translation == line.translation) line else line.copy(translation = translation)
+        }
+        if (bilingualDisplayEnabled) {
+            prepareBilingualLyricDisplay(translatedLines)
+        } else {
+            BilingualLyricDisplay(translatedLines, translatedLines.indices.toList())
+        }
+    }
+    val displayLyrics = display.lyrics
     val lyricScrollSessionKey = remember(playbackSessionKey, lyrics) {
         resolveLyricScrollSessionKey(playbackSessionKey, lyrics)
     }
 
     val lineSelectionTimeMs = (currentTimeMs + lyricOffsetMs).coerceAtLeast(0L)
-    val currentIndex = remember(lyrics, lineSelectionTimeMs) {
-        findCurrentLineIndex(lyrics, lineSelectionTimeMs)
+    val currentIndex = remember(displayLyrics, lineSelectionTimeMs) {
+        findCurrentLineIndex(displayLyrics, lineSelectionTimeMs)
     }
     val listState = remember(lyricScrollSessionKey, stableEmbeddedViewport) {
         LazyListState(
             firstVisibleItemIndex = resolveInitialLyricScrollIndex(
                 currentIndex = currentIndex,
-                lyricsSize = lyrics.size,
+                lyricsSize = displayLyrics.size,
                 stabilizeViewport = stableEmbeddedViewport
             )
         )
@@ -780,22 +662,11 @@ fun SyncedLyricsView(
     var isAutoScrolling by remember(lyricScrollSessionKey) { mutableStateOf(false) }
     var lastUserInteracting by remember(lyricScrollSessionKey) { mutableStateOf(false) }
 
-    val translationMatchesByIndex = remember(lyrics, translatedLyrics) {
-        translatedLyrics
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { translations ->
-                matchTranslationsToLineIndices(
-                    lines = lyrics,
-                    translations = translations.filter { it.text.isNotBlank() }
-                )
-            }
-            .orEmpty()
-    }
     val animateItemPlacement = shouldAnimateLyricItemPlacement()
 
     val autoScrollTarget = LyricAutoScrollTarget(
         lineIndex = currentIndex,
-        lyricsSize = lyrics.size
+        lyricsSize = displayLyrics.size
     )
     val latestAutoScrollTarget by rememberUpdatedState(autoScrollTarget)
     val isUserInteracting by remember(listState) {
@@ -805,13 +676,13 @@ fun SyncedLyricsView(
     LaunchedEffect(
         lyricScrollSessionKey,
         currentIndex,
-        lyrics.size,
+        displayLyrics.size,
         isUserInteracting,
         manualClearHoldIndex
     ) {
         if (!shouldAutoScrollLyricViewport(
                 currentIndex = currentIndex,
-                lyricsSize = lyrics.size,
+                lyricsSize = displayLyrics.size,
                 firstVisibleItemIndex = listState.firstVisibleItemIndex,
                 firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
                 isUserInteracting = isUserInteracting,
@@ -887,11 +758,12 @@ fun SyncedLyricsView(
                 .verticalEdgeFade(fadeHeight = edgeFadeHeight)
         ) {
             itemsIndexed(
-                items = lyrics,
+                items = displayLyrics,
                 key = { index, line ->
                     lyricScrollSessionKey to lyricListItemKey(index, line)
                 }
             ) { index, line ->
+                val sourceLine = lyrics[display.sourceIndices[index]]
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -899,8 +771,8 @@ fun SyncedLyricsView(
                         .clip(RoundedCornerShape(16.dp))
                         .combinedClickable(
                             enabled = handleLyricClick != null || handleLyricLongClick != null,
-                            onClick = { handleLyricClick?.invoke(line) },
-                            onLongClick = { handleLyricLongClick?.invoke(line) }
+                            onClick = { handleLyricClick?.invoke(sourceLine) },
+                            onLongClick = { handleLyricLongClick?.invoke(sourceLine) }
                         )
                         .then(
                             if (animateItemPlacement) {
@@ -1049,6 +921,7 @@ fun SyncedLyricsView(
                             ) {
                                 SyncedLyricsActiveLine(
                                     line = line,
+                                    parallelParagraphReveal = bilingualDisplayEnabled,
                                     currentTimeMs = currentTimeMs,
                                     activeColor = textColor,
                                     inactiveColor = textColor.copy(alpha = 0.5f),
@@ -1081,11 +954,7 @@ fun SyncedLyricsView(
                         )
                     }
 
-                    val transText = resolveLyricTranslationText(
-                        line = line,
-                        matchedTranslation = translationMatchesByIndex[index],
-                        showEmbeddedTranslations = showEmbeddedTranslations
-                    )
+                    val transText = line.translation
                     transText?.takeIf { it.isNotBlank() }?.let { translation ->
                         AnimatedLyricTranslation(
                             text = translation,
@@ -1209,266 +1078,7 @@ private fun LyricTranslationText(
  * 示例: [12580,3470](12580,250,0)难(12830,300,0)以
  * 会把每段文字的长度写入 WordTiming.charCount, 用于多行逐字揭示
  */
-fun parseNeteaseYrc(yrc: String): List<LyricEntry> {
-//    NPLogger.d("parseYrc-N", yrc)
-    val out = mutableListOf<LyricEntry>()
-    val headerRegex = Regex("""\[(\d{1,19}),\s*(\d{1,19})]""")
-    val segRegex = Regex("""\((\d{1,19}),\s*(\d{1,19}),\s*[-\d]{1,20}\)([^()\n\r]*)""")
-
-    yrc.lineSequence().forEach { raw ->
-        val line = raw.trim()
-        if (line.isEmpty()) return@forEach
-        if (!line.startsWith("[")) return@forEach
-
-        val header = headerRegex.find(line) ?: return@forEach
-        val start = header.groupValues[1].toLongOrNull() ?: return@forEach
-        val dur = header.groupValues[2].toLongOrNull() ?: return@forEach
-        val end = start.saturatingAdd(dur)
-
-        val segs = segRegex.findAll(line).toList()
-        if (segs.isEmpty()) {
-            val text = line.substringAfter("]").trim()
-            out.add(LyricEntry(text = text, startTimeMs = start, endTimeMs = end, words = null))
-        } else {
-            val words = mutableListOf<WordTiming>()
-            val sb = StringBuilder()
-            for (m in segs) {
-                val ws = m.groupValues[1].toLongOrNull() ?: continue
-                val wd = m.groupValues[2].toLongOrNull() ?: continue
-                val we = ws.saturatingAdd(wd)
-                val t = m.groupValues[3]
-                sb.append(t)
-                words.add(WordTiming(ws, we, charCount = t.length))
-            }
-            out.add(
-                LyricEntry(
-                    text = sb.toString(),
-                    startTimeMs = start,
-                    endTimeMs = end,
-                    words = words
-                )
-            )
-        }
-    }
-    return out.sortedBy { it.startTimeMs }
-}
-
-private fun Long.saturatingAdd(other: Long): Long {
-    return if (other > 0L && this > Long.MAX_VALUE - other) {
-        Long.MAX_VALUE
-    } else {
-        this + other
-    }
-}
-
-private fun isEnhancedLrc(content: String): Boolean {
-    return content.lineSequence().any { rawLine ->
-        val line = rawLine.trimStart()
-        val lineTimestamp = EnhancedLrcLineTimestampRegex.find(line)
-            ?.takeIf { it.range.first == 0 }
-            ?: return@any false
-        EnhancedLrcWordTimestampRegex.find(line.substring(lineTimestamp.range.last + 1)) != null
-    }
-}
-
-private fun parseEnhancedLrc(lrc: String): List<LyricEntry> {
-    val timeline = lrc.lineSequence()
-        .mapNotNull(::parseEnhancedLrcTimelineEntry)
-        .sortedBy(EnhancedLrcTimelineEntry::startTimeMs)
-        .toList()
-
-    return timeline.mapIndexed { index, line ->
-        val nextLineStartMs = timeline.getOrNull(index + 1)?.startTimeMs
-        val words = line.words.mapIndexed { wordIndex, word ->
-            val fallbackEndMs = line.words.getOrNull(wordIndex + 1)?.startTimeMs
-                ?: nextLineStartMs
-                ?: line.startTimeMs.saturatingAdd(5_000L)
-            WordTiming(
-                startTimeMs = word.startTimeMs,
-                endTimeMs = (word.endTimeMs ?: fallbackEndMs).coerceAtLeast(word.startTimeMs),
-                charCount = word.text.length
-            )
-        }
-        val endTimeMs = words.maxOfOrNull { it.endTimeMs }
-            ?: nextLineStartMs
-            ?: line.startTimeMs.saturatingAdd(5_000L)
-        LyricEntry(
-            text = line.text,
-            startTimeMs = line.startTimeMs,
-            endTimeMs = endTimeMs.coerceAtLeast(line.startTimeMs),
-            words = words
-        )
-    }
-}
-
-private fun parseEnhancedLrcTimelineEntry(rawLine: String): EnhancedLrcTimelineEntry? {
-    val line = rawLine.trim()
-    val lineTimestamp = EnhancedLrcLineTimestampRegex.find(line)
-        ?.takeIf { it.range.first == 0 }
-        ?: return null
-    val startTimeMs = parseLrcTimestampMs(lineTimestamp) ?: return null
-    val content = line.substring(lineTimestamp.range.last + 1)
-    val wordTimestamps = EnhancedLrcWordTimestampRegex.findAll(content).toList()
-    if (wordTimestamps.isEmpty()) {
-        return null
-    }
-
-    val words = buildList {
-        val prefix = content.substring(0, wordTimestamps.first().range.first)
-        if (prefix.any { !it.isWhitespace() }) {
-            add(
-                EnhancedLrcWord(
-                    text = prefix,
-                    startTimeMs = startTimeMs,
-                    endTimeMs = parseLrcTimestampMs(wordTimestamps.first())
-                )
-            )
-        }
-        wordTimestamps.forEachIndexed { index, timestamp ->
-            val textStart = timestamp.range.last + 1
-            val textEnd = wordTimestamps.getOrNull(index + 1)?.range?.first ?: content.length
-            val text = content.substring(textStart, textEnd)
-            if (text.isNotEmpty()) {
-                add(
-                    EnhancedLrcWord(
-                        text = text,
-                        startTimeMs = parseLrcTimestampMs(timestamp) ?: return@forEachIndexed,
-                        endTimeMs = wordTimestamps.getOrNull(index + 1)
-                            ?.let(::parseLrcTimestampMs)
-                    )
-                )
-            }
-        }
-    }
-    if (words.isEmpty()) {
-        return null
-    }
-    return EnhancedLrcTimelineEntry(
-        startTimeMs = startTimeMs,
-        text = words.joinToString(separator = "") { it.text },
-        words = words
-    )
-}
-
-private fun parseLrcTimestampMs(timestamp: MatchResult): Long? {
-    val minutes = timestamp.groupValues[1].toLongOrNull() ?: return null
-    val seconds = timestamp.groupValues[2].toLongOrNull() ?: return null
-    val fraction = timestamp.groupValues[3]
-    val milliseconds = when (fraction.length) {
-        0 -> 0L
-        1 -> fraction.toLongOrNull()?.times(100L)
-        2 -> fraction.toLongOrNull()?.times(10L)
-        else -> fraction.toLongOrNull()
-    } ?: return null
-    return minutes * 60_000L + seconds * 1_000L + milliseconds
-}
-
-private fun parseSquareBracketLrcTimelineEntries(
-    rawLine: String,
-    sourceLineIndex: Int
-): List<LrcTimelineEntry> {
-    val line = rawLine.trim()
-    val timestamps = EnhancedLrcLineTimestampRegex.findAll(line).toList()
-    if (timestamps.isEmpty() || timestamps.first().range.first != 0) {
-        return emptyList()
-    }
-
-    var leadingTimestampCount = 1
-    var nextExpectedStart = timestamps.first().range.last + 1
-    while (
-        leadingTimestampCount < timestamps.size &&
-        timestamps[leadingTimestampCount].range.first == nextExpectedStart
-    ) {
-        nextExpectedStart = timestamps[leadingTimestampCount].range.last + 1
-        leadingTimestampCount++
-    }
-
-    val primaryTimestampIndex = leadingTimestampCount - 1
-    val primaryTimestamp = timestamps[primaryTimestampIndex]
-    val primaryStartTimeMs = parseLrcTimestampMs(primaryTimestamp) ?: return emptyList()
-    val inlineTimestamps = timestamps.drop(leadingTimestampCount)
-    val fragments = buildList {
-        val firstTextEnd = inlineTimestamps.firstOrNull()?.range?.first ?: line.length
-        add(
-            EnhancedLrcWord(
-                text = line.substring(primaryTimestamp.range.last + 1, firstTextEnd),
-                startTimeMs = primaryStartTimeMs,
-                endTimeMs = inlineTimestamps.firstOrNull()?.let(::parseLrcTimestampMs)
-            )
-        )
-        inlineTimestamps.forEachIndexed { index, timestamp ->
-            val textStart = timestamp.range.last + 1
-            val textEnd = inlineTimestamps.getOrNull(index + 1)?.range?.first ?: line.length
-            add(
-                EnhancedLrcWord(
-                    text = line.substring(textStart, textEnd),
-                    startTimeMs = parseLrcTimestampMs(timestamp) ?: return@forEachIndexed,
-                    endTimeMs = inlineTimestamps.getOrNull(index + 1)
-                        ?.let(::parseLrcTimestampMs)
-                )
-            )
-        }
-    }
-    val visibleFragments = fragments.filterIndexed { index, fragment ->
-        fragment.text.isNotEmpty() &&
-            (index != 0 || fragment.text.any { !it.isWhitespace() })
-    }
-
-    if (visibleFragments.size >= 2) {
-        return listOf(
-            LrcTimelineEntry(
-                startTimeMs = primaryStartTimeMs,
-                text = visibleFragments.joinToString(separator = "") { it.text },
-                words = visibleFragments,
-                sourceLineIndex = sourceLineIndex,
-                timestampIndex = primaryTimestampIndex
-            )
-        )
-    }
-
-    val text = visibleFragments.singleOrNull()?.text?.trim().orEmpty()
-    val explicitEndTimeMs = visibleFragments.singleOrNull()?.endTimeMs
-    return timestamps.take(leadingTimestampCount).mapIndexedNotNull { timestampIndex, timestamp ->
-        val startTimeMs = parseLrcTimestampMs(timestamp) ?: return@mapIndexedNotNull null
-        LrcTimelineEntry(
-            startTimeMs = startTimeMs,
-            text = text,
-            explicitEndTimeMs = explicitEndTimeMs.takeIf { leadingTimestampCount == 1 },
-            sourceLineIndex = sourceLineIndex,
-            timestampIndex = timestampIndex
-        )
-    }
-}
-
-private fun foldAdjacentSquareBracketTranslations(
-    entries: List<LyricEntry>
-): List<LyricEntry> {
-    val foldedEntries = mutableListOf<LyricEntry>()
-    var index = 0
-    while (index < entries.size) {
-        val entry = entries[index]
-        val followingEntry = entries.getOrNull(index + 1)
-        val followingText = followingEntry?.text.orEmpty()
-        val isAdjacentTranslation =
-            !entry.words.isNullOrEmpty() &&
-                followingEntry?.words.isNullOrEmpty() &&
-                followingEntry?.startTimeMs == entry.startTimeMs &&
-                followingText.isNotBlank() &&
-                !LrcCreditLineRegex.containsMatchIn(followingText) &&
-                !isLyricCreditMetadataLine(followingText)
-        if (isAdjacentTranslation) {
-            foldedEntries += entry.copy(translation = followingText)
-            index += 2
-        } else {
-            foldedEntries += entry
-            index++
-        }
-    }
-    return foldedEntries
-}
-
 /** 小数字符偏移的多行 reveal */
-@Composable
 internal fun Modifier.multilineGradientReveal(
     layout: TextLayoutResult?,
     revealOffsetChars: Float?,
@@ -1477,7 +1087,8 @@ internal fun Modifier.multilineGradientReveal(
     line: LyricEntry? = null,
     interpolatedPositionState: InterpolatedPlaybackPositionState? = null,
     lyricOffsetMs: Long = 0L,
-    horizontalContentInset: Dp = 0.dp
+    horizontalContentInset: Dp = 0.dp,
+    parallelParagraphs: List<TextRange> = emptyList()
 ): Modifier = this
     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
     .drawWithContent {
@@ -1485,148 +1096,165 @@ internal fun Modifier.multilineGradientReveal(
             drawContent()
             return@drawWithContent
         }
-        val effectiveRevealOffsetChars = revealOffsetChars ?: run {
-            val currentLine = line
-            val positionState = interpolatedPositionState
-            if (currentLine == null || positionState == null) {
-                drawContent()
-                return@drawWithContent
-            }
-            val drawTimeMs = (positionState.renderedPositionMs + lyricOffsetMs).coerceAtLeast(0L)
-            currentLine.text.length * calculateLineProgress(currentLine, drawTimeMs).coerceIn(0f, 1f)
-        }
-
+        val effectiveRevealOffsetChars = resolveDrawTimeRevealOffsetChars(
+            revealOffsetChars = revealOffsetChars,
+            line = line,
+            interpolatedPositionState = interpolatedPositionState,
+            lyricOffsetMs = lyricOffsetMs
+        )
         // 进度达100%, 直接显示全部高亮, 跳过裁剪
-        if (effectiveRevealOffsetChars >= textLength) {
+        if (effectiveRevealOffsetChars == null || effectiveRevealOffsetChars >= textLength) {
             drawContent()
             return@drawWithContent
         }
-
-        val safeChars = effectiveRevealOffsetChars.coerceIn(0f, textLength.toFloat())
-        val totalLines = layout.lineCount
-        val horizontalInsetPx = horizontalContentInset.toPx()
-
-        // 遍历所有行, 分三种情况处理, 已完成行, 当前行, 未开始行
-        for (lineIndex in 0 until totalLines) {
-            val lineStartIdx = layout.getLineStart(lineIndex) // 该行第一个字符的索引
-            val lineEndIdx = layout.getLineEnd(lineIndex, true) // 该行最后一个字符的索引 (含换行符)
-            val rawLineLeft = layout.getLineLeft(lineIndex) + horizontalInsetPx
-            val rawLineRight = layout.getLineRight(lineIndex) + horizontalInsetPx
-            val lineClipBounds = resolveLyricRevealClipBounds(
-                lineLeft = rawLineLeft,
-                lineRight = rawLineRight,
-                horizontalBleedPx = horizontalInsetPx,
-                containerWidth = size.width
-            )
-
-            // 进度超过该行最后一个字符, 直接绘制全高亮
-            if (safeChars >= lineEndIdx) {
-                clipRect(
-                    left = lineClipBounds.left,
-                    top = layout.getLineTop(lineIndex),
-                    right = lineClipBounds.right,
-                    bottom = layout.getLineBottom(lineIndex)
-                ) {
-                    this@drawWithContent.drawContent()
-                }
-            }
-            // 进度落在该行内, 执行渐变裁剪
-            else if (safeChars >= lineStartIdx) {
-                val currentIdxInLine = (safeChars - lineStartIdx).coerceAtLeast(0f)
-                val currentCharIdx = lineStartIdx + floor(currentIdxInLine).toInt()
-                val frac = (currentIdxInLine - floor(currentIdxInLine)).coerceIn(0f, 1f)
-
-                // 计算当前字符和下一个字符的X坐标
-                // 使用 getBoundingBox 获取更准确的字符边界, 避免字体渲染偏移
-                val x0 = try {
-                    layout.getBoundingBox(currentCharIdx).left + horizontalInsetPx
-                } catch (e: Exception) {
-                    layout.getHorizontalPosition(
-                        currentCharIdx,
-                        usePrimaryDirection = true
-                    ) + horizontalInsetPx
-                }
-                val nextCharIdx = if (currentCharIdx >= lineEndIdx - 1) {
-                    lineEndIdx // 该行最后一个字符，下一个字符指向行尾
-                } else {
-                    currentCharIdx + 1
-                }
-                val x1 = if (currentCharIdx >= lineEndIdx - 1) {
-                    rawLineRight // 该行最后一个字符，X1取行右边界
-                } else {
-                    try {
-                        layout.getBoundingBox(nextCharIdx).left + horizontalInsetPx
-                    } catch (e: Exception) {
-                        layout.getHorizontalPosition(
-                            nextCharIdx,
-                            usePrimaryDirection = true
-                        ) + horizontalInsetPx
-                    }
-                }
-
-                // 确保X坐标在当前行范围内
-                val lineLeft = lineClipBounds.left
-                val lineRight = lineClipBounds.right
-                val x = (x0 + (x1 - x0) * frac).coerceIn(lineLeft, lineRight)
-
-                // 计算渐变范围
-                val fadePx = fadeWidth.toPx()
-                if (fadePx <= 0.5f) {
-                    clipRect(
-                        left = lineLeft,
-                        top = layout.getLineTop(lineIndex),
-                        right = x,
-                        bottom = layout.getLineBottom(lineIndex)
-                    ) {
-                        this@drawWithContent.drawContent()
-                    }
-                    continue
-                }
-                val start = (x - fadePx).coerceAtLeast(lineLeft)
-
-                // 裁剪并绘制当前行的渐变高亮
-                clipRect(
-                    left = lineLeft,
-                    top = layout.getLineTop(lineIndex),
-                    right = lineRight,
-                    bottom = layout.getLineBottom(lineIndex)
-                ) {
-                    this@drawWithContent.drawContent()
-
-                    // 绘制渐变遮罩
-                    val lineWidth = (lineRight - lineLeft).coerceAtLeast(1f)
-                    val s1 = ((start - lineLeft) / lineWidth).coerceIn(0f, 1f)
-                    val s2 = ((x - lineLeft) / lineWidth).coerceIn(0f, 1f)
-                    val leftStop = minOf(s1, s2)
-                    val rightStop = maxOf(s1, s2)
-                    val brush = Brush.horizontalGradient(
-                        colorStops = arrayOf(
-                            0f to Color.White,
-                            leftStop to Color.White,
-                            rightStop to Color.Transparent,
-                            1f to Color.Transparent
-                        ),
-                        startX = lineLeft,
-                        endX = lineRight
-                    )
-                    drawRect(
-                        brush = brush,
-                        topLeft = Offset(lineLeft, layout.getLineTop(lineIndex)),
-                        size = androidx.compose.ui.geometry.Size(
-                            lineRight - lineLeft,
-                            layout.getLineBottom(lineIndex) - layout.getLineTop(lineIndex)
-                        ),
-                        blendMode = BlendMode.DstIn
-                    )
-                }
-            }
-            // 进度未到该行, 不绘制高亮
-            else {
-                continue
-            }
-        }
+        drawRevealedLines(
+            layout = layout,
+            revealedChars = effectiveRevealOffsetChars.coerceIn(0f, textLength.toFloat()),
+            horizontalInsetPx = horizontalContentInset.toPx(),
+            fadePx = fadeWidth.toPx(),
+            parallelParagraphs = parallelParagraphs
+        )
     }
 
+/** 未提供字符偏移时, 在绘制阶段按插值播放位置计算, 返回 null 表示直接绘制原文 */
+internal fun resolveDrawTimeRevealOffsetChars(
+    revealOffsetChars: Float?,
+    line: LyricEntry?,
+    interpolatedPositionState: InterpolatedPlaybackPositionState?,
+    lyricOffsetMs: Long
+): Float? {
+    if (revealOffsetChars != null) return revealOffsetChars
+    if (line == null || interpolatedPositionState == null) return null
+    val drawTimeMs = (interpolatedPositionState.renderedPositionMs + lyricOffsetMs).coerceAtLeast(0L)
+    return line.text.length * calculateLineProgress(line, drawTimeMs).coerceIn(0f, 1f)
+}
+
+// 遍历所有行, 分三种情况处理, 已完成行, 当前行, 未开始行
+private fun ContentDrawScope.drawRevealedLines(
+    layout: TextLayoutResult,
+    revealedChars: Float,
+    horizontalInsetPx: Float,
+    fadePx: Float,
+    parallelParagraphs: List<TextRange>
+) {
+    var paragraphIndex = 0
+    val progress = revealedChars / layout.layoutInput.text.length
+    for (lineIndex in 0 until layout.lineCount) {
+        val lineStartIdx = layout.getLineStart(lineIndex) // 该行第一个字符的索引
+        val lineEndIdx = layout.getLineEnd(lineIndex, true) // 该行最后一个字符的索引 (含换行符)
+        while (paragraphIndex < parallelParagraphs.lastIndex &&
+            lineStartIdx > parallelParagraphs[paragraphIndex].end
+        ) {
+            paragraphIndex++
+        }
+        val paragraph = parallelParagraphs.getOrNull(paragraphIndex)
+        val rowRevealedChars = paragraph?.let { it.start + it.length * progress } ?: revealedChars
+        if (rowRevealedChars >= lineEndIdx) {
+            // 进度超过该行最后一个字符, 直接绘制全高亮
+            val lineClipBounds = layout.revealClipBounds(lineIndex, horizontalInsetPx, size.width)
+            clipRect(
+                left = lineClipBounds.left,
+                top = layout.getLineTop(lineIndex),
+                right = lineClipBounds.right,
+                bottom = layout.getLineBottom(lineIndex)
+            ) {
+                this@drawRevealedLines.drawContent()
+            }
+        } else if (rowRevealedChars >= lineStartIdx) {
+            // 进度落在该行内, 执行渐变裁剪; 进度未到的行不绘制高亮
+            drawPartiallyRevealedLine(layout, lineIndex, rowRevealedChars, horizontalInsetPx, fadePx)
+        }
+    }
+}
+
+private fun TextLayoutResult.revealClipBounds(
+    lineIndex: Int,
+    horizontalInsetPx: Float,
+    containerWidth: Float
+): LyricRevealClipBounds {
+    return resolveLyricRevealClipBounds(
+        lineLeft = getLineLeft(lineIndex) + horizontalInsetPx,
+        lineRight = getLineRight(lineIndex) + horizontalInsetPx,
+        horizontalBleedPx = horizontalInsetPx,
+        containerWidth = containerWidth
+    )
+}
+
+// 使用 getBoundingBox 获取更准确的字符边界, 避免字体渲染偏移
+private fun TextLayoutResult.revealCharLeft(charIndex: Int, horizontalInsetPx: Float): Float {
+    return try {
+        getBoundingBox(charIndex).left + horizontalInsetPx
+    } catch (e: Exception) {
+        getHorizontalPosition(charIndex, usePrimaryDirection = true) + horizontalInsetPx
+    }
+}
+
+private fun ContentDrawScope.drawPartiallyRevealedLine(
+    layout: TextLayoutResult,
+    lineIndex: Int,
+    revealedChars: Float,
+    horizontalInsetPx: Float,
+    fadePx: Float
+) {
+    val lineStartIdx = layout.getLineStart(lineIndex)
+    val lineEndIdx = layout.getLineEnd(lineIndex, true)
+    val lineClipBounds = layout.revealClipBounds(lineIndex, horizontalInsetPx, size.width)
+    val currentIdxInLine = (revealedChars - lineStartIdx).coerceAtLeast(0f)
+    val currentCharIdx = lineStartIdx + floor(currentIdxInLine).toInt()
+    val frac = (currentIdxInLine - floor(currentIdxInLine)).coerceIn(0f, 1f)
+
+    // 计算当前字符和下一个字符的X坐标
+    val x0 = layout.revealCharLeft(currentCharIdx, horizontalInsetPx)
+    val x1 = if (currentCharIdx >= lineEndIdx - 1) {
+        layout.getLineRight(lineIndex) + horizontalInsetPx // 该行最后一个字符，X1取行右边界
+    } else {
+        layout.revealCharLeft(currentCharIdx + 1, horizontalInsetPx)
+    }
+
+    // 确保X坐标在当前行范围内
+    val lineLeft = lineClipBounds.left
+    val lineRight = lineClipBounds.right
+    val lineTop = layout.getLineTop(lineIndex)
+    val lineBottom = layout.getLineBottom(lineIndex)
+    val x = (x0 + (x1 - x0) * frac).coerceIn(lineLeft, lineRight)
+
+    if (fadePx <= 0.5f) {
+        clipRect(left = lineLeft, top = lineTop, right = x, bottom = lineBottom) {
+            this@drawPartiallyRevealedLine.drawContent()
+        }
+        return
+    }
+    // 计算渐变范围
+    val start = (x - fadePx).coerceAtLeast(lineLeft)
+
+    // 裁剪并绘制当前行的渐变高亮
+    clipRect(left = lineLeft, top = lineTop, right = lineRight, bottom = lineBottom) {
+        this@drawPartiallyRevealedLine.drawContent()
+
+        // 绘制渐变遮罩
+        val lineWidth = (lineRight - lineLeft).coerceAtLeast(1f)
+        val s1 = ((start - lineLeft) / lineWidth).coerceIn(0f, 1f)
+        val s2 = ((x - lineLeft) / lineWidth).coerceIn(0f, 1f)
+        val leftStop = minOf(s1, s2)
+        val rightStop = maxOf(s1, s2)
+        val brush = Brush.horizontalGradient(
+            colorStops = arrayOf(
+                0f to Color.White,
+                leftStop to Color.White,
+                rightStop to Color.Transparent,
+                1f to Color.Transparent
+            ),
+            startX = lineLeft,
+            endX = lineRight
+        )
+        drawRect(
+            brush = brush,
+            topLeft = Offset(lineLeft, lineTop),
+            size = androidx.compose.ui.geometry.Size(lineRight - lineLeft, lineBottom - lineTop),
+            blendMode = BlendMode.DstIn
+        )
+    }
+}
 
 /**
  * 顶层当前行
@@ -1643,7 +1271,8 @@ fun SyncedLyricsActiveLine(
     isPlaying: Boolean = false,
     playbackSpeed: Float = 1f,
     interpolatePlaybackPosition: Boolean = false,
-    animateProgress: Boolean = true
+    animateProgress: Boolean = true,
+    parallelParagraphReveal: Boolean = true
 ) {
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     val isLayoutReady by remember { derivedStateOf { layout != null } }
@@ -1653,9 +1282,8 @@ fun SyncedLyricsActiveLine(
         playbackSpeed = playbackSpeed
     )
     val targetLyricTimeMs = (currentTimeMs + lyricOffsetMs).coerceAtLeast(0L)
-    val smoothedTargetLyricTimeMs = rememberSmoothedLyricTimeMs(targetLyricTimeMs)
     val smoothedLyricTimeMs = if (animateProgress) {
-        smoothedTargetLyricTimeMs
+        rememberSmoothedLyricTimeMs(targetLyricTimeMs)
     } else {
         targetLyricTimeMs
     }
@@ -1690,6 +1318,23 @@ fun SyncedLyricsActiveLine(
 
     val effectiveFadeWidth = if (line.words.isNullOrEmpty()) fadeWidth else 0.dp
     val revealHorizontalPadding = resolveActiveLyricRevealHorizontalPadding()
+    val parallelParagraphs = remember(line.text, line.words.isNullOrEmpty(), parallelParagraphReveal) {
+        if (parallelParagraphReveal && line.words.isNullOrEmpty() && '\n' in line.text) {
+            // 显式换行的歌词段共享进度，段内的软换行仍按字符顺序推进
+            buildList {
+                var paragraphStart = 0
+                line.text.forEachIndexed { index, char ->
+                    if (char == '\n') {
+                        add(TextRange(paragraphStart, index))
+                        paragraphStart = index + 1
+                    }
+                }
+                add(TextRange(paragraphStart, line.text.length))
+            }
+        } else {
+            emptyList()
+        }
+    }
 
     Box {
         // 底版文本
@@ -1727,7 +1372,8 @@ fun SyncedLyricsActiveLine(
                             null
                         },
                         lyricOffsetMs = lyricOffsetMs,
-                        horizontalContentInset = revealHorizontalPadding
+                        horizontalContentInset = revealHorizontalPadding,
+                        parallelParagraphs = parallelParagraphs
                     )
                     .padding(horizontal = revealHorizontalPadding)
             )
@@ -1767,95 +1413,6 @@ internal fun resolveHeadGlowTarget(
  * 支持 [mm:ss.SSS] 或 [mm:ss]
  * 没有逐字信息时, 逐字揭示会按整句线性推进
  */
-fun parseNeteaseLrc(lrc: String): List<LyricEntry> {
-//    NPLogger.d("parseLyc-N", lrc)
-    val normalizedLrc = normalizeLegacyLrcTimestamps(lrc)
-    if (isEnhancedLrc(normalizedLrc)) {
-        return parseEnhancedLrc(normalizedLrc)
-    }
-    val timeline = mutableListOf<LrcTimelineEntry>()
-
-    normalizedLrc.lineSequence().forEachIndexed { sourceLineIndex, raw ->
-        val line = raw.trim()
-        if (line.isEmpty()) return@forEachIndexed
-        if (line.startsWith("{") || line.startsWith("}")) return@forEachIndexed // 过滤 JSON 段
-
-        timeline += parseSquareBracketLrcTimelineEntries(
-            rawLine = line,
-            sourceLineIndex = sourceLineIndex
-        )
-    }
-
-    timeline.sortWith(
-        compareBy<LrcTimelineEntry> { it.startTimeMs }
-            .thenBy { it.sourceLineIndex }
-            .thenBy { it.timestampIndex }
-    )
-    val suffixContainsOnlyCredits = BooleanArray(timeline.size + 1)
-    suffixContainsOnlyCredits[timeline.size] = true
-    for (index in timeline.lastIndex downTo 0) {
-        val text = timeline[index].text
-        suffixContainsOnlyCredits[index] = text.isNotBlank() &&
-            LrcCreditLineRegex.containsMatchIn(text) &&
-            suffixContainsOnlyCredits[index + 1]
-    }
-    var seenNonBlankLine = false
-    var terminalMarkerIndex: Int? = null
-    for (index in timeline.indices) {
-        val entry = timeline[index]
-        if (entry.text.isBlank() && seenNonBlankLine && suffixContainsOnlyCredits[index + 1]) {
-            terminalMarkerIndex = index
-            break
-        }
-        if (entry.text.isNotBlank()) {
-            seenNonBlankLine = true
-        }
-    }
-    val effectiveTimeline = terminalMarkerIndex?.let { markerIndex ->
-        timeline.take(markerIndex + 1)
-    } ?: timeline
-    val out = mutableListOf<LyricEntry>()
-    var nextTimestampMs: Long? = null
-    for (index in effectiveTimeline.lastIndex downTo 0) {
-        val entry = effectiveTimeline[index]
-        if (entry.text.isNotBlank()) {
-            val nextDistinctTimestampMs = effectiveTimeline
-                .asSequence()
-                .drop(index + 1)
-                .firstOrNull { it.startTimeMs > entry.startTimeMs }
-                ?.startTimeMs
-            val words = entry.words?.let { sourceWords ->
-                sourceWords.mapIndexed { wordIndex, word ->
-                    val fallbackEndTimeMs = sourceWords.getOrNull(wordIndex + 1)?.startTimeMs
-                        ?: nextDistinctTimestampMs
-                        ?: entry.startTimeMs.saturatingAdd(5_000L)
-                    WordTiming(
-                        startTimeMs = word.startTimeMs,
-                        endTimeMs = (word.endTimeMs ?: fallbackEndTimeMs)
-                            .coerceAtLeast(word.startTimeMs),
-                        charCount = word.text.length
-                    )
-                }
-            }
-            val endTimeMs = words?.maxOfOrNull { it.endTimeMs }
-                ?: entry.explicitEndTimeMs
-                ?: nextTimestampMs
-                ?: entry.startTimeMs.saturatingAdd(5_000L)
-            out.add(
-                LyricEntry(
-                    text = entry.text,
-                    startTimeMs = entry.startTimeMs,
-                    endTimeMs = endTimeMs.coerceAtLeast(entry.startTimeMs),
-                    words = words
-                )
-            )
-        }
-        nextTimestampMs = entry.startTimeMs
-    }
-    out.reverse()
-    return foldAdjacentSquareBracketTranslations(out)
-}
-
 @Composable
 fun DebugActiveLine(
     line: LyricEntry,
@@ -1904,7 +1461,7 @@ fun DebugActiveLine(
     }
 }
 
-private fun scaleForDistance(d: Int, spec: LyricVisualSpec): Float =
+internal fun scaleForDistance(d: Int, spec: LyricVisualSpec): Float =
     when {
         d <= 0 -> spec.activeScale
         d == 1 -> spec.nearScale
@@ -1912,14 +1469,14 @@ private fun scaleForDistance(d: Int, spec: LyricVisualSpec): Float =
             .coerceIn(spec.farScaleMin, spec.farScale)
     }
 
-private fun alphaForDistance(d: Int, near: Float, far: Float): Float =
+internal fun alphaForDistance(d: Int, near: Float, far: Float): Float =
     when (d) {
         1 -> near
         2 -> far
         else -> (far - 0.08f * (d - 2)).coerceIn(0.16f, far)
     }
 
-private fun blurForDistance(d: Int, maxBlur: Float): Float =
+internal fun blurForDistance(d: Int, maxBlur: Float): Float =
     when (d) {
         1 -> maxBlur * 1.0f
         2 -> maxBlur * 1.5f

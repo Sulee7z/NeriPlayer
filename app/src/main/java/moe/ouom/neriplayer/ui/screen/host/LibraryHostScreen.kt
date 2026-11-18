@@ -24,14 +24,12 @@ package moe.ouom.neriplayer.ui.screen.host
  */
 
 import android.os.Parcelable
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import kotlinx.parcelize.Parcelize
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.togetherWith
-import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.lazy.LazyListState
@@ -47,6 +45,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.mapSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -54,82 +53,185 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import moe.ouom.neriplayer.ui.screen.artist.NeteaseArtistDetailScreen
+import moe.ouom.neriplayer.ui.screen.artist.BiliUploaderDetailScreen
+import moe.ouom.neriplayer.ui.screen.artist.YouTubeMusicCreatorNavigationScreen
 import moe.ouom.neriplayer.ui.screen.playlist.LocalArtistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.HotPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.LocalPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteaseAlbumDetailScreen
+import moe.ouom.neriplayer.ui.screen.playlist.NeteaseCloudScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteasePlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.BiliPlaylistDetailScreen
-import moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen
-import moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlaylistDetailScreen
-import moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlatform
-import moe.ouom.neriplayer.ui.screen.playlist.NeteaseRecentScreen
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
-import moe.ouom.neriplayer.ui.screen.tab.LibraryTab
-import moe.ouom.neriplayer.ui.screen.tab.LibraryScreen
+import moe.ouom.neriplayer.ui.screen.tab.library.LibraryTab
+import moe.ouom.neriplayer.ui.screen.tab.library.LibraryScreen
 import moe.ouom.neriplayer.data.model.NeteaseArtistSummary
+import moe.ouom.neriplayer.data.model.BiliUploaderSummary
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSummary
+import moe.ouom.neriplayer.ui.navigation.biliUploaderSourceRoute
 import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.BiliPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeMusicPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.data.stats.PlaybackStatsPeriod
-import moe.ouom.neriplayer.core.api.bili.BiliClient
+import moe.ouom.neriplayer.data.model.stats.PlaybackStatsPeriod
+import moe.ouom.neriplayer.data.model.bilibili.video.VideoBasicInfo
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.model.displayCoverUrl
+import moe.ouom.neriplayer.data.local.media.displayCoverUrl
 import moe.ouom.neriplayer.data.playlist.usage.PlaylistUsageRepository
-import moe.ouom.neriplayer.data.platform.youtube.stableYouTubeMusicId
+import moe.ouom.neriplayer.platform.youtube.api.transport.stableYouTubeMusicId
 import moe.ouom.neriplayer.core.player.PlayerManager
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSceneMotion
 import moe.ouom.neriplayer.ui.effect.glass.advancedGlassHostNavigationTransition
 import moe.ouom.neriplayer.ui.effect.glass.animateAdvancedGlassSceneMotion
-import moe.ouom.neriplayer.ui.animateMainTabDetailCloseRootRevealFraction
-import moe.ouom.neriplayer.ui.clipMainTabDetailCloseRoot
-import moe.ouom.neriplayer.ui.rememberMainTabSceneRestoredEntry
-import moe.ouom.neriplayer.ui.shouldSuppressRestoredMainTabHostEntry
+import moe.ouom.neriplayer.ui.navigation.animateMainTabDetailCloseRootRevealFraction
+import moe.ouom.neriplayer.ui.navigation.clipMainTabDetailCloseRoot
+import moe.ouom.neriplayer.ui.navigation.rememberMainTabSceneRestoredEntry
+import moe.ouom.neriplayer.ui.navigation.shouldSuppressRestoredMainTabHostEntry
+import moe.ouom.neriplayer.ui.util.SAVED_TYPE_KEY
+import moe.ouom.neriplayer.ui.util.restoreSavedByType
+import moe.ouom.neriplayer.ui.util.savedMap
+import moe.ouom.neriplayer.ui.util.savedNonBlankString
+import moe.ouom.neriplayer.ui.util.savedNumber
+import moe.ouom.neriplayer.ui.util.savedString
 import moe.ouom.neriplayer.ui.util.toSaveMap
 import moe.ouom.neriplayer.ui.util.restoreBiliPlaylist
 import moe.ouom.neriplayer.ui.util.restoreAlbumSummary
 import moe.ouom.neriplayer.ui.util.restorePlaylistSummary
 import moe.ouom.neriplayer.ui.util.restoreYouTubeMusicPlaylist
 import moe.ouom.neriplayer.util.media.CoverArtColorCache
+import moe.ouom.neriplayer.platform.subsonic.repository.ServerAlbum as MusicServerAlbum
+import moe.ouom.neriplayer.platform.subsonic.repository.ServerArtist as MusicServerArtist
+import moe.ouom.neriplayer.ui.screen.server.album.ServerAlbumDetailScreen
+import moe.ouom.neriplayer.ui.screen.server.artist.ServerArtistDetailScreen
+import moe.ouom.neriplayer.ui.screen.server.artist.serverArtistDetailKey
 
 @Parcelize
 sealed class LibrarySelectedItem : Parcelable {
+    internal abstract fun saveState(): Map<String, Any?>
     @Parcelize
-    data class Local(val playlistId: Long) : LibrarySelectedItem()
+    data class CustomMusic(val playlist: PlaylistSummary) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "customMusic", "playlist" to playlist.toSaveMap())
+    }
     @Parcelize
-    data class LocalArtist(val artistName: String) : LibrarySelectedItem()
+    data object NeteaseRecent : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "neteaseRecent")
+    }
+
     @Parcelize
-    data class Hot(val monthly: Boolean) : LibrarySelectedItem()
+    data class Local(val playlistId: Long) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "local", "playlistId" to playlistId)
+    }
     @Parcelize
-    data class Netease(val playlist: PlaylistSummary) : LibrarySelectedItem()
+    data class LocalArtist(val artistName: String) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "localArtist", "artistName" to artistName)
+    }
     @Parcelize
-    data class NeteaseAlbum(val album: AlbumSummary) : LibrarySelectedItem()
+    data class ServerAlbum(
+        val profileId: String,
+        val albumId: String,
+        val name: String,
+        val artist: String,
+        val coverUrl: String?,
+        val songCount: Int
+    ) : LibrarySelectedItem() {
+        fun summary() = MusicServerAlbum(profileId, albumId, name, artist, coverUrl, songCount)
+
+        override fun saveState() = hashMapOf(
+            SAVED_TYPE_KEY to "serverAlbum", "profileId" to profileId, "albumId" to albumId,
+            "name" to name, "artist" to artist, "coverUrl" to coverUrl, "songCount" to songCount
+        )
+    }
     @Parcelize
-    data class NeteaseArtist(val artist: NeteaseArtistSummary) : LibrarySelectedItem()
+    data class ServerArtist(
+        val profileId: String,
+        val artistId: String,
+        val name: String,
+        val coverUrl: String?,
+        val albumCount: Int,
+        val fallbackCoverUrl: String? = null
+    ) : LibrarySelectedItem() {
+        fun summary() = MusicServerArtist(profileId, artistId, name, coverUrl, albumCount, fallbackCoverUrl)
+
+        override fun saveState() = hashMapOf(
+            SAVED_TYPE_KEY to "serverArtist", "profileId" to profileId, "artistId" to artistId,
+            "name" to name, "coverUrl" to coverUrl, "albumCount" to albumCount
+        ).apply { fallbackCoverUrl?.let { put("fallbackCoverUrl", it) } }
+    }
+    @Parcelize
+    data class Hot(val monthly: Boolean) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "hot", "monthly" to monthly)
+    }
+    @Parcelize
+    data class Netease(val playlist: PlaylistSummary) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "netease", "playlist" to playlist.toSaveMap())
+    }
+    @Parcelize
+    data class NeteaseAlbum(val album: AlbumSummary) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "neteaseAlbum", "album" to album.toSaveMap())
+    }
+    @Parcelize
+    data object NeteaseCloud : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "neteaseCloud")
+    }
+    @Parcelize
+    data class NeteaseArtist(val artist: NeteaseArtistSummary) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(
+            SAVED_TYPE_KEY to "neteaseArtist",
+            "artistId" to artist.id,
+            "artistName" to artist.name
+        )
+    }
     @Parcelize
     data class NeteaseArtistAlbum(
         val artist: NeteaseArtistSummary,
         val album: AlbumSummary
-    ) : LibrarySelectedItem()
+    ) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(
+            SAVED_TYPE_KEY to "neteaseArtistAlbum",
+            "artistId" to artist.id,
+            "artistName" to artist.name,
+            "album" to album.toSaveMap()
+        )
+    }
     @Parcelize
-    data class Bili(val playlist: BiliPlaylist) : LibrarySelectedItem()
+    data class Bili(val playlist: BiliPlaylist) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "bili", "playlist" to playlist.toSaveMap())
+    }
     @Parcelize
-    data class YouTubeMusic(val playlist: YouTubeMusicPlaylist) : LibrarySelectedItem()
+    data class YouTubeMusic(val playlist: YouTubeMusicPlaylist) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(SAVED_TYPE_KEY to "ytmusic", "playlist" to playlist.toSaveMap())
+    }
     @Parcelize
-    data class QQMusic(val playlist: PlaylistSummary) : LibrarySelectedItem()
+    data class BiliUploader(val uploader: BiliUploaderSummary) : LibrarySelectedItem() {
+        override fun saveState() = hashMapOf(
+            SAVED_TYPE_KEY to "biliArtist",
+            "mid" to uploader.mid,
+            "name" to uploader.name,
+            "avatar" to uploader.avatarUrl
+        )
+    }
     @Parcelize
-    data class Kugou(val playlist: PlaylistSummary) : LibrarySelectedItem()
-    @Parcelize
-    data class Kuwo(val playlist: PlaylistSummary) : LibrarySelectedItem()
-    @Parcelize
-    data object NeteaseRecent : LibrarySelectedItem()
+    data class YouTubeCreator(
+        val browseId: String,
+        val title: String,
+        val subtitle: String,
+        val coverUrl: String
+    ) : LibrarySelectedItem() {
+        fun summary() = YouTubeMusicCreatorSummary(browseId, title, subtitle, coverUrl)
+
+        override fun saveState() = hashMapOf(
+            SAVED_TYPE_KEY to "youtubeArtist",
+            "browseId" to browseId,
+            "title" to title,
+            "subtitle" to subtitle,
+            "coverUrl" to coverUrl
+        )
+    }
 }
 
 private val LibrarySelectedItem?.navigationDepth: Int
@@ -138,6 +240,38 @@ private val LibrarySelectedItem?.navigationDepth: Int
         is LibrarySelectedItem.NeteaseArtistAlbum -> 2
         else -> 1
     }
+
+internal data class LibraryNavigationScene(
+    val item: LibrarySelectedItem?,
+    val navigationDepth: Int
+)
+
+internal fun libraryNavigationScene(
+    item: LibrarySelectedItem?,
+    creatorParents: List<LibrarySelectedItem>
+): LibraryNavigationScene = LibraryNavigationScene(
+    item = item,
+    navigationDepth = if (item == null) 0 else item.navigationDepth + creatorParents.size
+)
+
+internal fun libraryDetailBackTarget(current: LibrarySelectedItem?): LibrarySelectedItem? =
+    when (current) {
+        is LibrarySelectedItem.NeteaseArtistAlbum -> LibrarySelectedItem.NeteaseArtist(current.artist)
+        else -> null
+    }
+
+/** 与 closeSelectedDetail 的结果一致，供预测性返回提前展示上一层 */
+internal fun resolveLibraryBackScene(
+    selected: LibrarySelectedItem?,
+    creatorParents: List<LibrarySelectedItem>
+): LibraryNavigationScene {
+    val parent = creatorParents.lastOrNull()
+    return if (parent != null) {
+        libraryNavigationScene(parent, creatorParents.dropLast(1))
+    } else {
+        libraryNavigationScene(libraryDetailBackTarget(selected), creatorParents)
+    }
+}
 
 private fun LibrarySelectedItem.Hot.period(): PlaybackStatsPeriod {
     return if (monthly) PlaybackStatsPeriod.MONTH else PlaybackStatsPeriod.WEEK
@@ -149,8 +283,7 @@ private enum class LibraryScrollSource {
     NeteasePlaylist,
     NeteaseAlbum,
     YouTubeMusic,
-    Bili,
-    QqMusic
+    Bili
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -164,7 +297,7 @@ fun LibraryHostScreen(
         PlayerManager.playBiliVideoAsAudio(videos, index)
     },
     onPlayBiliPartsWithSourceRoute: (
-        BiliClient.VideoBasicInfo,
+        VideoBasicInfo,
         Int,
         String,
         String?
@@ -191,6 +324,13 @@ fun LibraryHostScreen(
 ) {
     var selected by rememberSaveable(stateSaver = librarySelectedItemSaver) {
         mutableStateOf(null)
+    }
+    var creatorParents by rememberSaveable(
+        stateSaver = listSaver<List<LibrarySelectedItem>, LibrarySelectedItem>(
+            save = { it }, restore = { it }
+        )
+    ) {
+        mutableStateOf(emptyList())
     }
     var skipDetailCloseAnimation by rememberSaveable { mutableStateOf(false) }
     var pendingScrollSource by rememberSaveable {
@@ -251,10 +391,13 @@ fun LibraryHostScreen(
     fun closeSelectedDetail() {
         cancelPendingNeteaseCoverWarmup()
         skipDetailCloseAnimation = false
-        selected = when (val current = selected) {
-            is LibrarySelectedItem.NeteaseArtistAlbum -> LibrarySelectedItem.NeteaseArtist(current.artist)
-            else -> null
+        val parent = creatorParents.lastOrNull()
+        if (parent != null) {
+            selected = parent
+            creatorParents = creatorParents.dropLast(1)
+            return
         }
+        selected = libraryDetailBackTarget(selected)
     }
 
     fun openNeteaseArtist(artist: NeteaseArtistSummary) {
@@ -277,14 +420,6 @@ fun LibraryHostScreen(
         }
     }
 
-    PredictiveBackHandler(enabled = selected != null) { progress ->
-        try {
-            progress.collect { }
-            closeSelectedDetail()
-        } catch (_: CancellationException) {
-        }
-    }
-
     // 保存各个列表的滚动状态
     val localListSaver: Saver<LazyListState, *> = LazyListState.Saver
     val favoriteListSaver: Saver<LazyListState, *> = LazyListState.Saver
@@ -293,8 +428,6 @@ fun LibraryHostScreen(
     val youtubeMusicListSaver: Saver<LazyListState, *> = LazyListState.Saver
     val biliListSaver: Saver<LazyListState, *> = LazyListState.Saver
     val qqMusicListSaver: Saver<LazyListState, *> = LazyListState.Saver
-    val kugouListSaver: Saver<LazyListState, *> = LazyListState.Saver
-    val kuwoListSaver: Saver<LazyListState, *> = LazyListState.Saver
 
     val localListState = rememberSaveable(saver = localListSaver) {
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
@@ -317,12 +450,6 @@ fun LibraryHostScreen(
     val qqMusicListState = rememberSaveable(saver = qqMusicListSaver) {
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
     }
-    val kugouListState = rememberSaveable(saver = kugouListSaver) {
-        LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
-    }
-    val kuwoListState = rememberSaveable(saver = kuwoListSaver) {
-        LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
-    }
     val topAppBarState = rememberTopAppBarState()
     fun listStateFor(source: LibraryScrollSource): LazyListState = when (source) {
         LibraryScrollSource.Local -> localListState
@@ -331,7 +458,6 @@ fun LibraryHostScreen(
         LibraryScrollSource.NeteaseAlbum -> neteaseAlbumState
         LibraryScrollSource.YouTubeMusic -> youtubeMusicListState
         LibraryScrollSource.Bili -> biliListState
-        LibraryScrollSource.QqMusic -> qqMusicListState
     }
 
     fun captureLibraryScrollPosition(source: LibraryScrollSource) {
@@ -351,8 +477,11 @@ fun LibraryHostScreen(
         regularSource
     }
 
-    val navigationTransition = updateTransition(
-        targetState = selected,
+    val navigationTransition = rememberHostPredictiveBackTransition(
+        targetState = libraryNavigationScene(selected, creatorParents),
+        backEnabled = selected != null,
+        backTargetState = resolveLibraryBackScene(selected, creatorParents),
+        onBack = { closeSelectedDetail() },
         label = "library_host_switch"
     )
 
@@ -392,6 +521,15 @@ fun LibraryHostScreen(
     Surface(modifier = Modifier.fillMaxSize(), color = Color.Transparent) {
         navigationTransition.AnimatedContent(
             modifier = Modifier.fillMaxSize(),
+            contentKey = { scene ->
+                when (val item = scene.item) {
+                    is LibrarySelectedItem.NeteaseArtist -> "netease_artist_${item.artist.id}"
+                    is LibrarySelectedItem.YouTubeCreator -> youtubeMusicCreatorDetailStateKey(item.summary())
+                    is LibrarySelectedItem.BiliUploader -> "bili_uploader_${item.uploader.mid}"
+                    is LibrarySelectedItem.ServerArtist -> serverArtistDetailKey(item.summary())
+                    else -> item
+                }
+            },
             transitionSpec = {
                 if (
                     shouldSuppressRestoredMainTabHostEntry(
@@ -401,7 +539,7 @@ fun LibraryHostScreen(
                     )
                 ) {
                     EnterTransition.None togetherWith ExitTransition.None
-                } else if (targetState == null && skipDetailCloseAnimation) {
+                } else if (targetState.item == null && skipDetailCloseAnimation) {
                     EnterTransition.None togetherWith ExitTransition.None
                 } else {
                     advancedGlassHostNavigationTransition(
@@ -411,7 +549,8 @@ fun LibraryHostScreen(
                     )
                 }.using(SizeTransform(clip = true))
             }
-        ) { current ->
+        ) { scene ->
+            val current = scene.item
             val suppressRestoredSceneMotion = shouldSuppressRestoredMainTabHostEntry(
                 restoredEntry = suppressRestoredSceneEntry,
                 initialDepth = navigationTransition.currentState.navigationDepth,
@@ -421,7 +560,7 @@ fun LibraryHostScreen(
                 AdvancedGlassSceneMotion.None
             } else {
                 navigationTransition.animateAdvancedGlassSceneMotion(
-                    sceneState = current,
+                    sceneState = scene,
                     coherentFeedbackEnabled = coherentFeedbackEnabled,
                     navigationDepth = { item -> item.navigationDepth },
                     label = "library_host_scene"
@@ -431,7 +570,7 @@ fun LibraryHostScreen(
                 sceneMotion.revealTopFraction,
                 sceneMotion.contentTranslationYFraction,
                 sceneMotion.contentScale,
-                current.navigationDepth
+                scene.navigationDepth
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     if (current == null) {
@@ -446,6 +585,18 @@ fun LibraryHostScreen(
                                 LibraryScreen(
                             initialTab = selectedTab,
                             onTabChange = { selectedTab = it },
+                            onServerAlbumClick = { album ->
+                                skipDetailCloseAnimation = false
+                                openLibrarySelectedItem(LibrarySelectedItem.ServerAlbum(
+                                    album.profileId, album.id, album.name, album.artist, album.coverUrl, album.songCount
+                                ))
+                            },
+                            onServerArtistClick = { artist ->
+                                skipDetailCloseAnimation = false
+                                openLibrarySelectedItem(LibrarySelectedItem.ServerArtist(
+                                    artist.profileId, artist.id, artist.name, artist.coverUrl, artist.albumCount, artist.fallbackCoverUrl
+                                ))
+                            },
                             localListState = localListState,
                             favoriteListState = favoriteListState,
                             neteaseAlbumState = neteaseAlbumState,
@@ -453,8 +604,6 @@ fun LibraryHostScreen(
                             youtubeMusicListState = youtubeMusicListState,
                             biliListState = biliListState,
                             qqMusicListState = qqMusicListState,
-                            kugouListState = kugouListState,
-                            kuwoListState = kuwoListState,
                             topAppBarState = topAppBarState,
                             offlineMode = offlineMode,
                             onLocalPlaylistClick = { playlist ->
@@ -512,6 +661,15 @@ fun LibraryHostScreen(
                                     )
                                 }
                             },
+                            onNeteaseCloudClick = {
+                                skipDetailCloseAnimation = false
+                                captureLibraryScrollPosition(
+                                    sourceForFavoriteAwareDestination(
+                                        LibraryScrollSource.NeteasePlaylist
+                                    )
+                                )
+                                openLibrarySelectedItem(LibrarySelectedItem.NeteaseCloud)
+                            },
                             onNeteaseAlbumClick = { album ->
                                 skipDetailCloseAnimation = false
                                 captureLibraryScrollPosition(
@@ -534,9 +692,17 @@ fun LibraryHostScreen(
                                 captureLibraryScrollPosition(LibraryScrollSource.Favorite)
                                 openNeteaseArtist(artist)
                             },
-                            onOpenNeteaseRecent = {
-                                skipDetailCloseAnimation = false
-                                openLibrarySelectedItem(LibrarySelectedItem.NeteaseRecent)
+                            onBiliUploaderClick = { uploader ->
+                                captureLibraryScrollPosition(LibraryScrollSource.Favorite)
+                                openLibrarySelectedItem(LibrarySelectedItem.BiliUploader(uploader))
+                            },
+                            onYouTubeMusicCreatorClick = { creator ->
+                                captureLibraryScrollPosition(LibraryScrollSource.Favorite)
+                                openLibrarySelectedItem(
+                                    LibrarySelectedItem.YouTubeCreator(
+                                        creator.browseId, creator.title, creator.subtitle, creator.coverUrl
+                                    )
+                                )
                             },
                             onYouTubeMusicPlaylistClick = { playlist ->
                                 skipDetailCloseAnimation = false
@@ -580,53 +746,34 @@ fun LibraryHostScreen(
                                     )
                                 }
                             },
-                            onQqMusicPlaylistClick = { playlist ->
-                                skipDetailCloseAnimation = false
-                                captureLibraryScrollPosition(LibraryScrollSource.QqMusic)
-                                openLibrarySelectedItem(LibrarySelectedItem.QQMusic(playlist))
-                                AppContainer.launchBackgroundIo {
-                                    AppContainer.playlistUsageRepo.recordOpen(
-                                        id = playlist.id,
-                                        name = playlist.name,
-                                        picUrl = playlist.picUrl,
-                                        trackCount = playlist.trackCount,
-                                        source = "qq"
-                                    )
-                                }
-                            },
-                            onKugouPlaylistClick = { playlist ->
-                                skipDetailCloseAnimation = false
-                                openLibrarySelectedItem(LibrarySelectedItem.Kugou(playlist))
-                                AppContainer.launchBackgroundIo {
-                                    AppContainer.playlistUsageRepo.recordOpen(
-                                        id = playlist.id,
-                                        name = playlist.name,
-                                        picUrl = playlist.picUrl,
-                                        trackCount = playlist.trackCount,
-                                        source = "kugou"
-                                    )
-                                }
-                            },
-                            onKuwoPlaylistClick = { playlist ->
-                                skipDetailCloseAnimation = false
-                                openLibrarySelectedItem(LibrarySelectedItem.Kuwo(playlist))
-                                AppContainer.launchBackgroundIo {
-                                    AppContainer.playlistUsageRepo.recordOpen(
-                                        id = playlist.id,
-                                        name = playlist.name,
-                                        picUrl = playlist.picUrl,
-                                        trackCount = playlist.trackCount,
-                                        source = "kuwo"
-                                    )
-                                }
-                            },
                             onOpenRecent = onOpenRecent,
+                            onCustomMusicPlaylistClick = { playlist ->
+                                openLibrarySelectedItem(LibrarySelectedItem.CustomMusic(playlist))
+                                AppContainer.launchBackgroundIo {
+                                    AppContainer.playlistUsageRepo.recordOpen(playlist.id, playlist.name,
+                                        playlist.picUrl, playlist.trackCount, source = playlist.source)
+                                }
+                            },
+                            onOpenNeteaseRecent = { openLibrarySelectedItem(LibrarySelectedItem.NeteaseRecent) },
                             onOpenStats = onOpenStats
                         )
                         }
                         }
                     } else {
                         when (current) {
+                         is LibrarySelectedItem.CustomMusic -> {
+                             if (current.playlist.source == "qq") {
+                                 moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen(
+                                     current.playlist, { closeSelectedDetail() }, onSongClick, offlineMode)
+                             } else {
+                                 moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlaylistDetailScreen(
+                                     if (current.playlist.source == "kugou") moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlatform.KUGOU
+                                     else moe.ouom.neriplayer.ui.screen.playlist.KugouKuwoPlatform.KUWO,
+                                     current.playlist, { closeSelectedDetail() }, onSongClick, offlineMode)
+                             }
+                         }
+                         is LibrarySelectedItem.NeteaseRecent -> moe.ouom.neriplayer.ui.screen.playlist.NeteaseRecentScreen(
+                             onBack = { closeSelectedDetail() }, onSongClick = onSongClick, offlineMode = offlineMode)
                         is LibrarySelectedItem.Local -> {
                             LocalPlaylistDetailScreen(
                                 playlistId = current.playlistId,
@@ -639,7 +786,12 @@ fun LibraryHostScreen(
                                         localPlaylistSourceRoute(current.playlistId)
                                     )
                                 },
-                                offlineMode = offlineMode
+                                offlineMode = offlineMode,
+                                onPlayBiliParts = { info, index, coverUrl ->
+                                    onPlayBiliPartsWithSourceRoute(
+                                        info, index, coverUrl, localPlaylistSourceRoute(current.playlistId)
+                                    )
+                                }
                             )
                         }
 
@@ -650,6 +802,31 @@ fun LibraryHostScreen(
                                 onSongClick = onSongClick,
                                 offlineMode = offlineMode
                             )
+                        }
+
+                        is LibrarySelectedItem.ServerAlbum -> {
+                            ServerAlbumDetailScreen(
+                                album = current.summary(),
+                                onBack = { closeSelectedDetail() },
+                                onSongClick = onSongClick,
+                                offlineMode = offlineMode
+                            )
+                        }
+
+                        is LibrarySelectedItem.ServerArtist -> {
+                            libraryStateHolder.SaveableStateProvider(serverArtistDetailKey(current.summary())) {
+                                ServerArtistDetailScreen(
+                                    artist = current.summary(),
+                                    onBack = { closeSelectedDetail() },
+                                    onAlbumClick = { album ->
+                                        creatorParents = creatorParents + current
+                                        openLibrarySelectedItem(LibrarySelectedItem.ServerAlbum(
+                                            album.profileId, album.id, album.name, album.artist, album.coverUrl, album.songCount
+                                        ))
+                                    },
+                                    offlineMode = offlineMode
+                                )
+                            }
                         }
 
                         is LibrarySelectedItem.Hot -> {
@@ -672,6 +849,16 @@ fun LibraryHostScreen(
                                     )
                                 },
                                 album = current.album,
+                                offlineMode = offlineMode
+                            )
+                        }
+
+                        is LibrarySelectedItem.NeteaseCloud -> {
+                            NeteaseCloudScreen(
+                                onBack = { selected = null },
+                                onSongClick = { songs, index ->
+                                    onSongClickWithSourceRoute(songs, index, null)
+                                },
                                 offlineMode = offlineMode
                             )
                         }
@@ -732,16 +919,67 @@ fun LibraryHostScreen(
                         is LibrarySelectedItem.YouTubeMusic -> {
                             YouTubeMusicPlaylistDetailScreen(
                                 playlist = current.playlist,
-                                onBack = { selected = null },
+                                onBack = { closeSelectedDetail() },
                                 onSongClick = onSongClick,
                                 offlineMode = offlineMode
                             )
+                        }
+                        is LibrarySelectedItem.YouTubeCreator -> {
+                            libraryStateHolder.SaveableStateProvider(
+                                key = youtubeMusicCreatorDetailStateKey(current.summary())
+                            ) {
+                                YouTubeMusicCreatorNavigationScreen(
+                                    creator = current.summary(),
+                                    onBack = { closeSelectedDetail() },
+                                    onSongClick = onSongClick,
+                                    onPlaylistClick = { playlist ->
+                                        creatorParents = creatorParents + current
+                                        openLibrarySelectedItem(LibrarySelectedItem.YouTubeMusic(playlist))
+                                    },
+                                    onCreatorClick = { creator ->
+                                        if (creator.browseId != current.browseId) {
+                                            creatorParents = creatorParents + current
+                                            openLibrarySelectedItem(
+                                                LibrarySelectedItem.YouTubeCreator(
+                                                    creator.browseId, creator.title, creator.subtitle, creator.coverUrl
+                                                )
+                                            )
+                                        }
+                                    },
+                                    offlineMode = offlineMode
+                                )
+                            }
+                        }
+                        is LibrarySelectedItem.BiliUploader -> {
+                            libraryStateHolder.SaveableStateProvider(
+                                "bili_uploader_${current.uploader.mid}"
+                            ) {
+                                BiliUploaderDetailScreen(
+                                    uploader = current.uploader,
+                                    onBack = { closeSelectedDetail() },
+                                    onPlayAudio = { videos, index ->
+                                        onPlayBiliAudioWithSourceRoute(
+                                            videos, index, biliUploaderSourceRoute(current.uploader)
+                                        )
+                                    },
+                                    onPlayParts = { videoInfo, index, coverUrl ->
+                                        onPlayBiliPartsWithSourceRoute(
+                                            videoInfo, index, coverUrl, biliUploaderSourceRoute(current.uploader)
+                                        )
+                                    },
+                                    onContentClick = { playlist ->
+                                        creatorParents = creatorParents + current
+                                        openLibrarySelectedItem(LibrarySelectedItem.Bili(playlist))
+                                    },
+                                    offlineMode = offlineMode
+                                )
+                            }
                         }
 
                         is LibrarySelectedItem.Bili -> {
                             BiliPlaylistDetailScreen(
                                 playlist = current.playlist,
-                                onBack = { selected = null },
+                                onBack = { closeSelectedDetail() },
                                 onPlayAudio = { videos, index ->
                                     onPlayBiliAudioWithSourceRoute(
                                         videos,
@@ -760,51 +998,6 @@ fun LibraryHostScreen(
                                     offlineMode = offlineMode
                                 )
                         }
-
-                        is LibrarySelectedItem.QQMusic -> {
-                            QQMusicPlaylistDetailScreen(
-                                playlist = current.playlist,
-                                onBack = { selected = null },
-                                onSongClick = { songs, index ->
-                                    onSongClick(songs, index)
-                                },
-                                offlineMode = offlineMode
-                            )
-                        }
-
-                        is LibrarySelectedItem.Kugou -> {
-                            KugouKuwoPlaylistDetailScreen(
-                                platform = KugouKuwoPlatform.KUGOU,
-                                playlist = current.playlist,
-                                onBack = { selected = null },
-                                onSongClick = { songs, index ->
-                                    onSongClick(songs, index)
-                                },
-                                offlineMode = offlineMode
-                            )
-                        }
-
-                        is LibrarySelectedItem.Kuwo -> {
-                            KugouKuwoPlaylistDetailScreen(
-                                platform = KugouKuwoPlatform.KUWO,
-                                playlist = current.playlist,
-                                onBack = { selected = null },
-                                onSongClick = { songs, index ->
-                                    onSongClick(songs, index)
-                                },
-                                offlineMode = offlineMode
-                            )
-                        }
-
-                        is LibrarySelectedItem.NeteaseRecent -> {
-                            NeteaseRecentScreen(
-                                onBack = { selected = null },
-                                onSongClick = { songs, index ->
-                                    onSongClick(songs, index)
-                                },
-                                offlineMode = offlineMode
-                            )
-                        }
                         }
                     }
                 }
@@ -813,105 +1006,73 @@ fun LibraryHostScreen(
     }
 }
 
-private val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
-    save = { item ->
-        when (item) {
-            null -> emptyMap()
-            is LibrarySelectedItem.Local -> hashMapOf(
-                "type" to "local",
-                "playlistId" to item.playlistId
-            )
-            is LibrarySelectedItem.LocalArtist -> hashMapOf(
-                "type" to "localArtist",
-                "artistName" to item.artistName
-            )
-            is LibrarySelectedItem.Hot -> hashMapOf(
-                "type" to "hot",
-                "monthly" to item.monthly
-            )
-            is LibrarySelectedItem.NeteaseAlbum -> hashMapOf(
-                "type" to "neteaseAlbum",
-                "album" to item.album.toSaveMap()
-            )
-            is LibrarySelectedItem.Netease -> hashMapOf(
-                "type" to "netease",
-                "playlist" to item.playlist.toSaveMap()
-            )
-            is LibrarySelectedItem.NeteaseArtist -> hashMapOf(
-                "type" to "neteaseArtist",
-                "artistId" to item.artist.id,
-                "artistName" to item.artist.name
-            )
-            is LibrarySelectedItem.NeteaseArtistAlbum -> hashMapOf(
-                "type" to "neteaseArtistAlbum",
-                "artistId" to item.artist.id,
-                "artistName" to item.artist.name,
-                "album" to item.album.toSaveMap()
-            )
-            is LibrarySelectedItem.Bili -> hashMapOf(
-                "type" to "bili",
-                "playlist" to item.playlist.toSaveMap()
-            )
-            is LibrarySelectedItem.YouTubeMusic -> hashMapOf(
-                "type" to "ytmusic",
-                "playlist" to item.playlist.toSaveMap()
-            )
-            is LibrarySelectedItem.QQMusic -> hashMapOf(
-                "type" to "qqmusic",
-                "playlist" to item.playlist.toSaveMap()
-            )
-            is LibrarySelectedItem.Kugou -> hashMapOf(
-                "type" to "kugou",
-                "playlist" to item.playlist.toSaveMap()
-            )
-            is LibrarySelectedItem.Kuwo -> hashMapOf(
-                "type" to "kuwo",
-                "playlist" to item.playlist.toSaveMap()
-            )
-            is LibrarySelectedItem.NeteaseRecent -> hashMapOf(
-                "type" to "neteaseRecent"
-            )
-        }
-    },
-    restore = { saved ->
-        when (saved["type"] as? String) {
-            null -> null
-            "local" -> (saved["playlistId"] as? Number)?.toLong()?.let { LibrarySelectedItem.Local(it) }
-            "localArtist" -> (saved["artistName"] as? String)
-                ?.takeIf { it.isNotBlank() }
-                ?.let { LibrarySelectedItem.LocalArtist(it) }
-            "hot" -> LibrarySelectedItem.Hot(saved["monthly"] as? Boolean ?: false)
-            "neteaseAlbum" -> restoreAlbumSummary(saved["album"] as? Map<*, *>)?.let { LibrarySelectedItem.NeteaseAlbum(it) }
-            "netease" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Netease(it) }
-            "neteaseArtist" -> restoreNeteaseArtistSummary(
-                id = (saved["artistId"] as? Number)?.toLong(),
-                name = saved["artistName"] as? String
-            )?.let { LibrarySelectedItem.NeteaseArtist(it) }
-            "neteaseArtistAlbum" -> {
-                val artist = restoreNeteaseArtistSummary(
-                    id = (saved["artistId"] as? Number)?.toLong(),
-                    name = saved["artistName"] as? String
-                )
-                val album = restoreAlbumSummary(saved["album"] as? Map<*, *>)
-                if (artist != null && album != null) {
-                    LibrarySelectedItem.NeteaseArtistAlbum(artist, album)
-                } else {
-                    null
-                }
-            }
-            "bili" -> restoreBiliPlaylist(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Bili(it) }
-            "ytmusic" -> restoreYouTubeMusicPlaylist(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.YouTubeMusic(it) }
-            "qqmusic" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.QQMusic(it) }
-            "kugou" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Kugou(it) }
-            "kuwo" -> restorePlaylistSummary(saved["playlist"] as? Map<*, *>)?.let { LibrarySelectedItem.Kuwo(it) }
-            "neteaseRecent" -> LibrarySelectedItem.NeteaseRecent
-            else -> null
-        }
-    }
+internal val librarySelectedItemSaver = mapSaver<LibrarySelectedItem?>(
+    save = { item -> item?.saveState().orEmpty() },
+    restore = { saved -> restoreSavedByType(saved, librarySelectedItemRestorers) }
 )
 
-private fun restoreNeteaseArtistSummary(id: Long?, name: String?): NeteaseArtistSummary? {
-    val resolvedId = id?.takeIf { it > 0L } ?: return null
-    val resolvedName = name?.takeIf { it.isNotBlank() } ?: return null
-    return NeteaseArtistSummary(id = resolvedId, name = resolvedName)
+private val librarySelectedItemRestorers: Map<String, (Map<String, Any?>) -> LibrarySelectedItem?> = mapOf(
+    "customMusic" to { saved -> restorePlaylistSummary(saved.savedMap("playlist"))?.let(LibrarySelectedItem::CustomMusic) },
+    "neteaseRecent" to { LibrarySelectedItem.NeteaseRecent },
+    "local" to { saved -> saved.savedNumber("playlistId")?.toLong()?.let(LibrarySelectedItem::Local) },
+    "localArtist" to { saved -> saved.savedNonBlankString("artistName")?.let(LibrarySelectedItem::LocalArtist) },
+    "serverAlbum" to ::restoreServerAlbumItem,
+    "serverArtist" to ::restoreServerArtistItem,
+    "hot" to { saved -> LibrarySelectedItem.Hot(saved["monthly"] == true) },
+    "neteaseAlbum" to { saved -> restoreAlbumSummary(saved.savedMap("album"))?.let(LibrarySelectedItem::NeteaseAlbum) },
+    "neteaseCloud" to { LibrarySelectedItem.NeteaseCloud },
+    "netease" to { saved -> restorePlaylistSummary(saved.savedMap("playlist"))?.let(LibrarySelectedItem::Netease) },
+    "neteaseArtist" to { saved -> saved.savedNeteaseArtist()?.let(LibrarySelectedItem::NeteaseArtist) },
+    "neteaseArtistAlbum" to ::restoreNeteaseArtistAlbumItem,
+    "bili" to { saved -> restoreBiliPlaylist(saved.savedMap("playlist"))?.let(LibrarySelectedItem::Bili) },
+    "ytmusic" to { saved -> restoreYouTubeMusicPlaylist(saved.savedMap("playlist"))?.let(LibrarySelectedItem::YouTubeMusic) },
+    "biliArtist" to ::restoreBiliUploaderItem,
+    "youtubeArtist" to ::restoreYouTubeCreatorItem
+)
+
+private fun restoreServerAlbumItem(saved: Map<String, Any?>): LibrarySelectedItem? {
+    val profileId = saved.savedNonBlankString("profileId") ?: return null
+    val albumId = saved.savedNonBlankString("albumId") ?: return null
+    return LibrarySelectedItem.ServerAlbum(
+        profileId, albumId, saved.savedString("name").orEmpty(), saved.savedString("artist").orEmpty(),
+        saved.savedString("coverUrl"), saved.savedNumber("songCount")?.toInt()?.coerceAtLeast(0) ?: 0
+    )
+}
+
+private fun restoreServerArtistItem(saved: Map<String, Any?>): LibrarySelectedItem? {
+    val profileId = saved.savedNonBlankString("profileId") ?: return null
+    val artistId = saved.savedNonBlankString("artistId") ?: return null
+    return LibrarySelectedItem.ServerArtist(
+        profileId, artistId, saved.savedString("name").orEmpty(), saved.savedString("coverUrl"),
+        saved.savedNumber("albumCount")?.toInt()?.coerceAtLeast(0) ?: 0, saved.savedString("fallbackCoverUrl")
+    )
+}
+
+private fun restoreNeteaseArtistAlbumItem(saved: Map<String, Any?>): LibrarySelectedItem? {
+    val artist = saved.savedNeteaseArtist() ?: return null
+    val album = restoreAlbumSummary(saved.savedMap("album")) ?: return null
+    return LibrarySelectedItem.NeteaseArtistAlbum(artist, album)
+}
+
+private fun restoreBiliUploaderItem(saved: Map<String, Any?>): LibrarySelectedItem? {
+    val mid = saved.savedNumber("mid")?.toLong()?.takeIf { it > 0 } ?: return null
+    val name = saved.savedNonBlankString("name") ?: return null
+    return LibrarySelectedItem.BiliUploader(BiliUploaderSummary(mid, name, saved.savedString("avatar").orEmpty()))
+}
+
+private fun restoreYouTubeCreatorItem(saved: Map<String, Any?>): LibrarySelectedItem? {
+    val browseId = saved.savedNonBlankString("browseId") ?: return null
+    val title = saved.savedNonBlankString("title") ?: return null
+    return LibrarySelectedItem.YouTubeCreator(
+        browseId = browseId,
+        title = title,
+        subtitle = saved.savedString("subtitle").orEmpty(),
+        coverUrl = saved.savedString("coverUrl").orEmpty()
+    )
+}
+
+private fun Map<String, Any?>.savedNeteaseArtist(): NeteaseArtistSummary? {
+    val id = savedNumber("artistId")?.toLong()?.takeIf { it > 0L } ?: return null
+    val name = savedNonBlankString("artistName") ?: return null
+    return NeteaseArtistSummary(id = id, name = name)
 }

@@ -1,0 +1,145 @@
+@file:Suppress("DEPRECATION")
+
+package moe.ouom.neriplayer.platform.kuwo.auth
+
+/*
+ * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
+ * Copyright (C) 2025-2025 NeriPlayer developers
+ * https://github.com/cwuom/NeriPlayer
+ *
+ * This software is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software.
+ * If not, see <https://www.gnu.org/licenses/>.
+ */
+
+import android.content.Context
+import android.content.SharedPreferences
+import androidx.core.content.edit
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import moe.ouom.neriplayer.common.logging.NPLogger
+import moe.ouom.neriplayer.platform.auth.PlatformCookieRepository
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthHealth
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthState
+import org.json.JSONObject
+import moe.ouom.neriplayer.platform.auth.commitPlatformMutation
+import moe.ouom.neriplayer.platform.auth.sanitizePlatformCookies
+
+private const val KUWO_AUTH_PREFS = "kuwo_auth_secure_prefs"
+private const val KEY_KUWO_AUTH_BUNDLE = "kuwo_auth_bundle"
+
+/**
+ * 酷我音乐登录 cookie。
+ *
+ * 在 www.kuwo.cn 登录后复制 Cookie 导入即可; kw_token/csrf 等 cookie
+ * 用于用户歌单接口, 没有登录态时媒体库展示热门歌单。
+ */
+class KuwoCookieRepository(private val context: Context) : PlatformCookieRepository {
+    private var encryptedPrefs: SharedPreferences
+    private val _cookieFlow: MutableStateFlow<Map<String, String>>
+    private val _authHealthFlow: MutableStateFlow<SavedCookieAuthHealth>
+
+    override val cookieFlow: StateFlow<Map<String, String>>
+        get() = _cookieFlow.asStateFlow()
+
+    override val authHealthFlow: StateFlow<SavedCookieAuthHealth>
+        get() = _authHealthFlow.asStateFlow()
+
+    init {
+        encryptedPrefs = openEncryptedPrefsWithRecovery()
+        val cookies = loadCookies()
+        _cookieFlow = MutableStateFlow(cookies)
+        _authHealthFlow = MutableStateFlow(evaluateHealth(cookies))
+    }
+
+    override fun getCookiesOnce(): Map<String, String> = _cookieFlow.value
+
+    override fun getAuthHealthOnce(): SavedCookieAuthHealth = _authHealthFlow.value
+
+    override fun saveCookies(cookies: Map<String, String>) {
+        val normalized = sanitizePlatformCookies(cookies)
+        encryptedPrefs.commitPlatformMutation {
+            putString(KEY_KUWO_AUTH_BUNDLE, encode(normalized))
+        }
+        _cookieFlow.value = normalized
+        _authHealthFlow.value = evaluateHealth(normalized)
+        NPLogger.d("NERI-KuwoCookieRepo", "Saved Kuwo cookies: keys=${normalized.keys.joinToString()}")
+    }
+
+    override fun clear() {
+        encryptedPrefs.commitPlatformMutation { remove(KEY_KUWO_AUTH_BUNDLE) }
+        _cookieFlow.value = emptyMap()
+        _authHealthFlow.value = evaluateHealth(emptyMap())
+    }
+
+    override fun refreshHealth() {
+        _authHealthFlow.value = evaluateHealth(_cookieFlow.value)
+    }
+
+    private fun evaluateHealth(cookies: Map<String, String>): SavedCookieAuthHealth {
+        val state = if (cookies.isNotEmpty()) {
+            SavedCookieAuthState.Valid
+        } else {
+            SavedCookieAuthState.Missing
+        }
+        return SavedCookieAuthHealth(
+            state = state,
+            savedAt = System.currentTimeMillis(),
+            checkedAt = System.currentTimeMillis(),
+            loginCookieKeys = cookies.keys.toList()
+        )
+    }
+
+    private fun loadCookies(): Map<String, String> {
+        val raw = encryptedPrefs.getString(KEY_KUWO_AUTH_BUNDLE, null).orEmpty()
+        if (raw.isBlank()) return emptyMap()
+        return runCatching {
+            val root = JSONObject(raw)
+            val out = linkedMapOf<String, String>()
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                out[key] = root.optString(key, "")
+            }
+            out
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun encode(cookies: Map<String, String>): String {
+        return JSONObject().apply {
+            cookies.forEach { (key, value) -> put(key, value) }
+        }.toString()
+    }
+
+    private fun openEncryptedPrefsWithRecovery(): SharedPreferences {
+        return moe.ouom.neriplayer.common.storage.AccountPreferencesOpener.open(
+            context, KUWO_AUTH_PREFS, ::createEncryptedPrefs, delete = {}
+        ) { event, error -> NPLogger.w("NERI-KuwoCookieRepo", "Secure storage: $event", error) }
+    }
+
+    private fun createEncryptedPrefs(): SharedPreferences {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        return EncryptedSharedPreferences.create(
+            context,
+            KUWO_AUTH_PREFS,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
+    }
+}

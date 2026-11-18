@@ -1,5 +1,7 @@
 package moe.ouom.neriplayer.data.local.media
 
+import moe.ouom.neriplayer.data.local.media.metadata.isStandaloneContentMetadataTarget
+
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.graphics.Bitmap
@@ -8,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -17,7 +20,14 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withLock
+import moe.ouom.neriplayer.core.download.GlobalDownloadManager
+import moe.ouom.neriplayer.core.download.ManagedDownloadStorage
+import moe.ouom.neriplayer.core.download.metadata.DownloadedAudioTagWriteOutcome
+import moe.ouom.neriplayer.core.download.metadata.DownloadedAudioTagWriter
+import moe.ouom.neriplayer.core.player.download.AudioDownloadManager
 import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.testing.ManualInstrumentedTest
 import org.junit.Assume.assumeTrue
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -28,6 +38,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class TagLibM4aWriteProbeTest {
     @Test
+    @ManualInstrumentedTest
     fun probeM4aMetadataAndCoverWrite() {
         val arguments = InstrumentationRegistry.getArguments()
         val sourcePath = arguments.getString("samplePath")
@@ -109,6 +120,7 @@ class TagLibM4aWriteProbeTest {
     }
 
     @Test
+    @ManualInstrumentedTest
     fun probeLocalMediaSupportM4aWrite() = runBlocking {
         val arguments = InstrumentationRegistry.getArguments()
         val sourcePath = arguments.getString("samplePath")
@@ -153,6 +165,78 @@ class TagLibM4aWriteProbeTest {
     }
 
     @Test
+    @ManualInstrumentedTest
+    fun downloadedM4aMetadataWriteHandlesPlatformIdAndTranslationAliases() = runBlocking {
+        val source = requiredProbeSource()
+        val coverPath = InstrumentationRegistry.getArguments().getString("coverPath")
+        assumeTrue("coverPath is required", !coverPath.isNullOrBlank())
+        val cover = File(requireNotNull(coverPath))
+        assumeTrue("cover file is missing", cover.isFile)
+
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val work = File(context.cacheDir, "downloaded-audio-tag-writer-probe.m4a")
+        source.copyTo(work, overwrite = true)
+        val seededProperties = hashMapOf<String, Array<String>>().apply {
+            openMetadata(work)?.first?.forEach { (key, values) ->
+                put(key, values.copyOf())
+            }
+            put("TRACKNUMBER", arrayOf("7"))
+        }
+        ParcelFileDescriptor.open(work, ParcelFileDescriptor.MODE_READ_WRITE).use { descriptor ->
+            assertTrue(TagLib.savePropertyMap(descriptor.dup().detachFd(), seededProperties))
+        }
+        val originalTrackNumber = openMetadata(work)?.first?.get("TRACKNUMBER")?.toList()
+        val originalLyrics = "[00:01.00]original"
+        val translatedLyrics = "[00:01.00]translation"
+        try {
+            val outcome = DownloadedAudioTagWriter.write(
+                context = context,
+                audio = ManagedDownloadStorage.StoredEntry(
+                    name = work.name,
+                    reference = work.toURI().toString(),
+                    mediaUri = work.toURI().toString(),
+                    localFilePath = work.absolutePath,
+                    sizeBytes = work.length(),
+                    lastModifiedMs = work.lastModified()
+                ),
+                song = SongItem(
+                    id = 117111510797424L,
+                    name = "Downloaded title",
+                    artist = "Downloaded artist",
+                    album = "Bilibili",
+                    albumId = 0L,
+                    durationMs = 180_000L,
+                    coverUrl = null,
+                    mediaUri = "https://example.test/audio",
+                    matchedLyric = originalLyrics,
+                    matchedTranslatedLyric = translatedLyrics,
+                    localFileName = work.name,
+                    localFilePath = work.absolutePath
+                ),
+                sidecarReferences = AudioDownloadManager.DownloadedSidecarReferences(
+                    coverReference = cover.toURI().toString(),
+                    expectedCover = true,
+                    expectedLyric = true,
+                    expectedTranslatedLyric = true,
+                    lyricContent = originalLyrics,
+                    translatedLyricContent = translatedLyrics
+                ),
+                standardizedLyricEmbeddingEnabled = true
+            )
+
+            assertEquals(DownloadedAudioTagWriteOutcome.SUCCESS, outcome)
+            val properties = requireNotNull(openMetadata(work)?.first)
+            assertEquals(originalTrackNumber, properties["TRACKNUMBER"]?.toList())
+            assertArrayEquals(arrayOf(translatedLyrics), properties["LYRICS_TRANSLATED"])
+            assertArrayEquals(arrayOf(translatedLyrics), properties["NERI_LYRICS_TRANSLATED"])
+            assertTrue(properties["LYRICS:TRANSLATION"].isNullOrEmpty())
+        } finally {
+            work.delete()
+        }
+    }
+
+    @Test
+    @ManualInstrumentedTest
     fun probeLocalMediaSupportM4aCoverWritePreservesEmbeddedLyrics() = runBlocking {
         val source = requiredProbeSource()
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -214,6 +298,7 @@ class TagLibM4aWriteProbeTest {
     }
 
     @Test
+    @ManualInstrumentedTest
     fun probeLocalMediaSupportM4aRepeatedCoverWritesAndClear() = runBlocking {
         assumeTrue("WebP probe needs Android 11+", Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
         val source = requiredProbeSource()
@@ -305,6 +390,7 @@ class TagLibM4aWriteProbeTest {
     }
 
     @Test
+    @ManualInstrumentedTest
     fun probeLocalMediaSupportM4aContentUriWrite() = runBlocking {
         assumeTrue("MediaStore test needs Android 10+", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
         val source = requiredProbeSource()
@@ -403,6 +489,7 @@ class TagLibM4aWriteProbeTest {
     }
 
     @Test
+    @ManualInstrumentedTest
     fun probeLocalMediaSupportM4aStagedContentWrite() = runBlocking {
         val source = requiredProbeSource()
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -426,7 +513,10 @@ class TagLibM4aWriteProbeTest {
                 durationMs = 180_000L,
                 coverUrl = null,
                 mediaUri = sourceUri.toString(),
-                localFileName = "staged-content-probe.m4a"
+                localFileName = "staged-content-probe.m4a",
+                originalLyric = "[00:01.00]standalone original",
+                originalTranslatedLyric = "[00:01.00]standalone translation",
+                originalRomanizedLyric = "[00:01.00]standalone romanization"
             )
 
             assertWriteSucceeded(
@@ -434,9 +524,16 @@ class TagLibM4aWriteProbeTest {
                     context = context,
                     song = song,
                     coverReference = firstCover.toURI().toString(),
-                    writeCover = true
+                    writeCover = true,
+                    writeLyrics = true
                 )
             )
+            val writtenProperties = requireNotNull(openMetadata(resolver, sourceUri)).first
+            assertArrayEquals(arrayOf(song.name), writtenProperties["TITLE"])
+            assertArrayEquals(arrayOf(song.artist), writtenProperties["ARTIST"])
+            assertArrayEquals(arrayOf(song.originalLyric), writtenProperties["NERI_LYRICS_ORIGINAL"])
+            assertArrayEquals(arrayOf(song.originalTranslatedLyric), writtenProperties["NERI_LYRICS_TRANSLATED"])
+            assertArrayEquals(arrayOf(song.originalRomanizedLyric), writtenProperties["NERI_LYRICS_ROMANIZED"])
             assertArrayEquals(
                 firstBytes,
                 openMetadata(resolver, sourceUri)?.second?.singleOrNull()?.data
@@ -458,6 +555,67 @@ class TagLibM4aWriteProbeTest {
             resolver.delete(sourceUri, null, null)
             firstCover.delete()
             secondCover.delete()
+        }
+    }
+
+    @Test
+    @ManualInstrumentedTest
+    fun standaloneContentWriteRejectsUnreadableCoverAndPreservesAudio() = runBlocking {
+        val source = requiredProbeSource()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val resolver = context.contentResolver
+        val sourceUri = StagedMetadataTestProvider.CONTENT_URI
+        val missingCover = File(context.cacheDir, "missing-probe-${UUID.randomUUID()}.jpg")
+        resolver.delete(sourceUri, null, null)
+        try {
+            requireNotNull(resolver.openOutputStream(sourceUri, "w")).use { output ->
+                source.inputStream().use { it.copyTo(output) }
+            }
+            val outcome = LocalMediaSupport.writeEditableMetadata(
+                context = context,
+                song = probeSong(source).copy(mediaUri = sourceUri.toString(), localFilePath = null),
+                coverReference = missingCover.toURI().toString(),
+                writeCover = true
+            )
+            assertEquals(LocalMediaMetadataWriteOutcome.FAILED, outcome)
+            val after = requireNotNull(resolver.openInputStream(sourceUri)).use { it.readBytes() }
+            assertArrayEquals(source.readBytes(), after)
+        } finally {
+            resolver.delete(sourceUri, null, null)
+        }
+    }
+
+    @Test
+    fun inaccessibleMatchingMediaStoreTreeCannotBecomeAStandaloneWrite() = runBlocking {
+        assumeTrue("MediaStore test needs Android 10+", Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+        GlobalDownloadManager.startupRecoveryMutex.withLock {
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val resolver = context.contentResolver
+            val previousDirectory = ManagedDownloadStorage.configuredDirectoryUri()
+            val name = "namespace-probe-${UUID.randomUUID()}"
+            val sourceUri = requireNotNull(resolver.insert(
+                MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, "$name.m4a")
+                    put(MediaStore.MediaColumns.MIME_TYPE, "audio/mp4")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "Music/$name/child")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+            ))
+            try {
+                val treeUri = DocumentsContract.buildTreeDocumentUri(
+                    "com.android.externalstorage.documents", "primary:Music/$name"
+                )
+                ManagedDownloadStorage.primeSettings(treeUri.toString(), null)
+                assertTrue(resolver.openFileDescriptor(sourceUri, "rw")?.use { true } == true)
+                assertEquals(null, LocalMediaSupport.resolveLocalDocumentNavigation(context, sourceUri))
+                assertEquals(false, LocalMediaSupport.isStandaloneContentMetadataTarget(
+                    context, sourceUri, localFile = null
+                ))
+            } finally {
+                ManagedDownloadStorage.primeSettings(previousDirectory, null)
+                resolver.delete(sourceUri, null, null)
+            }
         }
     }
 

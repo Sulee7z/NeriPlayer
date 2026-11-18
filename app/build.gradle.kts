@@ -1,15 +1,39 @@
 @file:Suppress("UnstableApiUsage")
 
 import com.android.build.api.variant.FilterConfiguration
+import com.android.build.api.artifact.ScopedArtifact
+import com.android.build.api.variant.ScopedArtifacts
 import org.gradle.api.tasks.testing.Test
+import org.gradle.testing.jacoco.tasks.JacocoReport
+import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
 import java.util.UUID
 
 plugins {
     id("build-logic.android.application")
     id("build-logic.android.compose")
     alias(libs.plugins.kotlin.serialization)
-    alias(libs.plugins.ksp)
     id("kotlin-parcelize")
+    id("jacoco")
+}
+
+val ownedLibraryPaths = rootProject.file("gradle/owned-modules.txt")
+    .readLines().filter { it.isNotBlank() }
+val libraryCoverageClasses = configurations.create("libraryCoverageClasses") {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val libraryCoverageExecution = configurations.create("libraryCoverageExecution") {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+val coverageSources = tasks.register<Sync>("collectCoverageSources") {
+    (listOf(project.path) + ownedLibraryPaths).forEach { module ->
+        listOf("java", "kotlin").forEach { language ->
+            from(project(module).layout.projectDirectory.dir("src/main/$language"))
+        }
+    }
+    into(layout.buildDirectory.dir("reports/crap/sources"))
+    duplicatesStrategy = DuplicatesStrategy.FAIL
 }
 
 val isGithubPullRequest = providers.environmentVariable("GITHUB_EVENT_NAME").orNull == "pull_request"
@@ -33,7 +57,20 @@ val releaseSigningReady = releaseKeystoreFile.exists() &&
 
 android {
     namespace = "moe.ouom.neriplayer"
-    val buildUUID = UUID.randomUUID()
+    val suppliedBuildUuid = providers.gradleProperty("buildUuid")
+        .orElse(providers.environmentVariable("NERI_BUILD_UUID")).orNull
+    val buildUUID = suppliedBuildUuid?.let { value ->
+        val normalized = value.trim()
+        require(normalized.matches(Regex("[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"))) {
+            "buildUuid must be a complete UUID"
+        }
+        UUID.fromString(normalized)
+    } ?: UUID.randomUUID()
+    val suppliedBuildTimestamp = providers.gradleProperty("buildTimestamp").orNull
+    val buildTimestamp = suppliedBuildTimestamp?.let { value ->
+        value.toLongOrNull()?.takeIf { it > 0L }
+            ?: throw GradleException("buildTimestamp must be positive epoch milliseconds")
+    } ?: System.currentTimeMillis()
     val buildAllReleaseAbis = (project.findProperty("buildAllReleaseAbis") as String?)?.toBoolean() == true
     val defaultReleaseAbiFilters = listOf("arm64-v8a")
     val allReleaseAbiFilters = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
@@ -62,33 +99,32 @@ android {
 
     defaultConfig {
         applicationId = "moe.ouom.neriplayer"
+        val inviteScheme = "neriplayer"
+        manifestPlaceholders["listenTogetherInviteScheme"] = inviteScheme
+        buildConfigField("String", "LISTEN_TOGETHER_INVITE_SCHEME", "\"$inviteScheme\"")
 
         buildConfigField("String", "BUILD_UUID", "\"${buildUUID}\"")
         buildConfigField("String", "TAG", "\"[NeriPlayer]\"")
-        buildConfigField("long", "BUILD_TIMESTAMP", "${System.currentTimeMillis()}L")
+        buildConfigField("long", "BUILD_TIMESTAMP", "${buildTimestamp}L")
 
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        testInstrumentationRunner = "moe.ouom.neriplayer.testing.NeriPlayerInstrumentationTestRunner"
 
         renderscriptTargetApi = 31
         renderscriptSupportModeEnabled = true
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += listOf(
-                    "-fexceptions",
-                    "-frtti"
-                )
-                arguments += listOf(
-                    "-DANDROID_STL=c++_static",
-                    "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
-                )
-            }
-        }
     }
 
     buildTypes {
         val releaseSigningConfig = signingConfigs.getByName("release")
+
+        debug {
+            applicationIdSuffix = ".debug"
+            val inviteScheme = "neriplayer-debug"
+            manifestPlaceholders["listenTogetherInviteScheme"] = inviteScheme
+            buildConfigField("String", "LISTEN_TOGETHER_INVITE_SCHEME", "\"$inviteScheme\"")
+            enableUnitTestCoverage = true
+        }
 
         release {
             isMinifyEnabled = true
@@ -107,25 +143,32 @@ android {
                 "proguard-rules.pro"
             )
         }
+
+        if (providers.gradleProperty("enablePerformanceBenchmark").orNull == "true") {
+            create("benchmark") {
+                initWith(getByName("release"))
+                applicationIdSuffix = ".benchmark"
+                signingConfig = signingConfigs.getByName("debug")
+                matchingFallbacks += "release"
+                val inviteScheme = "neriplayer-benchmark"
+                manifestPlaceholders["listenTogetherInviteScheme"] = inviteScheme
+                buildConfigField("String", "LISTEN_TOGETHER_INVITE_SCHEME", "\"$inviteScheme\"")
+            }
+        }
     }
     buildFeatures {
         buildConfig = true
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-
     testOptions {
         unitTests.isReturnDefaultValues = true
+        // Robolectric 渲染 Compose 与读取资源需要合并后的应用资源
+        unitTests.isIncludeAndroidResources = true
     }
 
     sourceSets {
         getByName("androidTest") {
-            assets.directories.add("schemas")
+            assets.directories.add(project(":database").layout.projectDirectory.dir("schemas").asFile.path)
         }
     }
 
@@ -197,9 +240,38 @@ gradle.taskGraph.whenReady {
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     exclude("**/com/mocharealm/accompanist/lyrics/ui/utils/String.kt")
+    if (name.endsWith("AndroidTestKotlin") || name.endsWith("UnitTestKotlin")) {
+        // 应用集成测试继续验证下载内部恢复状态，业务编译仍遵守模块可见性
+        val compileClasspathName = name.removePrefix("compile").removeSuffix("Kotlin")
+            .replaceFirstChar(Char::lowercaseChar) + "CompileClasspath"
+        val downloadIntegrationClasses = providers.provider {
+            configurations.getByName(compileClasspathName).incoming.artifactView {
+                attributes.attribute(
+                    org.gradle.api.artifacts.type.ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE,
+                    "android-classes-jar"
+                )
+                componentFilter { component ->
+                    component is org.gradle.api.artifacts.component.ProjectComponentIdentifier &&
+                        component.projectPath == ":download:runtime"
+                }
+            }.files
+        }
+        friendPaths.from(downloadIntegrationClasses)
+        dependsOn(downloadIntegrationClasses)
+    }
 }
 
 tasks.withType<Test>().configureEach {
+    // Android 16 的 Robolectric 沙箱需要通过 JDK 文件描述符接口创建共享内存
+    jvmArgs("--add-exports=java.base/jdk.internal.access=ALL-UNNAMED")
+    // Robolectric 用沙箱类加载器加载被测类，这些类没有代码源位置，需要显式纳入覆盖率
+    extensions.configure<JacocoTaskExtension> {
+        isIncludeNoLocationClasses = true
+        excludes = listOf("jdk.internal.*")
+    }
+    maxHeapSize = "3g"
+    // Android 单元测试中的 Context 可能没有真实文件目录，临时文件统一放到任务临时目录
+    systemProperty("java.io.tmpdir", temporaryDir.absolutePath)
     systemProperty(
         "runNeteaseSmoke",
         System.getProperty("runNeteaseSmoke") ?: "false"
@@ -222,8 +294,127 @@ tasks.withType<Test>().configureEach {
     )
 }
 
-ksp {
-    arg("room.schemaLocation", "$projectDir/schemas")
+abstract class ProjectCoverageReport : JacocoReport() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val projectJars: ListProperty<RegularFile>
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val projectDirectories: ListProperty<Directory>
+}
+
+abstract class DomainDependencyCheck : Exec() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val projectJars: ListProperty<RegularFile>
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val projectDirectories: ListProperty<Directory>
+}
+
+val verifyDomainDependencies = tasks.register<DomainDependencyCheck>("verifyDomainDependencies") {
+    group = "verification"
+    description = "Check compiled app and library rules against explicit domain dependencies."
+    dependsOn(libraryCoverageClasses)
+    inputs.files(libraryCoverageClasses)
+    workingDir(rootProject.projectDir)
+    inputs.files(rootProject.file("tools_pub/quality/domain_dependencies.py"),
+        rootProject.file("config/quality/domain-dependencies.json"))
+    doFirst {
+        val executableSuffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
+        val jdkBin = File(System.getProperty("java.home"), "bin")
+        val artifacts = projectJars.get().map { it.asFile } + projectDirectories.get().map { it.asFile } +
+            libraryCoverageClasses.files
+        commandLine(listOf(
+            "python3", "-B", "tools_pub/quality/domain_dependencies.py",
+            "--config", rootProject.file("config/quality/domain-dependencies.json").absolutePath,
+            "--jdeps", File(jdkBin, "jdeps$executableSuffix").absolutePath,
+            "--javap", File(jdkBin, "javap$executableSuffix").absolutePath,
+            "--output", layout.buildDirectory.file("reports/domain-dependencies/report.json").get().asFile.absolutePath
+        ) + artifacts.flatMap { listOf("--input", it.absolutePath) })
+    }
+}
+
+val crapExecutionData = providers.provider {
+    tasks.named<Test>("testDebugUnitTest").get()
+        .extensions.getByType<JacocoTaskExtension>().destinationFile
+        ?: throw GradleException("Debug JVM coverage destination is missing")
+}
+
+val verifyCrapExecutionData = tasks.register<VerifyCoverageExecutionData>("verifyCrapExecutionData") {
+    dependsOn("testDebugUnitTest", libraryCoverageExecution)
+    executionData.from(crapExecutionData, libraryCoverageExecution)
+}
+
+val crapCoverageReport = tasks.register<ProjectCoverageReport>("crapCoverageReport") {
+    group = "verification"
+    description = "Collect coverage for app and owned library Kotlin and Java classes."
+    dependsOn(verifyCrapExecutionData, coverageSources, libraryCoverageExecution)
+    executionData.setFrom(crapExecutionData)
+    executionData.from(libraryCoverageExecution)
+    classDirectories.from(projectJars, projectDirectories)
+    classDirectories.from(libraryCoverageClasses)
+    sourceDirectories.from(coverageSources)
+    reports {
+        xml.required.set(true)
+        xml.outputLocation.set(layout.buildDirectory.file("reports/crap/coverage.xml"))
+        html.required.set(true)
+        html.outputLocation.set(layout.buildDirectory.dir("reports/crap/coverage"))
+    }
+}
+
+androidComponents.onVariants(androidComponents.selector().withBuildType("debug")) { variant ->
+    variant.artifacts.forScope(ScopedArtifacts.Scope.PROJECT)
+        .use(verifyDomainDependencies)
+        .toGet(
+            ScopedArtifact.CLASSES,
+            DomainDependencyCheck::projectJars,
+            DomainDependencyCheck::projectDirectories
+        )
+    variant.artifacts.forScope(ScopedArtifacts.Scope.PROJECT)
+        .use(crapCoverageReport)
+        .toGet(
+            ScopedArtifact.CLASSES,
+            ProjectCoverageReport::projectJars,
+            ProjectCoverageReport::projectDirectories
+        )
+}
+
+val crapToolTests = tasks.register<Exec>("crapToolTests") {
+    group = "verification"
+    workingDir(rootProject.projectDir)
+    commandLine("python3", "-B", "-m", "unittest", "discover", "-s", "tools_pub/quality", "-p", "test_*.py")
+}
+
+verifyDomainDependencies.configure { dependsOn(crapToolTests) }
+
+val crapReport = tasks.register<Exec>("crapReport") {
+    group = "verification"
+    description = "List all owned app/library method scores and every CRAP score greater than 8."
+    dependsOn(crapCoverageReport, crapToolTests)
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "python3", "-B", "tools_pub/quality/crap_report.py",
+        "--xml", layout.buildDirectory.file("reports/crap/coverage.xml").get().asFile,
+        "--source-root", coverageSources.get().destinationDir,
+        "--scope", rootProject.file("config/quality/crap-scope.json"),
+        "--output", layout.buildDirectory.dir("reports/crap").get().asFile,
+        "--report-only"
+    )
+}
+
+val verifyCrap = tasks.register<Exec>("verifyCrap") {
+    group = "verification"
+    description = "Fail if any method in the refactored source scope has CRAP greater than 9."
+    dependsOn(crapReport)
+    workingDir(rootProject.projectDir)
+    commandLine(crapReport.get().commandLine.dropLast(1))
+}
+
+tasks.named("check") {
+    dependsOn(verifyCrap, verifyDomainDependencies)
 }
 
 androidComponents {
@@ -246,8 +437,16 @@ androidComponents {
 }
 
 dependencies {
+    testImplementation(testFixtures(project(":common")))
+    ownedLibraryPaths.forEach { module ->
+        implementation(project(module))
+        // 纯 native 库由 CTest 验证，不提供 JVM 覆盖率产物
+        if (module != ":native") {
+            add(libraryCoverageClasses.name, project(mapOf("path" to module, "configuration" to "coverageClassesElements")))
+            add(libraryCoverageExecution.name, project(mapOf("path" to module, "configuration" to "coverageExecutionElements")))
+        }
+    }
     implementation(project(":ksp-annotations"))
-    ksp(project(":ksp-processor"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.splashscreen)
@@ -267,6 +466,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.navigationevent.compose)
     implementation(libs.compose.icons)
     implementation(libs.androidx.foundation)
 
@@ -274,6 +474,10 @@ dependencies {
     testImplementation(libs.org.json)
     testImplementation(libs.mockito.core)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.junit)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.compose.bom))
@@ -281,20 +485,15 @@ dependencies {
     androidTestImplementation(libs.kotlinx.coroutines.android)
     androidTestImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.room.testing)
+    androidTestImplementation(testFixtures(project(":local")))
     implementation(libs.androidx.animation)
     implementation(libs.accompanist.navigation.animation)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
-    ksp(libs.androidx.room.compiler)
 
-    implementation(libs.dec)
-    implementation(libs.newpipe.extractor)
     implementation(libs.okhttp)
-    implementation(libs.commons.net)
-    implementation(libs.lyricon.provider)
     implementation(libs.zxing.core)
-    implementation(libs.tiny.pinyin)
 
     implementation(project(":accompanist-lyrics-core"))
     implementation(project(":accompanist-lyrics-ui"))
@@ -328,12 +527,10 @@ dependencies {
 
     // WorkManager - 后台同步
     implementation(libs.androidx.work.runtime.ktx)
-    implementation(libs.androidx.javascriptengine)
 
     implementation(libs.androidx.webkit)
 
     // 取主题色
     implementation(libs.androidx.palette.ktx)
 
-    implementation(libs.superlyricapi)
 }

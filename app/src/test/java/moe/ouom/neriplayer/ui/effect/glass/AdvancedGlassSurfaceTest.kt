@@ -9,25 +9,25 @@ class AdvancedGlassSurfaceTest {
     fun inactiveNavigationOwnerCannotRenderGlassDuringAStageHandoff() {
         val activeOwner = Any()
         val inactiveOwner = Any()
-        val activeOwners = setOf<Any>(activeOwner)
+        val activeOwners = setOf(activeOwner)
 
         assertTrue(
             isAdvancedGlassNavigationOwnerActive(
-                requiresContentBackdrop = false,
+                isGlobalNavigationSurface = false,
                 activeNavigationOwners = activeOwners,
                 navigationOwner = activeOwner
             )
         )
         assertFalse(
             isAdvancedGlassNavigationOwnerActive(
-                requiresContentBackdrop = false,
+                isGlobalNavigationSurface = false,
                 activeNavigationOwners = activeOwners,
                 navigationOwner = inactiveOwner
             )
         )
         assertTrue(
             isAdvancedGlassNavigationOwnerActive(
-                requiresContentBackdrop = true,
+                isGlobalNavigationSurface = true,
                 activeNavigationOwners = activeOwners,
                 navigationOwner = inactiveOwner
             )

@@ -78,10 +78,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.customsource.CustomAudioSource
-import moe.ouom.neriplayer.core.customsource.CustomSourceMetadataParser
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.common.R
+import moe.ouom.neriplayer.platform.customsource.CustomAudioSource
+import moe.ouom.neriplayer.platform.customsource.CustomSourceMetadataParser
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.viewmodel.customsource.CustomSourceViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -120,13 +120,7 @@ fun CustomSourceScreen(
         ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                appContext.contentResolver.openInputStream(uri)?.use { input ->
-                    input.readBytes().toString(Charsets.UTF_8)
-                }
-            }.getOrNull()?.let { content ->
-                vm.importScript(content)
-            }
+            vm.importScriptFromUri(uri)
         }
     }
 

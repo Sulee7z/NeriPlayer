@@ -1,0 +1,149 @@
+package moe.ouom.neriplayer.core.player.policy.progress
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class PlaybackProgressUpdatePolicyTest {
+    @Test
+    fun `progress polling starts only after initialization loading and media admission`() {
+        assertFalse(shouldRunPlaybackProgressUpdates(false, false, true, true, true))
+        assertFalse(shouldRunPlaybackProgressUpdates(true, true, true, true, true))
+        assertFalse(shouldRunPlaybackProgressUpdates(true, false, false, true, true))
+        assertFalse(shouldRunPlaybackProgressUpdates(true, false, true, false, false))
+        assertTrue(shouldRunPlaybackProgressUpdates(true, false, true, false, true))
+        assertTrue(shouldRunPlaybackProgressUpdates(true, false, true, true, false))
+    }
+    @Test
+    fun `ready intent keeps progress sampler alive before isPlaying edge`() {
+        assertTrue(
+            shouldRunPlaybackProgressUpdates(
+                initialized = true,
+                pendingMediaLoad = false,
+                hasMediaItem = true,
+                isPlaying = false,
+                playWhenReady = true
+            )
+        )
+    }
+
+    @Test
+    fun `pending media load keeps old sampler stopped`() {
+        assertFalse(
+            shouldRunPlaybackProgressUpdates(
+                initialized = true,
+                pendingMediaLoad = true,
+                hasMediaItem = true,
+                isPlaying = true,
+                playWhenReady = true
+            )
+        )
+    }
+
+    @Test
+    fun `paused media does not run progress sampler`() {
+        assertFalse(
+            shouldRunPlaybackProgressUpdates(
+                initialized = true,
+                pendingMediaLoad = false,
+                hasMediaItem = true,
+                isPlaying = false,
+                playWhenReady = false
+            )
+        )
+    }
+
+    @Test
+    fun `startup progress must advance beyond resume baseline`() {
+        assertFalse(
+            hasPlaybackProgressAdvancedSinceBaseline(
+                currentPositionMs = 30_000L,
+                baselinePositionMs = 30_000L,
+                toleranceMs = 500L
+            )
+        )
+        assertTrue(
+            hasPlaybackProgressAdvancedSinceBaseline(
+                currentPositionMs = 30_700L,
+                baselinePositionMs = 30_000L,
+                toleranceMs = 500L
+            )
+        )
+    }
+
+    @Test
+    fun `progress cadence keeps startup high frequency before first advance`() {
+        assertEquals(
+            PLAYBACK_PROGRESS_STARTUP_UPDATE_INTERVAL_MS,
+            resolvePlaybackProgressUpdateIntervalMs(
+                playbackProgressAdvanceReported = false,
+                interactiveNowPlayingVisible = false
+            )
+        )
+    }
+
+    @Test
+    fun `progress cadence slows down after startup according to visibility`() {
+        assertEquals(
+            PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS,
+            resolvePlaybackProgressUpdateIntervalMs(
+                playbackProgressAdvanceReported = true,
+                interactiveNowPlayingVisible = true
+            )
+        )
+        assertEquals(250L, PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS)
+        assertEquals(
+            PLAYBACK_PROGRESS_BACKGROUND_UPDATE_INTERVAL_MS,
+            resolvePlaybackProgressUpdateIntervalMs(
+                playbackProgressAdvanceReported = true,
+                interactiveNowPlayingVisible = false
+            )
+        )
+        assertEquals(1_500L, PLAYBACK_PROGRESS_BACKGROUND_UPDATE_INTERVAL_MS)
+        assertEquals(1_000L, PLAYBACK_PROGRESS_STATS_UPDATE_INTERVAL_MS)
+    }
+
+    @Test
+    fun `active external lyrics keep background cadence responsive`() {
+        assertEquals(
+            PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS,
+            resolvePlaybackProgressUpdateIntervalMs(
+                playbackProgressAdvanceReported = true,
+                interactiveNowPlayingVisible = false,
+                realtimeExternalLyricsActive = true
+            )
+        )
+    }
+
+    @Test
+    fun `lyric boundary interval wakes at the next line within the interactive and background bounds`() {
+        assertEquals(1_020L, resolveLyricBoundaryProgressIntervalMs(1_000L, 1f))
+        assertEquals(520L, resolveLyricBoundaryProgressIntervalMs(1_000L, 2f))
+        assertEquals(PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS, resolveLyricBoundaryProgressIntervalMs(30L, 1f))
+        assertEquals(PLAYBACK_PROGRESS_BACKGROUND_UPDATE_INTERVAL_MS, resolveLyricBoundaryProgressIntervalMs(9_000L, 1f))
+        assertEquals(PLAYBACK_PROGRESS_BACKGROUND_UPDATE_INTERVAL_MS, resolveLyricBoundaryProgressIntervalMs(null, 1f))
+        assertEquals(1_020L, resolveLyricBoundaryProgressIntervalMs(1_000L, 0f))
+    }
+
+    @Test
+    fun `only an external lyric driven interactive interval switches to the lyric boundary`() {
+        var boundaryRequests = 0
+        val boundary = { boundaryRequests++; 900L }
+
+        assertEquals(900L, resolveProgressIntervalWithLyricBoundary(PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS, false, boundary))
+        assertEquals(
+            PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS,
+            resolveProgressIntervalWithLyricBoundary(PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS, true, boundary)
+        )
+        assertEquals(
+            PLAYBACK_PROGRESS_STARTUP_UPDATE_INTERVAL_MS,
+            resolveProgressIntervalWithLyricBoundary(PLAYBACK_PROGRESS_STARTUP_UPDATE_INTERVAL_MS, false, boundary)
+        )
+        assertEquals(
+            PLAYBACK_PROGRESS_BACKGROUND_UPDATE_INTERVAL_MS,
+            resolveProgressIntervalWithLyricBoundary(PLAYBACK_PROGRESS_BACKGROUND_UPDATE_INTERVAL_MS, false, boundary)
+        )
+        assertEquals(1, boundaryRequests)
+    }
+}

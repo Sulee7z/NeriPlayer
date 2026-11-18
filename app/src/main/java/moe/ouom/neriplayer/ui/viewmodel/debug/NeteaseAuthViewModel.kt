@@ -24,6 +24,10 @@ package moe.ouom.neriplayer.ui.viewmodel.debug
  */
 
 import android.app.Application
+import moe.ouom.neriplayer.ui.i18n.UiText
+import moe.ouom.neriplayer.R as AppR
+import java.io.IOException
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -33,14 +37,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthState
-import moe.ouom.neriplayer.data.auth.common.parseRawCookieText
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthHealth
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthState
+import moe.ouom.neriplayer.network.http.parsing.parseRawCookieText
 import moe.ouom.neriplayer.data.auth.web.clearWebViewLoginState
 import moe.ouom.neriplayer.data.auth.web.WebLoginPlatform
 import org.json.JSONObject
+import kotlin.time.Duration.Companion.milliseconds
 
 data class NeteaseAuthUiState(
     val phone: String = "",
@@ -54,7 +59,7 @@ data class NeteaseAuthUiState(
 )
 
 sealed interface NeteaseAuthEvent {
-    data class ShowSnack(val message: String) : NeteaseAuthEvent
+    data class ShowSnack(val message: UiText) : NeteaseAuthEvent
     data class AskConfirmSend(val masked: String) : NeteaseAuthEvent
     data object LoginSuccess : NeteaseAuthEvent
 }
@@ -114,15 +119,20 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     fun clearCookies() {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { api.logout() }
+            try {
+                cookieRepo.clear()
+            } catch (_: IOException) {
+                emitSnack(UiText.Resource(CoreCommonR.string.auth_storage_clear_failed))
+                return@launch
+            }
             cookieStore.clear()
-            cookieRepo.clear()
             clearWebViewLoginState(
-                context = getApplication<Application>(),
+                context = getApplication(),
                 platform = WebLoginPlatform.NETEASE
             )
             _events.tryEmit(
                 NeteaseAuthEvent.ShowSnack(
-                    getApplication<Application>().getString(R.string.auth_cookie_cleared)
+                    UiText.Resource(CoreCommonR.string.auth_cookie_cleared)
                 )
             )
         }
@@ -139,7 +149,7 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     fun askConfirmSendCaptcha() {
         val phone = _uiState.value.phone.trim()
         if (!isValidPhone(phone)) {
-            emitSnack("Please enter 11-digit phone number")
+            emitSnack(UiText.Resource(AppR.string.auth_phone_required))
             return
         }
         _events.tryEmit(NeteaseAuthEvent.AskConfirmSend(maskPhone(phone)))
@@ -148,7 +158,7 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     fun sendCaptcha(ctcode: String = "86") {
         val phone = _uiState.value.phone.trim()
         if (!isValidPhone(phone)) {
-            emitSnack("Invalid phone number")
+            emitSnack(UiText.Resource(AppR.string.auth_phone_invalid))
             return
         }
         if (_uiState.value.countdownSec > 0 || _uiState.value.sending) return
@@ -159,14 +169,14 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
                 val resp = api.sendCaptcha(phone, ctcode.toInt())
                 val ok = JSONObject(resp).optInt("code", -1) == 200
                 if (ok) {
-                    emitSnack("Verification code sent")
+                    emitSnack(UiText.Resource(AppR.string.auth_captcha_sent))
                     startCountdown()
                 } else {
-                    val msg = JSONObject(resp).optString("msg", "Send failed")
-                    emitSnack("Send failed: $msg")
+                    val message = providerMessage(JSONObject(resp), AppR.string.auth_captcha_send_error)
+                    emitSnack(UiText.Resource(AppR.string.auth_captcha_send_failed, listOf(message)))
                 }
             } catch (e: Exception) {
-                emitSnack("Send failed: " + (e.message ?: "Network error"))
+                emitSnack(UiText.Resource(AppR.string.auth_captcha_send_failed, listOf(failureMessage(e))))
             } finally {
                 _uiState.value = _uiState.value.copy(sending = false)
             }
@@ -177,11 +187,11 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
         val phone = _uiState.value.phone.trim()
         val captcha = _uiState.value.captcha.trim()
         if (!isValidPhone(phone)) {
-            emitSnack("Invalid phone number")
+            emitSnack(UiText.Resource(AppR.string.auth_phone_invalid))
             return
         }
         if (captcha.isEmpty()) {
-            emitSnack("Please enter verification code")
+            emitSnack(UiText.Resource(AppR.string.auth_captcha_required))
             return
         }
         if (_uiState.value.loggingIn) return
@@ -192,8 +202,8 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
                 val verifyResp = api.verifyCaptcha(phone, captcha, countryCode.toInt())
                 val verifyOk = JSONObject(verifyResp).optInt("code", -1) == 200
                 if (!verifyOk) {
-                    val msg = JSONObject(verifyResp).optString("msg", "Verification code error")
-                    emitSnack("Login failed: $msg")
+                    val message = providerMessage(JSONObject(verifyResp), AppR.string.auth_captcha_invalid)
+                    emitSnack(UiText.Resource(AppR.string.auth_login_failed, listOf(message)))
                     return@launch
                 }
 
@@ -220,18 +230,18 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
                     }
 
                     if (!cookieRepo.saveCookies(cookieStore)) {
-                        emitSnack(getApplication<Application>().getString(R.string.auth_cookie_invalid))
+                        emitSnack(UiText.Resource(CoreCommonR.string.auth_storage_save_failed))
                         return@launch
                     }
 
                     _uiState.value = _uiState.value.copy(isLoggedIn = true)
                     _events.tryEmit(NeteaseAuthEvent.LoginSuccess)
                 } else {
-                    val msg = obj.optString("msg", "Login failed, please try another method")
-                    emitSnack("Login failed: $msg")
+                    val message = providerMessage(obj, AppR.string.auth_login_retry)
+                    emitSnack(UiText.Resource(AppR.string.auth_login_failed, listOf(message)))
                 }
             } catch (e: Exception) {
-                emitSnack("Login failed: " + (e.message ?: "Network error"))
+                emitSnack(UiText.Resource(AppR.string.auth_login_failed, listOf(failureMessage(e))))
             } finally {
                 _uiState.value = _uiState.value.copy(loggingIn = false)
             }
@@ -241,13 +251,13 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     fun importCookiesFromMap(map: Map<String, String>) {
         viewModelScope.launch(Dispatchers.IO) {
             if (map.isEmpty()) {
-                emitSnack(getApplication<Application>().getString(R.string.auth_cookie_empty))
+                emitSnack(UiText.Resource(CoreCommonR.string.auth_cookie_empty))
                 return@launch
             }
 
             val validation = cookieRepo.validateCookies(map)
             if (!validation.isAccepted) {
-                emitSnack(getApplication<Application>().getString(R.string.auth_cookie_invalid))
+                emitSnack(UiText.Resource(CoreCommonR.string.auth_cookie_invalid))
                 return@launch
             }
 
@@ -255,7 +265,7 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
             cookieStore.putAll(validation.sanitizedCookies)
 
             if (!cookieRepo.saveCookies(cookieStore)) {
-                emitSnack(getApplication<Application>().getString(R.string.auth_cookie_invalid))
+                emitSnack(UiText.Resource(CoreCommonR.string.auth_storage_save_failed))
                 return@launch
             }
 
@@ -267,7 +277,7 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     fun importCookiesFromRaw(raw: String) {
         val parsed = parseRawCookieText(raw)
         if (parsed.isEmpty()) {
-            emitSnack(getApplication<Application>().getString(R.string.auth_cookie_invalid))
+            emitSnack(UiText.Resource(CoreCommonR.string.auth_cookie_invalid))
             return
         }
         importCookiesFromMap(parsed)
@@ -278,7 +288,7 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
             var left = 60
             while (left >= 0) {
                 _uiState.value = _uiState.value.copy(countdownSec = left)
-                delay(1000)
+                delay(1000.milliseconds)
                 left--
             }
         }
@@ -289,7 +299,16 @@ class NeteaseAuthViewModel(app: Application) : AndroidViewModel(app) {
     private fun maskPhone(p: String): String =
         if (p.length >= 7) p.take(3) + "****" + p.takeLast(4) else p
 
-    private fun emitSnack(msg: String) {
+    private fun emitSnack(msg: UiText) {
         _events.tryEmit(NeteaseAuthEvent.ShowSnack(msg))
     }
+
+    private fun providerMessage(response: JSONObject, @StringRes fallback: Int): UiText =
+        response.optString("msg").takeIf { it.isNotBlank() }?.let(UiText::Literal)
+            ?: UiText.Resource(fallback)
+
+    private fun failureMessage(error: Exception): UiText =
+        if (error is IOException) UiText.Resource(AppR.string.auth_network_error)
+        else error.message?.takeIf { it.isNotBlank() }?.let(UiText::Literal)
+            ?: UiText.Resource(AppR.string.auth_network_error)
 }

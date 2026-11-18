@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
@@ -32,6 +35,7 @@
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:enableOnBackInvokedCallback="true"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -43,17 +47,20 @@
         android:name=".NeriPlayerApplication"
         tools:targetApi="33">
 
-        <meta-data android:name="lyricon_module" android:value="true" />
-        <meta-data android:name="lyricon_module_author" android:value="NeriPlayer" />
-        <meta-data android:name="lyricon_module_description" android:value="NeriPlayer Lyricon Provider" />
-        <meta-data
-            android:name="lyricon_module_tags"
-            android:resource="@array/lyricon_module_tags" />
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
 
         <activity
             android:name=".activity.MainActivity"
-            android:configChanges="uiMode"
-            android:enableOnBackInvokedCallback="true"
+            android:configChanges="uiMode|locale|layoutDirection|orientation|screenSize|smallestScreenSize|screenLayout"
             android:exported="true"
             tools:targetApi="33">
             <intent-filter>
@@ -77,9 +84,21 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data
-                    android:scheme="neriplayer"
+                    android:scheme="${listenTogetherInviteScheme}"
                     android:host="listen-together"
                     android:pathPrefix="/join" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".activity.car.BluetoothMediaValidationActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay"
+            android:excludeFromRecents="true"
+            android:noHistory="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <data android:scheme="content" android:host="media"
+                    android:pathPrefix="/internal/audio/media/" android:mimeType="audio/*" />
             </intent-filter>
         </activity>
         <activity-alias
@@ -107,15 +126,6 @@
             android:process=":netease_login"
             android:theme="@style/Theme.Material3.DayNight.NoActionBar"
         />
-        <receiver
-            android:name=".data.auth.web.NeteaseWebViewLoginStateClearReceiver"
-            android:exported="false"
-            android:process=":netease_login"
-        >
-            <intent-filter>
-                <action android:name="moe.ouom.neriplayer.action.CLEAR_WEBVIEW_LOGIN_STATE" />
-            </intent-filter>
-        </receiver>
         <activity
             android:name=".activity.auth.BiliWebLoginActivity"
             android:exported="false"
@@ -128,15 +138,6 @@
             android:process=":bili_web_login"
             android:theme="@style/Theme.Material3.DayNight.NoActionBar"
             />
-        <receiver
-            android:name=".data.auth.web.BiliWebViewLoginStateClearReceiver"
-            android:exported="false"
-            android:process=":bili_web_login"
-        >
-            <intent-filter>
-                <action android:name="moe.ouom.neriplayer.action.CLEAR_WEBVIEW_LOGIN_STATE" />
-            </intent-filter>
-        </receiver>
         <activity
             android:name=".activity.auth.QqQrLoginActivity"
             android:exported="false"
@@ -158,24 +159,6 @@
             android:process=":youtube_web_login"
             android:theme="@style/Theme.Material3.DayNight.NoActionBar"
             />
-        <receiver
-            android:name=".data.auth.web.YouTubeWebViewLoginStateClearReceiver"
-            android:exported="false"
-            android:process=":youtube_web_login"
-        >
-            <intent-filter>
-                <action android:name="moe.ouom.neriplayer.action.CLEAR_WEBVIEW_LOGIN_STATE" />
-            </intent-filter>
-        </receiver>
-        <service
-            android:name="moe.ouom.neriplayer.core.player.service.AudioPlayerService"
-            android:exported="false"
-            android:stopWithTask="false"
-            android:foregroundServiceType="mediaPlayback">
-            <intent-filter>
-                <action android:name="android.intent.action.MEDIA_BUTTON" />
-            </intent-filter>
-        </service>
 
         <receiver
             android:name="androidx.media.session.MediaButtonReceiver"
@@ -211,6 +194,19 @@
                 android:resource="@xml/widget_playback_2x2_info" />
         </receiver>
         
+        <receiver
+            android:name=".widget.NeriPlayerStripWidgetProvider"
+            android:exported="false"
+            android:label="@string/widget_playback_4x1_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_playback_4x1_info" />
+        </receiver>
+
         <!-- FileProvider for sharing downloaded music files -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -1,5 +1,14 @@
 package moe.ouom.neriplayer.ui.component.lyrics
 
+import moe.ouom.neriplayer.data.model.lyrics.LyricEntry
+import moe.ouom.neriplayer.data.model.lyrics.WordTiming
+import moe.ouom.neriplayer.lyrics.parser.flattenWordTimedEntries
+import moe.ouom.neriplayer.lyrics.parser.parseNeteaseLyricsAuto
+import moe.ouom.neriplayer.lyrics.parser.parseTtmlLyrics
+import moe.ouom.neriplayer.lyrics.parser.resolveLyricsEditorInitialText
+import moe.ouom.neriplayer.lyrics.parser.resolvePreferredLyricContent
+import moe.ouom.neriplayer.lyrics.parser.toEditableLyricsText
+
 import com.mocharealm.accompanist.lyrics.core.model.karaoke.KaraokeLine
 import com.mocharealm.accompanist.lyrics.core.model.synced.SyncedLine
 import org.junit.Assert.assertEquals
@@ -10,6 +19,67 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.BlendMode
 
 class AdvancedLyricsViewTest {
+
+    private val embeddedTranslationTtml = """
+        <tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+            <body><div>
+                <p begin="00:00:01.000" end="00:00:03.000">
+                    <span begin="00:00:01.000" end="00:00:03.000">first</span>
+                    <span ttm:role="x-bg" begin="00:00:01.000" end="00:00:02.000">
+                        <span begin="00:00:01.000" end="00:00:02.000">background</span>
+                        <span ttm:role="x-translation">old accompaniment</span>
+                    </span>
+                    <span ttm:role="x-translation">old first</span>
+                    <span ttm:role="x-roman">old phonetic</span>
+                </p>
+                <p begin="00:00:05.000" end="00:00:07.000">
+                    <span begin="00:00:05.000" end="00:00:07.000">second</span>
+                    <span ttm:role="x-translation">old second</span>
+                </p>
+            </div></body>
+        </tt>
+    """.trimIndent()
+
+    @Test
+    fun `explicit translation or phonetic clear removes embedded ttml and accompaniment translations`() {
+        val legacy = buildAdvancedSyncedLyrics(embeddedTranslationTtml, null, emptyList(), emptyList())
+        assertEquals("old first", (legacy.lines.first() as KaraokeLine.MainKaraokeLine).translation)
+        assertEquals("old accompaniment", (legacy.lines.first() as KaraokeLine.MainKaraokeLine).accompanimentLines!!.single().translation)
+        for (phonetic in listOf(false, true)) {
+            val cleared = buildAdvancedSyncedLyrics(embeddedTranslationTtml, "", emptyList(), emptyList(), phonetic)
+            assertEquals(2, cleared.lines.size)
+            for (line in cleared.lines) {
+                val karaoke = line as KaraokeLine.MainKaraokeLine
+                assertEquals(null, karaoke.translation)
+                karaoke.accompanimentLines.orEmpty().forEach { assertEquals(null, it.translation) }
+            }
+        }
+    }
+
+    @Test
+    fun `sparse independent translation replaces embedded text and leaves unmatched lines untranslated`() {
+        val result = buildAdvancedSyncedLyrics(embeddedTranslationTtml, "[00:01.00]new first", emptyList(), emptyList())
+        val first = result.lines.first() as KaraokeLine.MainKaraokeLine
+        assertEquals("new first", first.translation)
+        assertEquals(null, first.accompanimentLines!!.single().translation)
+        assertEquals(null, (result.lines.last() as KaraokeLine.MainKaraokeLine).translation)
+        val plain = buildAdvancedSyncedLyrics(null, "", listOf(LyricEntry("original", 1000, 2000, translation = "old plain")), emptyList())
+        assertEquals(null, (plain.lines.single() as SyncedLine).translation)
+    }
+
+    @Test
+    fun `sparse external phonetics and missing embedded phonetics never display old translations as romanization`() {
+        val sparse = buildAdvancedSyncedLyrics(embeddedTranslationTtml, null, emptyList(),
+            listOf(LyricEntry("new phonetic", 1000, 3000)), showPhoneticAsTranslation = true)
+        val first = sparse.lines.first() as KaraokeLine.MainKaraokeLine
+        assertEquals("new phonetic", first.translation)
+        assertEquals(null, first.accompanimentLines!!.single().translation)
+        assertEquals(null, (sparse.lines.last() as KaraokeLine.MainKaraokeLine).translation)
+        val embedded = buildAdvancedSyncedLyrics(embeddedTranslationTtml, null, emptyList(), emptyList(),
+            showPhoneticAsTranslation = true)
+        assertEquals("old phonetic", (embedded.lines.first() as KaraokeLine.MainKaraokeLine).translation)
+        assertEquals(null, (embedded.lines.last() as KaraokeLine.MainKaraokeLine).translation)
+    }
 
     @Test
     fun `preview can use source over blend on light surfaces`() {
@@ -298,6 +368,31 @@ class AdvancedLyricsViewTest {
     }
 
     @Test
+    fun `buildAdvancedSyncedLyrics preserves metadata identity for exact translation preference`() {
+        val result = buildAdvancedSyncedLyrics(
+            rawLyrics = """
+                [00:00.000]第一句[00:01.000]
+                [00:04.000]OP：唯迹文化
+                [00:04.000]正文[00:05.000]
+                [00:08.000]下一句[00:09.000]
+            """.trimIndent(),
+            rawTranslatedLyrics = """
+                [00:02.200]迟到一[00:03.000]
+                [00:02.300]迟到二[00:03.100]
+                [00:04.000]正文译[00:05.000]
+                [00:08.000]下一句译[00:09.000]
+            """.trimIndent(),
+            lyrics = emptyList(),
+            translatedLyrics = emptyList()
+        )
+
+        assertEquals(4, result.lines.size)
+        assertEquals(null, (result.lines[1] as SyncedLine).translation)
+        assertEquals("正文译", (result.lines[2] as SyncedLine).translation)
+        assertEquals("下一句译", (result.lines[3] as SyncedLine).translation)
+    }
+
+    @Test
     fun `buildAdvancedSyncedLyrics shows no translation when translated lyric is metadata only`() {
         // Bug B: 翻译内容只有制作信息时不应显示任何翻译
         val lyrics = listOf(
@@ -317,6 +412,25 @@ class AdvancedLyricsViewTest {
 
         assertEquals(null, (result.lines[0] as SyncedLine).translation)
         assertEquals(null, (result.lines[1] as SyncedLine).translation)
+    }
+
+    @Test
+    fun `buildAdvancedSyncedLyrics drops credit lines from raw yrc`() {
+        val rawYrc = """
+            [0,1000](0,1000,0)作词：某某
+            [1000,1000](1000,1000,0)制作人 Producer：某某
+            [12580,3470](12580,250,0)难(12830,300,0)以
+        """.trimIndent()
+
+        val result = buildAdvancedSyncedLyrics(
+            rawLyrics = rawYrc,
+            rawTranslatedLyrics = null,
+            lyrics = parseNeteaseLyricsAuto(rawYrc),
+            translatedLyrics = emptyList()
+        )
+
+        val line = result.lines.single() as KaraokeLine.MainKaraokeLine
+        assertEquals("难以", line.syllables.joinToString(separator = "") { it.content })
     }
 
     @Test
@@ -599,7 +713,7 @@ class AdvancedLyricsViewTest {
         assertTrue(
             shouldRenderInterpolatedPlaybackFrame(
                 lastRenderedFrameNanos = 1_000_000_000L,
-                frameNanos = 1_033_000_000L,
+                frameNanos = 1_034_000_000L,
                 frameIntervalNanos = InterpolatedPlaybackDefaultFrameIntervalNanos
             )
         )
@@ -617,7 +731,7 @@ class AdvancedLyricsViewTest {
         assertTrue(
             shouldRenderInterpolatedPlaybackFrame(
                 lastRenderedFrameNanos = 1_000_000_000L,
-                frameNanos = 1_066_000_000L,
+                frameNanos = 1_067_000_000L,
                 frameIntervalNanos = InterpolatedPlaybackLowPowerFrameIntervalNanos
             )
         )

@@ -1,0 +1,20 @@
+package moe.ouom.neriplayer.data.model.netease.collection
+
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.data.model.playlist.PlaylistLoadFailure
+
+data class NeteaseCollectionHeader(
+    val id: Long,
+    val isAlbum: Boolean,
+    val name: String,
+    val coverUrl: String,
+    val playCount: Long,
+    val trackCount: Int
+)
+
+data class NeteaseCollectionDetailUiState(
+    val loading: Boolean = true,
+    val error: PlaylistLoadFailure? = null,
+    val header: NeteaseCollectionHeader? = null,
+    val tracks: List<SongItem> = emptyList()
+)

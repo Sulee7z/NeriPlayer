@@ -7,6 +7,7 @@ import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import coil.request.CachePolicy
 import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.core.player.cache.RetainingImageDiskCache
 
 internal object AppImageLoaderInitializer {
     fun initialize(app: Application) {
@@ -16,10 +17,14 @@ internal object AppImageLoaderInitializer {
             .diskCachePolicy(CachePolicy.ENABLED)
             .memoryCachePolicy(CachePolicy.ENABLED)
             .diskCache {
-                DiskCache.Builder()
-                    .directory(app.cacheDir.resolve("image_cache"))
-                    .maxSizePercent(0.02)
-                    .build()
+                RetainingImageDiskCache(
+                    delegate = DiskCache.Builder()
+                        .directory(app.cacheDir.resolve("image_cache"))
+                        .maxSizePercent(0.02)
+                        .build(),
+                    registryFile = app.cacheDir.resolve("image_cache_keys"),
+                    fallbackKeys = { key -> serverCoverCacheAliases(key, AppContainer.subsonicAccounts.profiles.value) }
+                )
             }
             .memoryCache {
                 MemoryCache.Builder(app)

@@ -16,13 +16,14 @@ import androidx.compose.ui.graphics.drawscope.draw
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.withSave
 import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 internal class AdvancedGlassLocalBlurRenderer {
     private val sourceNode = RenderNode("AdvancedGlassSource")
     private val downsampledSourceNode = RenderNode("AdvancedGlassDownsampledSource")
     private val effectNodes = mutableListOf<AdvancedGlassLocalBlurNode>()
-    private val targets = mutableListOf<AdvancedGlassLocalBlurTarget>()
+    private val targetGeometry = AdvancedGlassLocalBlurTargets()
     private val blurEffects = mutableMapOf<Int, AndroidRenderEffect>()
     private var sourceWidth = -1
     private var sourceHeight = -1
@@ -59,15 +60,7 @@ internal class AdvancedGlassLocalBlurRenderer {
             height = height,
             downscaleFactor = plan.downscaleFactor
         )
-        targets.clear()
-        plan.groups.forEach { group ->
-            group.bounds.expand(plan.inputPaddingPx).intersect(
-                left = 0f,
-                top = 0f,
-                right = width.toFloat(),
-                bottom = height.toFloat()
-            )?.let { inputBounds -> targets += AdvancedGlassLocalBlurTarget(group, inputBounds) }
-        }
+        val targets = targetGeometry.resolve(plan, width, height)
         if (targets.isEmpty()) {
             activeLocalNodeCount = 0
             scope.drawContext.canvas.nativeCanvas.drawRenderNode(sourceNode)
@@ -151,6 +144,11 @@ internal class AdvancedGlassLocalBlurRenderer {
     }
 
     private fun drawCachedLocalFrame(scope: ContentDrawScope, activeNodeCount: Int) {
+        if (hasTranslucentRegions(activeNodeCount)) {
+            scope.drawContext.canvas.nativeCanvas.drawRenderNode(sourceNode)
+            drawTranslucentLocalBlur(scope, activeNodeCount)
+            return
+        }
         with(scope.drawContext.canvas) {
             withSave {
                 repeat(activeNodeCount) { index ->
@@ -176,6 +174,11 @@ internal class AdvancedGlassLocalBlurRenderer {
             sourceHeight == height
 
     private fun drawCurrentContentWithCachedLocalBlur(scope: ContentDrawScope) {
+        if (hasTranslucentRegions(activeLocalNodeCount)) {
+            scope.drawContent()
+            drawTranslucentLocalBlur(scope, activeLocalNodeCount)
+            return
+        }
         with(scope.drawContext.canvas) {
             withSave {
                 repeat(activeLocalNodeCount) { index ->
@@ -193,9 +196,70 @@ internal class AdvancedGlassLocalBlurRenderer {
             }
         }
     }
+
+    private fun hasTranslucentRegions(activeNodeCount: Int): Boolean =
+        (0 until activeNodeCount).any { index ->
+            effectNodes[index].outputRegions.any { it.region.opacity < 1f }
+        }
+
+    private fun drawTranslucentLocalBlur(scope: ContentDrawScope, activeNodeCount: Int) {
+        val orderedRegions = (0 until activeNodeCount).flatMap { index ->
+            effectNodes[index].outputRegions.map { region -> effectNodes[index] to region }
+        }.sortedByDescending { (_, output) -> output.region.opacity }
+        val coveredPaths = mutableListOf<Path>()
+        orderedRegions.forEach { (node, output) ->
+            with(scope.drawContext.canvas) {
+                withSave {
+                    clipPath(output.path)
+                    // 重叠玻璃取最大可见度，避免两个转场场景把模糊重复叠加
+                    coveredPaths.forEach { clipPath(it, ClipOp.Difference) }
+                    val region = output.region
+                    val saveCount = nativeCanvas.saveLayerAlpha(
+                        region.left, region.top, region.right, region.bottom,
+                        (region.opacity * 255f).roundToInt().coerceIn(0, 255)
+                    )
+                    try {
+                        nativeCanvas.drawRenderNode(node.renderNode)
+                    } finally {
+                        nativeCanvas.restoreToCount(saveCount)
+                    }
+                }
+            }
+            coveredPaths += output.path
+        }
+    }
 }
 
-private data class AdvancedGlassLocalBlurTarget(
+internal class AdvancedGlassLocalBlurTargets {
+    private var previousPlan: AdvancedGlassLocalBlurPlan? = null
+    private var previousWidth = -1
+    private var previousHeight = -1
+    private val targets = mutableListOf<AdvancedGlassLocalBlurTarget>()
+
+    fun resolve(
+        plan: AdvancedGlassLocalBlurPlan,
+        width: Int,
+        height: Int
+    ): List<AdvancedGlassLocalBlurTarget> {
+        if (previousPlan === plan && previousWidth == width && previousHeight == height) return targets
+        // 计划由宿主持有只读快照，复用几何时仍须逐帧刷新背景内容
+        targets.clear()
+        plan.groups.forEach { group ->
+            group.bounds.expand(plan.inputPaddingPx).intersect(
+                left = 0f,
+                top = 0f,
+                right = width.toFloat(),
+                bottom = height.toFloat()
+            )?.let { inputBounds -> targets += AdvancedGlassLocalBlurTarget(group, inputBounds) }
+        }
+        previousPlan = plan
+        previousWidth = width
+        previousHeight = height
+        return targets
+    }
+}
+
+internal data class AdvancedGlassLocalBlurTarget(
     val group: AdvancedGlassLocalBlurGroup,
     val inputBounds: AdvancedGlassLocalBlurBounds
 )
@@ -203,10 +267,11 @@ private data class AdvancedGlassLocalBlurTarget(
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 private class AdvancedGlassLocalBlurNode {
     val renderNode = RenderNode("AdvancedGlassRegion")
-    val outputPath = Path()
+    private val regionPaths = AdvancedGlassRegionPaths()
+    val outputPath get() = regionPaths.outputPath
+    val outputRegions get() = regionPaths.outputRegions
 
     private var inputBounds = AdvancedGlassLocalBlurBounds(0f, 0f, 0f, 0f)
-    private var regions: List<AdvancedGlassRenderRegion> = emptyList()
     private var appliedBlurEffect: AndroidRenderEffect? = null
     private var downscaleFactor = 1
     private var recordedSourceNode: RenderNode? = null
@@ -237,10 +302,7 @@ private class AdvancedGlassLocalBlurNode {
             renderNode.scaleY = downscaleFactor.toFloat()
             requiresSourceRecord = true
         }
-        if (regions != target.group.regions) {
-            regions = target.group.regions
-            updateOutputPath()
-        }
+        regionPaths.update(target.group.regions)
         if (appliedBlurEffect !== blurEffect) {
             appliedBlurEffect = blurEffect
             renderNode.setRenderEffect(blurEffect)
@@ -263,11 +325,46 @@ private class AdvancedGlassLocalBlurNode {
             }
         }
     }
+}
 
-    private fun updateOutputPath() {
+internal class AdvancedGlassRegionPaths {
+    val outputPath = Path()
+    val outputRegions = mutableListOf<AdvancedGlassWeightedBlurRegion>()
+    private var regions: List<AdvancedGlassRenderRegion> = emptyList()
+
+    fun update(nextRegions: List<AdvancedGlassRenderRegion>) {
+        if (regions == nextRegions) return
+        val geometryUnchanged = regions.size == nextRegions.size && regions.indices.all { index ->
+            val previous = regions[index]
+            val next = nextRegions[index]
+            previous.left == next.left &&
+                previous.top == next.top &&
+                previous.right == next.right &&
+                previous.bottom == next.bottom &&
+                previous.cornerRadiiPx == next.cornerRadiiPx
+        }
+        regions = nextRegions
+        if (geometryUnchanged) {
+            regions.forEachIndexed { index, region ->
+                outputRegions[index] = outputRegions[index].copy(region = region)
+            }
+            return
+        }
         outputPath.updateForRegions(regions)
+        outputRegions.clear()
+        regions.forEach { region ->
+            outputRegions += AdvancedGlassWeightedBlurRegion(
+                region = region,
+                path = Path().apply { updateForRegions(listOf(region)) }
+            )
+        }
     }
 }
+
+internal data class AdvancedGlassWeightedBlurRegion(
+    val region: AdvancedGlassRenderRegion,
+    val path: Path
+)
 
 private fun Path.updateForRegions(regions: List<AdvancedGlassRenderRegion>) {
     rewind()

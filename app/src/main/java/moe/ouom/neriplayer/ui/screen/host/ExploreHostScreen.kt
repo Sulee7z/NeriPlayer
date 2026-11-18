@@ -23,12 +23,10 @@ package moe.ouom.neriplayer.ui.screen.host
  * Created: 2025/8/11
  */
 
-import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
-import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -52,23 +50,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.core.api.bili.BiliClient
-import moe.ouom.neriplayer.core.api.bili.buildBiliSongAlbum
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSection
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSummary
+import moe.ouom.neriplayer.data.model.bilibili.video.VideoBasicInfo
+import moe.ouom.neriplayer.platform.bilibili.playback.resolver.buildBiliSongAlbum
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSection
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSummary
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.data.model.NeteaseArtistSummary
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.data.platform.youtube.stableYouTubeMusicId
-import moe.ouom.neriplayer.ui.animateMainTabDetailCloseRootRevealFraction
-import moe.ouom.neriplayer.ui.clipMainTabDetailCloseRoot
+import moe.ouom.neriplayer.platform.youtube.api.transport.stableYouTubeMusicId
+import moe.ouom.neriplayer.ui.navigation.animateMainTabDetailCloseRootRevealFraction
+import moe.ouom.neriplayer.ui.navigation.clipMainTabDetailCloseRoot
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSceneMotion
 import moe.ouom.neriplayer.ui.effect.glass.advancedGlassHostNavigationTransition
 import moe.ouom.neriplayer.ui.effect.glass.animateAdvancedGlassSceneMotion
-import moe.ouom.neriplayer.ui.rememberMainTabSceneRestoredEntry
+import moe.ouom.neriplayer.ui.navigation.rememberMainTabSceneRestoredEntry
 import moe.ouom.neriplayer.ui.screen.artist.NeteaseArtistDetailScreen
 import moe.ouom.neriplayer.ui.screen.artist.YouTubeMusicCreatorDetailScreen
 import moe.ouom.neriplayer.ui.screen.artist.YouTubeMusicCreatorItemsScreen
@@ -77,8 +74,8 @@ import moe.ouom.neriplayer.ui.screen.playlist.NeteaseAlbumDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.NeteasePlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.QQMusicPlaylistDetailScreen
 import moe.ouom.neriplayer.ui.screen.playlist.YouTubeMusicPlaylistDetailScreen
-import moe.ouom.neriplayer.ui.screen.tab.ExploreScreen
-import moe.ouom.neriplayer.ui.shouldSuppressRestoredMainTabHostEntry
+import moe.ouom.neriplayer.ui.screen.tab.explore.ExploreScreen
+import moe.ouom.neriplayer.ui.navigation.shouldSuppressRestoredMainTabHostEntry
 import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
 import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.BiliPlaylist
@@ -162,7 +159,7 @@ fun ExploreHostScreen(
     onSongPlayPreservingQueue: (SongItem) -> Unit = {},
     onSongPlayNext: (SongItem) -> Unit = {},
     onSongAddToQueueEnd: (SongItem) -> Unit = {},
-    onPlayParts: (BiliClient.VideoBasicInfo, Int, String) -> Unit = { _, _, _ -> },
+    onPlayParts: (VideoBasicInfo, Int, String) -> Unit = { _, _, _ -> },
     coherentFeedbackEnabled: Boolean = false,
     renderScene: @Composable (
         revealTopFraction: Float,
@@ -228,14 +225,6 @@ fun ExploreHostScreen(
         }
     }
 
-    PredictiveBackHandler(enabled = selected != null) { progress ->
-        try {
-            progress.collect { }
-            closeSelectedDetail()
-        } catch (_: CancellationException) {
-        }
-    }
-
     val gridStateSaver: Saver<LazyGridState, *> = LazyGridState.Saver
     val gridState = rememberSaveable(saver = gridStateSaver) {
         LazyGridState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
@@ -261,8 +250,11 @@ fun ExploreHostScreen(
         pendingTopAppBarContentOffset = topAppBarState.contentOffset
     }
 
-    val navigationTransition = updateTransition(
+    val navigationTransition = rememberHostPredictiveBackTransition(
         targetState = selected,
+        backEnabled = selected != null,
+        backTargetState = resolveExploreSelectedDetailBackTarget(selected),
+        onBack = { closeSelectedDetail() },
         label = "explore_host_switch"
     )
 
@@ -296,6 +288,13 @@ fun ExploreHostScreen(
     Surface(modifier = Modifier.fillMaxSize(), color = Color.Transparent) {
         navigationTransition.AnimatedContent(
             modifier = Modifier.fillMaxSize(),
+            contentKey = { item ->
+                when (item) {
+                    is ExploreSelectedItem.NeteaseArtist -> "netease_artist_${item.artist.id}"
+                    is ExploreSelectedItem.YouTubeMusicCreator -> youtubeMusicCreatorDetailStateKey(item.creator)
+                    else -> item
+                }
+            },
             transitionSpec = {
                 if (
                     shouldSuppressRestoredMainTabHostEntry(
@@ -363,7 +362,7 @@ fun ExploreHostScreen(
                                             name = pl.name,
                                             picUrl = pl.picUrl,
                                             trackCount = pl.trackCount,
-                                            source = "netease"
+                                            source = pl.source
                                         )
                                     }
                                     if (pl.source == "qq") {
@@ -441,20 +440,24 @@ fun ExploreHostScreen(
                             }
 
                             is ExploreSelectedItem.NeteaseArtist -> {
-                                NeteaseArtistDetailScreen(
-                                    artist = current.artist,
-                                    onBack = ::closeSelectedDetail,
-                                    onSongClick = onSongClick,
-                                    onAlbumClick = { album ->
-                                        openExploreSelectedItem(
-                                            ExploreSelectedItem.NeteaseArtistAlbum(
-                                                artist = current.artist,
-                                                album = album
+                                detailStateHolder.SaveableStateProvider(
+                                    "netease_artist_${current.artist.id}"
+                                ) {
+                                    NeteaseArtistDetailScreen(
+                                        artist = current.artist,
+                                        onBack = ::closeSelectedDetail,
+                                        onSongClick = onSongClick,
+                                        onAlbumClick = { album ->
+                                            openExploreSelectedItem(
+                                                ExploreSelectedItem.NeteaseArtistAlbum(
+                                                    artist = current.artist,
+                                                    album = album
+                                                )
                                             )
-                                        )
-                                    },
-                                    offlineMode = offlineMode
-                                )
+                                        },
+                                        offlineMode = offlineMode
+                                    )
+                                }
                             }
 
                             is ExploreSelectedItem.NeteaseArtistAlbum -> {

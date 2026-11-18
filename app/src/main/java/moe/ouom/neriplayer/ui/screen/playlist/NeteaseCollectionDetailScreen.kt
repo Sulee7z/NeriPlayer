@@ -23,8 +23,13 @@ package moe.ouom.neriplayer.ui.screen.playlist
  * Created: 2025/8/10
  */
 
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
+import moe.ouom.neriplayer.data.identity.sameIdentityAs
+import moe.ouom.neriplayer.data.identity.stableKey
 import android.app.Application
 import android.content.ClipData
+import android.content.Context
+import android.content.res.Resources
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -67,8 +72,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistAdd
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
-import androidx.compose.material.icons.filled.CheckBox
-import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
@@ -92,8 +95,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import moe.ouom.neriplayer.ui.component.playlist.PlaylistLoadErrorDialog
+import moe.ouom.neriplayer.ui.component.playlist.playlistLoadErrorText
+import moe.ouom.neriplayer.ui.i18n.asString
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -110,6 +117,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.ClipEntry
+import androidx.compose.ui.platform.Clipboard
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -127,31 +135,31 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.core.di.AppContainer
 import moe.ouom.neriplayer.core.download.GlobalDownloadManager
-import moe.ouom.neriplayer.core.player.download.AudioDownloadManager
 import moe.ouom.neriplayer.core.player.PlayerManager
 import moe.ouom.neriplayer.data.local.playlist.LocalPlaylistRepository
 import moe.ouom.neriplayer.data.local.playlist.launchLocalPlaylistMutation
 import moe.ouom.neriplayer.data.local.playlist.system.FavoritesPlaylist
 import moe.ouom.neriplayer.data.local.playlist.system.LocalFilesPlaylist
-import moe.ouom.neriplayer.data.model.displayArtist
-import moe.ouom.neriplayer.data.model.displayName
-import moe.ouom.neriplayer.data.model.sameIdentityAs
+import moe.ouom.neriplayer.data.local.media.displayArtist
+import moe.ouom.neriplayer.data.local.media.displayName
 import moe.ouom.neriplayer.data.model.stableKey
 import moe.ouom.neriplayer.data.playlist.favorite.FavoritePlaylistRepository
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
-import moe.ouom.neriplayer.ui.rememberMainTabDetailVisibilityState
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.ui.navigation.rememberMainTabDetailVisibilityState
 import moe.ouom.neriplayer.ui.component.download.BatchDownloadManagerSheet
 import moe.ouom.neriplayer.ui.component.playlist.PlaylistExportSheet
+import moe.ouom.neriplayer.ui.component.playlist.PlaylistSelectionActions
 import moe.ouom.neriplayer.ui.component.playlist.showPlaylistBatchExportAddedResult
 import moe.ouom.neriplayer.ui.component.playlist.showPlaylistBatchExportCreatedResult
-import moe.ouom.neriplayer.ui.viewmodel.playlist.NeteaseCollectionDetailUiState
+import moe.ouom.neriplayer.data.model.netease.collection.NeteaseCollectionDetailUiState
 import moe.ouom.neriplayer.ui.viewmodel.playlist.NeteaseCollectionDetailViewModel
-import moe.ouom.neriplayer.ui.viewmodel.playlist.NeteaseCollectionHeader
+import moe.ouom.neriplayer.data.model.netease.collection.NeteaseCollectionHeader
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
@@ -160,13 +168,15 @@ import moe.ouom.neriplayer.ui.haptic.HapticFloatingActionButton
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.feedback.NeriOverlaySnackbarHost
 import moe.ouom.neriplayer.ui.feedback.showNeriSnackbar
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.common.logging.NPLogger
 import moe.ouom.neriplayer.util.format.formatDuration
 import moe.ouom.neriplayer.util.format.formatPlayCount
 import moe.ouom.neriplayer.util.media.offlineCachedImageRequest
 import moe.ouom.neriplayer.ui.haptic.performHapticFeedback
 import moe.ouom.neriplayer.util.search.playlistSearchValues
 import kotlin.random.Random
+import kotlin.time.Duration.Companion.milliseconds
+import moe.ouom.neriplayer.R as AppR
 
 internal fun isNeteaseCollectionHeaderForRoute(
     header: NeteaseCollectionHeader?,
@@ -196,8 +206,12 @@ fun NeteasePlaylistDetailScreen(
     )
 
     val ui by vm.uiState.collectAsState()
-    // 使用 Unit 作为 key, 确保每次进入都重新加载最新数据
-    LaunchedEffect(Unit) { vm.startPlaylist(playlist) }
+    val pageOwner = remember(playlist.id) { Any() }
+    DisposableEffect(vm, pageOwner) {
+        vm.startPlaylist(playlist, offlineMode = offlineMode, owner = pageOwner)
+        onDispose { vm.stop(pageOwner) }
+    }
+    LaunchedEffect(vm, pageOwner, offlineMode) { vm.updateOfflineMode(pageOwner, offlineMode) }
 
     // 保存最新的header数据, 用于在Screen销毁时更新使用记录
     var latestHeader by remember { mutableStateOf<NeteaseCollectionHeader?>(null) }
@@ -227,8 +241,12 @@ fun NeteasePlaylistDetailScreen(
         playlistId = playlist.id,
         playlistSource = "netease",
         initialCoverUrl = playlist.picUrl,
-        onRetry = vm::retry,
-        onBack = onBack,
+        onRetry = {
+            if (isNeteaseCollectionHeaderForRoute(vm.uiState.value.header, playlist.id, "netease")) {
+                vm.retry(offlineMode = offlineMode, owner = pageOwner)
+            }
+        },
+        onBack = { vm.stop(pageOwner); onBack() },
         onSongClick = onSongClick,
         offlineMode = offlineMode
     )
@@ -253,8 +271,12 @@ fun NeteaseAlbumDetailScreen(
     )
 
     val ui by vm.uiState.collectAsState()
-    // 使用 Unit 作为 key, 确保每次进入都重新加载最新数据
-    LaunchedEffect(Unit) { vm.startAlbum(album) }
+    val pageOwner = remember(album.id) { Any() }
+    DisposableEffect(vm, pageOwner) {
+        vm.startAlbum(album, offlineMode = offlineMode, owner = pageOwner)
+        onDispose { vm.stop(pageOwner) }
+    }
+    LaunchedEffect(vm, pageOwner, offlineMode) { vm.updateOfflineMode(pageOwner, offlineMode) }
 
     // 保存最新的header数据, 用于在Screen销毁时更新使用记录
     var latestHeader by remember { mutableStateOf<NeteaseCollectionHeader?>(null) }
@@ -284,8 +306,12 @@ fun NeteaseAlbumDetailScreen(
         playlistId = album.id,
         playlistSource = "neteaseAlbum",
         initialCoverUrl = album.picUrl,
-        onRetry = vm::retry,
-        onBack = onBack,
+        onRetry = {
+            if (isNeteaseCollectionHeaderForRoute(vm.uiState.value.header, album.id, "neteaseAlbum")) {
+                vm.retry(offlineMode = offlineMode, owner = pageOwner)
+            }
+        },
+        onBack = { vm.stop(pageOwner); onBack() },
         onSongClick = onSongClick,
         offlineMode = offlineMode
     )
@@ -293,7 +319,6 @@ fun NeteaseAlbumDetailScreen(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-@Suppress("AssignedValueIsNeverRead")
 fun DetailScreen(
     ui: NeteaseCollectionDetailUiState,
     playlistId: Long,
@@ -307,13 +332,23 @@ fun DetailScreen(
 
     val context = LocalContext.current
 
+    val loadFailure = ui.error
+    if (loadFailure != null && (ui.header == null || isNeteaseCollectionHeaderForRoute(ui.header, playlistId, playlistSource))) {
+        PlaylistLoadErrorDialog(
+            message = loadFailure,
+            onRetry = onRetry,
+            onBack = onBack
+        )
+        return
+    }
+
     // 下载进度
     var showDownloadManager by remember { mutableStateOf(false) }
     val downloadTaskSummary by GlobalDownloadManager.downloadTaskSummary.collectAsState()
-    val pendingTaskCount = downloadTaskSummary.pendingTaskCount
-    val hasDownloadManagerEntry = downloadTaskSummary.hasPendingTasks
+    val hasDownloadManagerEntry = downloadTaskSummary.hasDownloadManagerEntry
 
     val currentSong by PlayerManager.currentSongFlow.collectAsState()
+    val isPlaying by PlayerManager.isPlayingFlow.collectAsState()
     val shuffleEnabled by PlayerManager.shuffleModeFlow.collectAsState()
     val repeatMode by PlayerManager.repeatModeFlow.collectAsState()
     val listState = rememberSaveable(playlistId, saver = LazyListState.Saver) {
@@ -321,8 +356,9 @@ fun DetailScreen(
     }
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    var showSearch by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    val searchUiState = rememberPlaylistSearchUiState()
+    var showSearch by searchUiState.visible
+    var searchQuery by searchUiState.query
     var headerSearchFocused by remember { mutableStateOf(false) }
     var dockedSearchFocused by remember { mutableStateOf(false) }
     val searchInputState = rememberPlaylistSearchInputState(
@@ -336,8 +372,8 @@ fun DetailScreen(
     // 多选与导出到本地歌单
     val repo = remember(context) { LocalPlaylistRepository.getInstance(context) }
     val allPlaylists by repo.playlists.collectAsState()
-    val favoriteSongs = remember(allPlaylists, context) {
-        FavoritesPlaylist.firstOrNull(allPlaylists, context)?.songs.orEmpty()
+    val favoriteSongLookup = remember(allPlaylists, context) {
+        FavoriteSongLookup(FavoritesPlaylist.firstOrNull(allPlaylists, context)?.songs.orEmpty())
     }
     var selectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -372,8 +408,8 @@ fun DetailScreen(
     var showExportAllSheet by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
-    val favoriteAddedText = stringResource(R.string.favorite_added)
-    val favoriteRemovedText = stringResource(R.string.favorite_removed)
+    val favoriteAddedText = stringResource(CoreCommonR.string.favorite_added)
+    val favoriteRemovedText = stringResource(CoreCommonR.string.favorite_removed)
     fun toggleSongFavorite(song: SongItem, isFavoriteSong: Boolean) {
         val message = if (isFavoriteSong) favoriteRemovedText else favoriteAddedText
         scope.launchLocalPlaylistMutation(
@@ -431,7 +467,8 @@ fun DetailScreen(
             resolvePlaylistChromeCollapseProgress(
                 firstVisibleItemIndex = listState.firstVisibleItemIndex,
                 firstVisibleItemScrollOffsetPx = listState.firstVisibleItemScrollOffset,
-                expandedHeroHeightPx = with(density) {
+                expandedHeroHeightPx = listState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index == 0 }?.size ?: with(density) {
                     playlistHeroHeight.roundToPx()
                 }
             )
@@ -519,7 +556,7 @@ fun DetailScreen(
             searchQuery = searchQuery
         )
         if (!shouldAutoFocus && !shouldTransferFocus) return@LaunchedEffect
-        if (shouldAutoFocus) delay(120)
+        if (shouldAutoFocus) delay(120.milliseconds)
         searchFocusRequester.requestFocus()
         keyboardController?.show()
     }
@@ -542,7 +579,7 @@ fun DetailScreen(
                         TopAppBar(
                             title = {
                                 Text(
-                                    text = ui.header?.name ?: "Playlist Shuffling",
+                                    text = ui.header?.name ?: stringResource(CoreCommonR.string.playlist_title),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -551,7 +588,7 @@ fun DetailScreen(
                                 HapticIconButton(onClick = onBack) {
                                     Icon(
                                         Icons.AutoMirrored.Filled.ArrowBack,
-                                        contentDescription = stringResource(R.string.cd_back)
+                                        contentDescription = stringResource(CoreCommonR.string.cd_back)
                                     )
                                 }
                             },
@@ -563,7 +600,7 @@ fun DetailScreen(
                                         focusManager.clearFocus()
                                         keyboardController?.hide()
                                     }
-                                }) { Icon(Icons.Filled.Search, contentDescription = stringResource(R.string.cd_search_songs)) }
+                                }) { Icon(Icons.Filled.Search, contentDescription = stringResource(CoreCommonR.string.cd_search_songs)) }
 
                                 // 收藏按钮
                                 HapticIconButton(onClick = {
@@ -586,7 +623,7 @@ fun DetailScreen(
                                 }) {
                                     Icon(
                                         imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                                        contentDescription = if (isFavorite) stringResource(R.string.action_unfavorite) else stringResource(R.string.action_favorite_playlist),
+                                        contentDescription = if (isFavorite) stringResource(CoreCommonR.string.action_unfavorite) else stringResource(CoreCommonR.string.action_favorite_playlist),
                                         tint = playlistTopBarContentColor
                                     )
                                 }
@@ -595,7 +632,7 @@ fun DetailScreen(
                                     HapticIconButton(onClick = { showDownloadManager = true }) {
                                         Icon(
                                             Icons.Outlined.Download,
-                                            contentDescription = stringResource(R.string.cd_download_manager),
+                                            contentDescription = stringResource(CoreCommonR.string.cd_download_manager),
                                             tint = playlistTopBarContentColor
                                         )
                                     }
@@ -617,7 +654,7 @@ fun DetailScreen(
                     title = {
                         Text(
                             pluralStringResource(
-                                R.plurals.common_selected_count,
+                                AppR.plurals.common_selected_count,
                                 selectedIds.size,
                                 selectedIds.size
                             )
@@ -625,31 +662,10 @@ fun DetailScreen(
                     },
                             navigationIcon = {
                                 HapticIconButton(onClick = { exitSelection() }) {
-                                    Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.cd_exit_select))
+                                    Icon(Icons.Filled.Close, contentDescription = stringResource(CoreCommonR.string.cd_exit_select))
                                 }
                             },
                             actions = {
-                                HapticIconButton(onClick = { if (allSelected) clearSelection() else selectAll() }) {
-                                    Icon(
-                                        imageVector = if (allSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
-                                        contentDescription = if (allSelected) {
-                                            stringResource(R.string.action_deselect_all)
-                                        } else {
-                                            stringResource(R.string.action_select_all)
-                                        }
-                                    )
-                                }
-                                HapticIconButton(
-                                    onClick = {
-                                        if (selectedIds.isNotEmpty()) showExportSheet = true
-                                    },
-                                    enabled = selectedIds.isNotEmpty()
-                                ) {
-                                    Icon(
-                                        Icons.AutoMirrored.Outlined.PlaylistAdd,
-                                        contentDescription = stringResource(R.string.cd_export_playlist)
-                                    )
-                                }
                                 HapticIconButton(
                                     onClick = {
                                         if (selectedIds.isNotEmpty()) {
@@ -667,9 +683,17 @@ fun DetailScreen(
                                 ) {
                                     Icon(
                                         Icons.Outlined.Download,
-                                        contentDescription = stringResource(R.string.cd_download_selected)
+                                        contentDescription = stringResource(CoreCommonR.string.cd_download_selected)
                                     )
                                 }
+                                PlaylistSelectionActions(
+                                    allSelected = allSelected,
+                                    onToggleSelectAll = {
+                                        if (allSelected) clearSelection() else selectAll()
+                                    },
+                                    canExport = selectedIds.isNotEmpty(),
+                                    onExport = { showExportSheet = true }
+                                )
                             },
                             windowInsets = WindowInsets.statusBars,
                             colors = TopAppBarDefaults.topAppBarColors(
@@ -688,7 +712,7 @@ fun DetailScreen(
                         offlineMode = offlineMode,
                         query = searchQuery,
                         onQueryChange = { searchQuery = it },
-                        placeholder = stringResource(R.string.playlist_search_hint),
+                        placeholder = stringResource(CoreCommonR.string.playlist_search_hint),
                         inputState = searchInputState,
                         onFocusChanged = { dockedSearchFocused = it },
                         focusRequester = if (searchFieldFocusInHeader) {
@@ -698,21 +722,22 @@ fun DetailScreen(
                         },
                         dockedProgress = searchDockedVisualProgress
                     )
+                    val searchContext = rememberPlaylistSearchContext()
                     val displayedTracks = rememberPlaylistSearchResults(
                         query = searchQuery,
                         items = ui.tracks,
-                        tokens = { song -> song.playlistSearchValues(context) }
+                        tokens = { song -> song.playlistSearchValues(searchContext) }
                     )
                     val trackCount = ui.header?.trackCount ?: ui.tracks.size
-                    val heroTitle = ui.header?.name ?: stringResource(R.string.playlist_title)
+                    val heroTitle = ui.header?.name ?: stringResource(CoreCommonR.string.playlist_title)
                     val heroSubtitle = if (ui.header?.isAlbum == true) {
                         stringResource(
-                            R.string.collection_track_count_format,
+                            CoreCommonR.string.collection_track_count_format,
                             trackCount
                         )
                     } else {
                         stringResource(
-                            R.string.playlist_play_count_format,
+                            CoreCommonR.string.playlist_play_count_format,
                             formatPlayCount(context, ui.header?.playCount ?: 0),
                             trackCount
                         )
@@ -752,6 +777,7 @@ fun DetailScreen(
                                         subtitle = heroSubtitle,
                                         offlineMode = offlineMode,
                                         height = playlistHeroHeight,
+                                        actionsRevealProgress = searchVisibilityEased,
                                         coverContentDescription = heroTitle,
                                         actions = if (headerSearchVisible) {
                                             {
@@ -763,7 +789,7 @@ fun DetailScreen(
                                                     PlaylistModernHeroSearchField(
                                                         query = searchQuery,
                                                         onQueryChange = { searchQuery = it },
-                                                        placeholder = stringResource(R.string.playlist_search_hint),
+                                                        placeholder = stringResource(CoreCommonR.string.playlist_search_hint),
                                                         inputState = searchInputState,
                                                         onFocusChanged = { headerSearchFocused = it },
                                                         focusRequester = if (searchFieldFocusInHeader) {
@@ -808,6 +834,7 @@ fun DetailScreen(
                                 }
                             }
 
+                            val loadError = ui.error
                             // 状态块
                             when {
                                 ui.loading && ui.tracks.isEmpty() -> {
@@ -825,13 +852,13 @@ fun DetailScreen(
                                             ) {
                                                 CircularProgressIndicator()
                                                 Spacer(modifier = Modifier.width(12.dp))
-                                                Text(stringResource(R.string.playlist_loading_content))
+                                                Text(stringResource(CoreCommonR.string.playlist_loading_content))
                                             }
                                         }
                                     }
                                 }
 
-                                ui.error != null && ui.tracks.isEmpty() -> {
+                                loadError != null && ui.tracks.isEmpty() -> {
                                     item {
                                         PlaylistModernListItemSurface(
                                             coverUrl = displayCoverUrl,
@@ -844,7 +871,7 @@ fun DetailScreen(
                                                 horizontalAlignment = Alignment.CenterHorizontally
                                             ) {
                                                 Text(
-                                                    text = stringResource(R.string.playlist_load_failed_format, ui.error),
+                                                    text = playlistLoadErrorText(loadError).asString(),
                                                     color = MaterialTheme.colorScheme.error
                                                 )
                                                 Spacer(Modifier.height(8.dp))
@@ -862,12 +889,12 @@ fun DetailScreen(
                                             coverUrl = displayCoverUrl,
                                             offlineMode = offlineMode
                                         ) {
-                                            val isFavoriteSong = favoriteSongs.any {
-                                                it.sameIdentityAs(item)
-                                            }
+                                            val isFavoriteSong = favoriteSongLookup.contains(item)
                                             SongRow(
                                                 index = index + 1,
                                                 song = item,
+                                                isCurrentSong = currentSong?.sameIdentityAs(item) == true,
+                                                animatePlayingIndicator = isPlaying,
                                                 isFavorite = isFavoriteSong,
                                                 onFavoriteToggle = ::toggleSongFavorite,
                                                 showCover = ui.header?.isAlbum == false,
@@ -892,6 +919,8 @@ fun DetailScreen(
                                                     val pos = full.indexOfFirst { it.stableKey() == itemKey }
                                                     if (pos >= 0) onSongClick(full, pos)
                                                 },
+                                                onPlayNext = { PlayerManager.addToQueueNext(item) },
+                                                onAddToQueueEnd = { PlayerManager.addToQueueEnd(item) },
                                                 snackbarHostState = snackbarHostState,
                                                 offlineMode = offlineMode
                                             )
@@ -920,7 +949,7 @@ fun DetailScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
-                                    contentDescription = stringResource(R.string.cd_locate_playing)
+                                    contentDescription = stringResource(CoreCommonR.string.cd_locate_playing)
                                 )
                             }
                         }
@@ -930,7 +959,7 @@ fun DetailScreen(
                 // 导出面板 //
                 if (showExportSheet) {
                     PlaylistExportSheet(
-                        title = stringResource(R.string.playlist_export_to_local),
+                        title = stringResource(CoreCommonR.string.playlist_export_to_local),
                         playlists = allPlaylists.filterNot {
                             LocalFilesPlaylist.isSystemPlaylist(it, context)
                         },
@@ -976,7 +1005,7 @@ fun DetailScreen(
                 }
                 if (showExportAllSheet) {
                     PlaylistExportSheet(
-                        title = stringResource(R.string.playlist_export_to_local),
+                        title = stringResource(CoreCommonR.string.playlist_export_to_local),
                         playlists = allPlaylists.filterNot {
                             LocalFilesPlaylist.isSystemPlaylist(it, context)
                         },
@@ -1033,25 +1062,9 @@ fun DetailScreen(
 
     // 下载管理器
     if (showDownloadManager) {
-        val batchDownloadProgress by AudioDownloadManager.batchProgressFlow.collectAsState()
         val downloadTasks by GlobalDownloadManager.downloadTasks.collectAsState()
-        val progress = batchDownloadProgress
         BatchDownloadManagerSheet(
-            batchDownloadProgress = progress,
             downloadTasks = downloadTasks,
-            progressSummaryText = if (progress != null) {
-                stringResource(
-                    R.string.download_progress_format,
-                    progress.completedSongs,
-                    progress.totalSongs
-                )
-            } else {
-                pluralStringResource(
-                    R.plurals.download_tasks_count,
-                    pendingTaskCount,
-                    pendingTaskCount
-                )
-            },
             onDismiss = { showDownloadManager = false }
         )
     }
@@ -1066,7 +1079,7 @@ private fun RetryChip(onClick: () -> Unit) {
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
     ) {
         Text(
-            stringResource(R.string.action_retry),
+            stringResource(CoreCommonR.string.action_retry),
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
             color = MaterialTheme.colorScheme.onPrimaryContainer
         )
@@ -1075,9 +1088,11 @@ private fun RetryChip(onClick: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SongRow(
+internal fun SongRow(
     index: Int,
     song: SongItem,
+    isCurrentSong: Boolean,
+    animatePlayingIndicator: Boolean,
     isFavorite: Boolean,
     onFavoriteToggle: (SongItem, Boolean) -> Unit,
     showCover: Boolean,
@@ -1086,13 +1101,11 @@ private fun SongRow(
     onToggleSelect: () -> Unit,
     onLongPress: () -> Unit,
     onClick: () -> Unit,
-    indexWidth: Dp = 48.dp,
+    onPlayNext: () -> Unit,
+    onAddToQueueEnd: () -> Unit,
     snackbarHostState: SnackbarHostState,
     offlineMode: Boolean
 ) {
-    val current by PlayerManager.currentSongFlow.collectAsState()
-    val isPlaying by PlayerManager.isPlayingFlow.collectAsState()
-    val isCurrentSong = current?.sameIdentityAs(song) == true
     val context = LocalContext.current
     val composeResources = LocalResources.current
     val clipboard = LocalClipboard.current
@@ -1102,62 +1115,19 @@ private fun SongRow(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
-                onClick = {
-                    context.performHapticFeedback()
-                    if (selectionMode) onToggleSelect() else onClick()
-                },
-                onLongClick = { onLongPress() }
+                onClick = hapticRowAction(context, if (selectionMode) onToggleSelect else onClick),
+                onLongClick = onLongPress
             )
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier.width(indexWidth),
-            contentAlignment = Alignment.Center
-        ) {
-            if (selectionMode) {
-                Checkbox(
-                    checked = selected,
-                    onCheckedChange = { onToggleSelect() }
-                )
-            } else {
-                Text(
-                    text = index.toString(),
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = playlistModernListTertiaryContentColor(),
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Clip,
-                    textAlign = TextAlign.Center
-                )
-            }
-        }
-
-        val itemContext = LocalContext.current
-        val displayCoverUrl = rememberSongDisplayCoverUrl(song)
-        if (showCover && !displayCoverUrl.isNullOrBlank()) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = RoundedCornerShape(10.dp)
-                    )
-            ) {
-                AsyncImage(
-                    model = offlineCachedImageRequest(
-                        context = itemContext,
-                        data = displayCoverUrl,
-                        offlineMode = offlineMode
-                    ),
-                    contentDescription = song.displayName(),
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.matchParentSize()
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-        }
+        SongRowLeading(
+            index = index,
+            selectionMode = selectionMode,
+            selected = selected,
+            onToggleSelect = onToggleSelect
+        )
+        SongRowCover(song = song, showCover = showCover, offlineMode = offlineMode)
 
         Column(Modifier.weight(1f)) {
             Text(
@@ -1168,10 +1138,7 @@ private fun SongRow(
                 color = playlistModernListPrimaryContentColor()
             )
             Text(
-                text = listOfNotNull(
-                    song.displayArtist().takeIf { it.isNotBlank() },
-                    (song.album.takeIf { it.isNotBlank() })?.replace("Netease", "") ?: ""
-                ).joinToString(" · "),
+                text = neteaseSongSubtitle(song.displayArtist(), song.album),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 style = MaterialTheme.typography.bodySmall,
@@ -1179,110 +1146,226 @@ private fun SongRow(
             )
         }
 
-        if (isCurrentSong) {
-            PlayingIndicator(
-                color = MaterialTheme.colorScheme.primary,
-                animate = isPlaying
-            )
-        } else {
-            Text(
-                text = formatDuration(song.durationMs),
-                style = MaterialTheme.typography.bodySmall,
-                color = playlistModernListSecondaryContentColor()
-            )
-        }
+        SongRowTrailing(
+            isCurrentSong = isCurrentSong,
+            animatePlayingIndicator = animatePlayingIndicator,
+            durationMs = song.durationMs
+        )
 
         // 更多操作菜单
         if (!selectionMode) {
-            var showMoreMenu by remember { mutableStateOf(false) }
-            Box {
-                IconButton(
-                    onClick = { showMoreMenu = true }
-                ) {
-                    Icon(
-                        Icons.Filled.MoreVert,
-                        contentDescription = stringResource(R.string.cd_more_actions),
-                        tint = playlistModernListSecondaryContentColor()
-                    )
-                }
-
-                DropdownMenu(
-                    expanded = showMoreMenu,
-                    onDismissRequest = { showMoreMenu = false }
-                ) {
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.local_playlist_play_next)) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
-                            PlayerManager.addToQueueNext(song)
-                            showMoreMenu = false
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.playlist_add_to_end)) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
-                            PlayerManager.addToQueueEnd(song)
-                            showMoreMenu = false
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                stringResource(
-                                    if (isFavorite) {
-                                        R.string.favorite_remove
-                                    } else {
-                                        R.string.favorite_add
-                                    }
-                                )
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = if (isFavorite) {
-                                    Icons.Filled.Favorite
-                                } else {
-                                    Icons.Outlined.FavoriteBorder
-                                },
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
-                            onFavoriteToggle(song, isFavorite)
-                            showMoreMenu = false
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text(stringResource(R.string.action_copy_song_info)) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.ContentCopy,
-                                contentDescription = null
-                            )
-                        },
-                        onClick = {
-                            val songInfo = "${song.displayName()}-${song.displayArtist()}"
-                            scope.launch {
-                                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("text", songInfo)))
-                                snackbarHostState.showNeriSnackbar(composeResources.getString(R.string.toast_copied))
-                            }
-                            showMoreMenu = false
-                        }
-                    )
-                }
-            }
+            SongRowMoreMenu(
+                song = song,
+                isFavorite = isFavorite,
+                onFavoriteToggle = onFavoriteToggle,
+                onPlayNext = onPlayNext,
+                onAddToQueueEnd = onAddToQueueEnd,
+                onCopySongInfo = copySongInfoAction(
+                    scope = scope,
+                    clipboard = clipboard,
+                    snackbarHostState = snackbarHostState,
+                    resources = composeResources,
+                    songInfo = "${song.displayName()}-${song.displayArtist()}"
+                )
+            )
         }
+    }
+}
+
+internal fun neteaseSongSubtitle(displayArtist: String, album: String): String = listOfNotNull(
+    displayArtist.takeIf { it.isNotBlank() },
+    album.takeIf { it.isNotBlank() }?.replace("Netease", "") ?: ""
+).joinToString(" · ")
+
+@Composable
+private fun SongRowLeading(
+    index: Int,
+    selectionMode: Boolean,
+    selected: Boolean,
+    onToggleSelect: () -> Unit
+) {
+    Box(
+        modifier = Modifier.width(48.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selectionMode) {
+            Checkbox(
+                checked = selected,
+                onCheckedChange = { onToggleSelect() }
+            )
+        } else {
+            Text(
+                text = index.toString(),
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = playlistModernListTertiaryContentColor(),
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun SongRowCover(song: SongItem, showCover: Boolean, offlineMode: Boolean) {
+    val itemContext = LocalContext.current
+    val displayCoverUrl = rememberSongDisplayCoverUrl(song)
+    if (showCover && !displayCoverUrl.isNullOrBlank()) {
+        Box(
+            modifier = Modifier
+                .size(48.dp)
+                .clip(neriRoundedShape(10.dp))
+                .background(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = neriRoundedShape(10.dp)
+                )
+        ) {
+            AsyncImage(
+                model = offlineCachedImageRequest(
+                    context = itemContext,
+                    data = displayCoverUrl,
+                    offlineMode = offlineMode
+                ),
+                contentDescription = song.displayName(),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.matchParentSize()
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+    }
+}
+
+@Composable
+private fun SongRowTrailing(
+    isCurrentSong: Boolean,
+    animatePlayingIndicator: Boolean,
+    durationMs: Long
+) {
+    if (isCurrentSong) {
+        PlayingIndicator(
+            color = MaterialTheme.colorScheme.primary,
+            animate = animatePlayingIndicator
+        )
+    } else {
+        Text(
+            text = formatDuration(durationMs),
+            style = MaterialTheme.typography.bodySmall,
+            color = playlistModernListSecondaryContentColor()
+        )
+    }
+}
+
+@Composable
+private fun SongRowMoreMenu(
+    song: SongItem,
+    isFavorite: Boolean,
+    onFavoriteToggle: (SongItem, Boolean) -> Unit,
+    onPlayNext: () -> Unit,
+    onAddToQueueEnd: () -> Unit,
+    onCopySongInfo: () -> Unit
+) {
+    var showMoreMenu by remember { mutableStateOf(false) }
+    Box {
+        IconButton(
+            onClick = { showMoreMenu = true }
+        ) {
+            Icon(
+                Icons.Filled.MoreVert,
+                contentDescription = stringResource(CoreCommonR.string.cd_more_actions),
+                tint = playlistModernListSecondaryContentColor()
+            )
+        }
+
+        DropdownMenu(
+            expanded = showMoreMenu,
+            onDismissRequest = { showMoreMenu = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(stringResource(CoreCommonR.string.local_playlist_play_next)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.PlaylistPlay,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    onPlayNext()
+                    showMoreMenu = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(CoreCommonR.string.playlist_add_to_end)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    onAddToQueueEnd()
+                    showMoreMenu = false
+                }
+            )
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        stringResource(
+                            if (isFavorite) {
+                                CoreCommonR.string.favorite_remove
+                            } else {
+                                CoreCommonR.string.favorite_add
+                            }
+                        )
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = if (isFavorite) {
+                            Icons.Filled.Favorite
+                        } else {
+                            Icons.Outlined.FavoriteBorder
+                        },
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    onFavoriteToggle(song, isFavorite)
+                    showMoreMenu = false
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(CoreCommonR.string.action_copy_song_info)) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    onCopySongInfo()
+                    showMoreMenu = false
+                }
+            )
+        }
+    }
+}
+
+internal fun hapticRowAction(context: Context, action: () -> Unit): () -> Unit = {
+    context.performHapticFeedback()
+    action()
+}
+
+internal fun copySongInfoAction(
+    scope: CoroutineScope,
+    clipboard: Clipboard,
+    snackbarHostState: SnackbarHostState,
+    resources: Resources,
+    songInfo: String
+): () -> Unit = {
+    scope.launch {
+        clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("text", songInfo)))
+        snackbarHostState.showNeriSnackbar(resources.getString(CoreCommonR.string.toast_copied))
     }
 }
 
@@ -1327,17 +1410,17 @@ fun PlayingIndicator(
     )
     val barHeights = listOf(
         animateFloatAsState(
-            targetValue = if (animate) animatedValues[0].value else flatHeight,
+            targetValue = playingBarHoldTarget(animate, animatedValues[0], flatHeight),
             animationSpec = transitionSpec,
             label = "bar1Hold"
         ).value,
         animateFloatAsState(
-            targetValue = if (animate) animatedValues[1].value else flatHeight,
+            targetValue = playingBarHoldTarget(animate, animatedValues[1], flatHeight),
             animationSpec = transitionSpec,
             label = "bar2Hold"
         ).value,
         animateFloatAsState(
-            targetValue = if (animate) animatedValues[2].value else flatHeight,
+            targetValue = playingBarHoldTarget(animate, animatedValues[2], flatHeight),
             animationSpec = transitionSpec,
             label = "bar3Hold"
         ).value
@@ -1362,3 +1445,6 @@ fun PlayingIndicator(
         }
     }
 }
+
+private fun playingBarHoldTarget(animate: Boolean, animated: State<Float>, flatHeight: Float): Float =
+    if (animate) animated.value else flatHeight

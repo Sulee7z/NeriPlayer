@@ -31,9 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthHealth
 import org.json.JSONObject
 
 data class KugouKuwoAuthUiState(
@@ -59,7 +59,7 @@ open class KugouKuwoAuthViewModel(
         KUWO
     }
 
-    private val repo: moe.ouom.neriplayer.data.auth.common.PlatformCookieRepository =
+    private val repo: moe.ouom.neriplayer.platform.auth.PlatformCookieRepository =
         when (cookieKey) {
             CookieKey.KUGOU -> AppContainer.kugouCookieRepo
             CookieKey.KUWO -> AppContainer.kuwoCookieRepo
@@ -102,7 +102,10 @@ open class KugouKuwoAuthViewModel(
 
     fun clearCookies() {
         viewModelScope.launch(Dispatchers.IO) {
-            repo.clear()
+            try { repo.clear() } catch (error: Exception) {
+                _events.send(KugouKuwoAuthEvent.ShowSnack(error.message.orEmpty()))
+                return@launch
+            }
             _events.send(
                 KugouKuwoAuthEvent.ShowSnack(
                     getApplication<Application>().getString(R.string.auth_cookie_cleared)
@@ -112,7 +115,7 @@ open class KugouKuwoAuthViewModel(
     }
 
     fun importCookiesFromRaw(raw: String) {
-        importCookiesFromMap(parseRawCookies(raw))
+        importCookiesFromMap(moe.ouom.neriplayer.network.http.parsing.parseRawCookieText(raw))
     }
 
     fun importCookiesFromMap(map: Map<String, String>) {
@@ -125,7 +128,10 @@ open class KugouKuwoAuthViewModel(
                 )
                 return@launch
             }
-            repo.saveCookies(map)
+            try { repo.saveCookies(map) } catch (error: Exception) {
+                _events.send(KugouKuwoAuthEvent.ShowSnack(error.message.orEmpty()))
+                return@launch
+            }
             _events.send(KugouKuwoAuthEvent.LoginSuccess)
         }
     }

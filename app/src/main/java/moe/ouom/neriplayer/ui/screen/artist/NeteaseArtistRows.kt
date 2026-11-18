@@ -1,5 +1,6 @@
 package moe.ouom.neriplayer.ui.screen.artist
 
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -31,15 +32,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.data.local.media.displayAlbum
-import moe.ouom.neriplayer.data.model.displayArtist
-import moe.ouom.neriplayer.data.model.displayName
+import moe.ouom.neriplayer.data.local.media.displayArtist
+import moe.ouom.neriplayer.data.local.media.displayName
 import moe.ouom.neriplayer.ui.util.rememberSongDisplayCoverUrl
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.ui.viewmodel.tab.AlbumSummary
 import moe.ouom.neriplayer.util.format.formatDuration
 import moe.ouom.neriplayer.util.media.offlineCachedImageRequest
+import moe.ouom.neriplayer.R as AppR
 
 @Composable
 internal fun ArtistSongRow(
@@ -81,7 +83,7 @@ internal fun ArtistSongRow(
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(48.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(neriRoundedShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         )
         Spacer(Modifier.width(12.dp))
@@ -132,7 +134,8 @@ private fun ArtistSongSubtitle(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
             )
         }
     }
@@ -163,7 +166,7 @@ internal fun ArtistAlbumRow(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
                     .size(58.dp)
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(neriRoundedShape(14.dp))
             )
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
@@ -174,7 +177,7 @@ internal fun ArtistAlbumRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = pluralStringResource(R.plurals.count_songs_format, album.size, album.size),
+                    text = pluralStringResource(AppR.plurals.count_songs_format, album.size, album.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -198,7 +201,7 @@ internal fun LoadingBlock() {
     ) {
         CircularProgressIndicator()
         Spacer(Modifier.width(12.dp))
-        Text(stringResource(R.string.playlist_loading_content))
+        Text(stringResource(CoreCommonR.string.playlist_loading_content))
     }
 }
 
@@ -213,7 +216,7 @@ internal fun ErrorBlock(error: String, onRetry: () -> Unit) {
         Text(error, color = MaterialTheme.colorScheme.error)
         Spacer(Modifier.height(8.dp))
         TextButton(onClick = onRetry) {
-            Text(stringResource(R.string.action_retry))
+            Text(stringResource(CoreCommonR.string.action_retry))
         }
     }
 }
@@ -243,7 +246,7 @@ internal fun LoadMoreButton(loading: Boolean, onClick: () -> Unit) {
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                 Spacer(Modifier.width(8.dp))
             }
-            Text(stringResource(R.string.artist_load_more))
+            Text(stringResource(CoreCommonR.string.artist_load_more))
         }
     }
 }

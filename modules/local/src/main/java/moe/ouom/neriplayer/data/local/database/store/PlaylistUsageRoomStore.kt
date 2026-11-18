@@ -1,0 +1,174 @@
+package moe.ouom.neriplayer.data.local.database.store
+
+
+import androidx.room.withTransaction
+import moe.ouom.neriplayer.data.local.database.NeriUserDataDatabase
+import moe.ouom.neriplayer.data.local.database.entity.stats.toEntity
+import moe.ouom.neriplayer.data.model.stats.UsageEntry
+import moe.ouom.neriplayer.data.playlist.usage.usageKey
+import moe.ouom.neriplayer.data.sync.github.SyncPlaybackStatMapper
+import moe.ouom.neriplayer.data.model.sync.SyncPlaybackCounterShard
+
+internal class PlaylistUsageRoomStore(
+    private val database: NeriUserDataDatabase
+) {
+    suspend fun readIfRoomPrimary(): List<UsageEntry>? {
+        // 恢复证明和计数必须从同一事务读取，不能把新证明配到旧计数上
+        return database.withTransaction {
+            if (database.syncMetadataDao()
+                .getMigrationMetadata(CUTOVER_STATE_METADATA_KEY)
+                ?.value != ROOM_PRIMARY_STATE
+            ) {
+                return@withTransaction null
+            }
+            readEntries()
+        }
+    }
+
+    suspend fun importLegacyAndPromote(
+        entries: List<UsageEntry>,
+        now: Long = System.currentTimeMillis()
+    ) {
+        replaceAll(entries, now)
+    }
+
+    suspend fun writeIncremental(
+        previous: List<UsageEntry>,
+        next: List<UsageEntry>,
+        now: Long = System.currentTimeMillis()
+    ) {
+        val previousByKey = previous.associateBy(UsageEntry::usageKey)
+        val nextByKey = next.associateBy(UsageEntry::usageKey)
+        val changedKeys = (previousByKey.keys + nextByKey.keys)
+            .filter { key -> previousByKey[key] != nextByKey[key] }
+            .toSet()
+        val removedKeys = changedKeys.filter { it !in nextByKey }
+        val changedEntries = next.filter { it.usageKey() in changedKeys }
+        database.withTransaction {
+            deleteKeys(removedKeys)
+            changedKeys
+                .filter { it in nextByKey }
+                .chunked(500)
+                .forEach { chunk ->
+                    database.playlistUsageDao().deleteCounterShards(chunk)
+                }
+            database.playlistUsageDao().upsertEntries(changedEntries.map(UsageEntry::toEntity))
+            writePins(next, now)
+            database.playlistUsageDao().upsertCounterShards(
+                changedEntries.flatMap { entry ->
+                    SyncPlaybackStatMapper.normalizeCounterShards(entry.counterShards)
+                        .map { shard -> shard.toEntity(entry.usageKey()) }
+                }
+            )
+            markRoomPrimary(now)
+        }
+    }
+
+    suspend fun replaceAll(
+        entries: List<UsageEntry>,
+        now: Long = System.currentTimeMillis()
+    ) {
+        database.withTransaction {
+            database.playlistUsageDao().deleteAllCounterShards()
+            database.playlistUsageDao().deleteAllEntries()
+            database.playlistUsageDao().upsertEntries(entries.map(UsageEntry::toEntity))
+            writePins(entries, now)
+            database.playlistUsageDao().upsertCounterShards(
+                entries.flatMap { entry ->
+                    SyncPlaybackStatMapper.normalizeCounterShards(entry.counterShards)
+                        .map { shard -> shard.toEntity(entry.usageKey()) }
+                }
+            )
+            markRoomPrimary(now)
+        }
+    }
+
+    suspend fun commitLegacyFallback(writeSnapshot: () -> Unit) {
+        database.commitLegacyJsonFallback(writeSnapshot) { markLegacyJsonPrimary() }
+    }
+
+    suspend fun markLegacyJsonPrimary(now: Long = System.currentTimeMillis()) {
+        database.syncMetadataDao().upsertMigrationMetadata(
+            metadata(CUTOVER_STATE_METADATA_KEY, LEGACY_JSON_STATE, now)
+        )
+    }
+
+    private suspend fun readEntries(): List<UsageEntry> {
+        val pins = org.json.JSONObject(database.syncMetadataDao()
+            .getMigrationMetadata("fork_playlist_usage_pins")?.value ?: "{}")
+        val shardsByKey = database.playlistUsageDao()
+            .getCounterShards()
+            .groupBy { it.usageKey }
+            .mapValues { (_, shards) ->
+                shards.map { shard ->
+                    SyncPlaybackCounterShard(
+                        deviceId = shard.deviceId,
+                        epochStartedAt = shard.epochStartedAt,
+                        playCount = shard.playCount,
+                        firstPlayedAt = shard.firstPlayedAt,
+                        lastPlayedAt = shard.lastPlayedAt
+                    )
+                }
+            }
+        return database.playlistUsageDao().getEntries().map { entry ->
+            UsageEntry(
+                id = entry.id,
+                name = entry.name,
+                picUrl = entry.picUrl,
+                trackCount = entry.trackCount,
+                source = entry.source,
+                lastOpened = entry.lastOpened,
+                openCount = entry.openCount,
+                firstOpened = entry.firstOpened,
+                counterBaseOpenCount = entry.counterBaseOpenCount,
+                counterShards = shardsByKey[entry.usageKey].orEmpty(),
+                fid = entry.fid,
+                mid = entry.mid,
+                browseId = entry.browseId,
+                playlistId = entry.playlistId,
+                subtype = entry.subtype,
+                subtitle = entry.subtitle,
+                observedDeletionTokens = decodeUsageDeletionTokens(entry.usageDeletionTokensJson),
+                pinnedAt = pins.optLong(entry.usageKey, 0L).coerceAtLeast(0L)
+            )
+        }
+    }
+
+    private suspend fun writePins(entries: List<UsageEntry>, now: Long) {
+        val json = org.json.JSONObject()
+        entries.filter { it.pinnedAt > 0L }.forEach { json.put(it.usageKey(), it.pinnedAt) }
+        database.syncMetadataDao().upsertMigrationMetadata(metadata("fork_playlist_usage_pins", json.toString(), now))
+    }
+
+    private suspend fun deleteKeys(keys: List<String>) {
+        keys.chunked(500).forEach { chunk ->
+            if (chunk.isNotEmpty()) {
+                database.playlistUsageDao().deleteCounterShards(chunk)
+                database.playlistUsageDao().deleteEntries(chunk)
+            }
+        }
+    }
+
+    private suspend fun markRoomPrimary(now: Long) {
+        database.syncMetadataDao().upsertMigrationMetadata(
+            metadata(CUTOVER_STATE_METADATA_KEY, ROOM_PRIMARY_STATE, now)
+        )
+        database.syncMetadataDao().upsertMigrationMetadata(
+            metadata(IMPORT_SCHEMA_METADATA_KEY, "1", now)
+        )
+    }
+
+    private fun metadata(key: String, value: String, now: Long) =
+        moe.ouom.neriplayer.data.local.database.entity.MigrationMetadataEntity(
+            key = key,
+            value = value,
+            updatedAt = now
+        )
+
+    companion object {
+        const val CUTOVER_STATE_METADATA_KEY = "playlist_usage_cutover_state"
+        const val IMPORT_SCHEMA_METADATA_KEY = "playlist_usage_import_schema"
+        const val ROOM_PRIMARY_STATE = "room_primary"
+        const val LEGACY_JSON_STATE = "legacy_json"
+    }
+}

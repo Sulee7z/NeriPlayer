@@ -1,9 +1,9 @@
 package moe.ouom.neriplayer.ui.screen.artist
 
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorBrowseEndpoint
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorItem
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorItemType
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSection
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorBrowseEndpoint
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItem
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItemType
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSection
 import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeMusicPlaylist
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,6 +12,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class YouTubeMusicCreatorDetailScreenTest {
+
+    @Test
+    fun creatorSplitLayout_requiresTabletOrExpandedPaneWidth() {
+        assertFalse(useCreatorDetailSplitLayout(tabletDevice = false, availableWidthDp = 839f, availableHeightDp = 840f))
+        assertTrue(useCreatorDetailSplitLayout(tabletDevice = false, availableWidthDp = 840f, availableHeightDp = 480f))
+        assertTrue(useCreatorDetailSplitLayout(tabletDevice = false, availableWidthDp = 1280f, availableHeightDp = 800f))
+        // 横屏手机宽度够但高度紧凑，保持单列
+        assertFalse(useCreatorDetailSplitLayout(tabletDevice = false, availableWidthDp = 840f, availableHeightDp = 479f))
+        assertFalse(useCreatorDetailSplitLayout(tabletDevice = true, availableWidthDp = 599f, availableHeightDp = 900f))
+        assertTrue(useCreatorDetailSplitLayout(tabletDevice = true, availableWidthDp = 600f, availableHeightDp = 900f))
+        assertTrue(useCreatorDetailSplitLayout(tabletDevice = true, availableWidthDp = 800f, availableHeightDp = 400f))
+    }
 
     @Test
     fun creatorDetailStateKeys_areScopedToCreatorAndSection() {

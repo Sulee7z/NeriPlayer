@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_artist_platform_bili">B 站</string>
+    <string name="library_artist_platform_youtube">YouTube</string>
+    <string name="library_artist_following">关注的歌手</string>
+    <plurals name="library_artist_count">
+        <item quantity="other">%1$d 位</item>
+    </plurals>
+    <string name="library_artist_import">拉取远端关注</string>
+    <string name="library_artist_import_loading">正在拉取…</string>
+    <string name="library_artist_import_login">请先登录对应平台账号</string>
+    <string name="library_artist_import_account_changed">账号已改变，请重新拉取</string>
+    <string name="library_artist_import_failed">拉取失败，请稍后重试</string>
+    <string name="library_artist_import_no_new">没有新的关注歌手</string>
+    <plurals name="library_artist_import_success">
+        <item quantity="other">已添加 %1$d 位歌手</item>
+    </plurals>
+    <!-- Library -->
+    <string name="library_favorite_tab_playlists">歌单</string>
+    <string name="library_favorite_tab_artists">歌手</string>
+    <string name="library_favorite_tab_hot">热点</string>
+    <string name="library_hot_playlist_week">本周热点</string>
+    <string name="library_hot_playlist_month">本月热点</string>
+    <string name="library_hot_playlist_summary" formatted="false">%1$d 首 · 播放 %2$s 次</string>
+    <string name="library_hot_empty">暂无符合条件的热点歌曲</string>
+    <string name="library_hot_empty_hint">开始收听后，热点歌曲会显示在这里</string>
+    <string name="library_no_favorite_artist">暂无关注的歌手</string>
+    <string name="library_favorite_artist_hint">在歌手或创作者详情页点击关注，就能在这里找到</string>
+    <string name="library_favorite_source_artist">歌手</string>
+    <string name="library_local_artist_empty">暂无本地歌手</string>
+    <string name="library_local_artist_hint">导入本地音频后，会按歌曲艺术家自动分类</string>
+    <string name="library_local_playlist_search_hint">搜索本地歌单 / 歌曲</string>
+    <string name="library_local_artist_search_hint">搜索本地歌手 / 歌曲</string>
+    <string name="library_local_search_empty">没有找到匹配的本地内容</string>
+    <string name="library_local_search_empty_hint">试试输入歌单、歌手或歌曲名称</string>
+    <string name="library_local_artist_sort">本地歌手排序</string>
+    <string name="library_local_artist_sort_count">按歌曲数量排序</string>
+    <string name="library_local_artist_sort_recent">按最近添加排序</string>
+    <string name="library_local_artist_sort_name">按名称排序</string>
+    <string name="library_favorite_search_hint">搜索当前收藏</string>
+    <string name="library_favorite_search_empty">没有找到匹配的收藏</string>
+    <string name="library_favorite_search_empty_hint">试试输入名称、来源、歌手或歌曲名称</string>
+    <string name="library_tab_local">本地</string>
+    <string name="library_tab_favorite">收藏</string>
+    <string name="library_tab_netease">网易云</string>
+    <string name="library_tab_netease_album">网易云 - 专辑</string>
+    <string name="library_tab_youtube_music">YouTube</string>
+    <string name="library_tab_bilibili">哔哩哔哩</string>
+    <string name="library_tab_qqmusic">QQ音乐</string>
+    <string name="library_create_playlist_default">新建歌单</string>
+    <string name="library_name_reserved">该名称已保留为\"%s\"，请换一个名称哦~</string>
+    <string name="library_name_exists">已存在同名歌单，请换一个名称</string>
+    <string name="library_create_new">＋ 新建歌单</string>
+    <string name="library_qqmusic_coming">QQ音乐功能开发中…</string>
+    <string name="library_netease_tab_playlists">歌单</string>
+    <string name="library_netease_tab_albums">专辑</string>
+    <string name="library_netease_search_hint">搜索歌单 / 专辑</string>
+    <string name="library_netease_search_empty">没有找到匹配的歌单或专辑</string>
+    <string name="library_netease_search_empty_hint">试试输入名称、ID、播放数或曲目数</string>
+    <string name="library_netease_playlist_empty">还没有加载到网易云歌单</string>
+    <string name="library_netease_album_empty">还没有加载到网易云专辑</string>
+    <string name="library_netease_cloud_entry">云盘</string>
+    <string name="library_netease_cloud_entry_hint">收听上传到网易云的音乐</string>
+    <string name="netease_cloud_title">网易云云盘</string>
+    <string name="netease_cloud_summary" formatted="false">%1$d 首 · %2$s / %3$s</string>
+    <string name="netease_cloud_empty">云盘里还没有歌曲</string>
+    <string name="netease_cloud_empty_hint">在网易云音乐上传音乐后，会显示在这里</string>
+    <string name="netease_cloud_login_required">请先登录网易云音乐</string>
+    <string name="netease_cloud_login_hint">在设置中登录网易云音乐账号后，即可收听云盘里上传的歌曲</string>
+    <string name="netease_cloud_loading_more">正在加载更多…</string>
+    <string name="netease_cloud_incomplete_hint">云盘歌曲未加载完整，请刷新后重试</string>
+    <string name="library_bili_empty">还没有加载到哔哩哔哩收藏夹或合集</string>
+    <string name="library_bili_hint">确认已登录哔哩哔哩后，会加载创建的收藏夹、订阅收藏夹和收藏的合集</string>
+    <string name="library_bili_search_hint">搜索收藏夹 / 合集</string>
+    <string name="library_bili_search_empty">没有找到匹配的收藏夹或合集</string>
+    <string name="library_bili_search_empty_hint">试试输入标题、备注、类型名或者 ID</string>
+    <string name="library_bili_created_favorite">创建的收藏夹</string>
+    <string name="library_bili_collected_favorite">订阅收藏夹</string>
+    <string name="library_bili_collection">合集</string>
+    <string name="library_bili_series">系列</string>
+    <string name="library_youtube_music_empty">还没有抓到 YouTube Music 歌单</string>
+    <string name="library_youtube_music_hint">先确认 YouTube 已登录，随后会从媒体库拉取你的歌单</string>
+    <string name="library_youtube_music_open_playlist">打开歌单</string>
+    <string name="library_youtube_music_copy_browse_id">复制 Browse ID</string>
+    <string name="library_youtube_music_copy_playlist_id">复制 Playlist ID</string>
+    <string name="library_favorite_source_format" formatted="false">%d首 · %s</string>
+    <string name="library_title">媒体库</string>
+    <string name="library_coming_soon">敬请期待</string>
+    <string name="library_recent_played">最近播放</string>
+    <string name="library_delete_playlist_confirm">确定要删除歌单“%1$s”吗？</string>
+
+    <!-- Artist -->
+    <string name="artist_detail">歌手详情</string>
+    <string name="artist_follow">关注</string>
+    <string name="artist_followed">已关注</string>
+    <string name="artist_tab_songs">歌曲</string>
+    <string name="artist_tab_albums">专辑</string>
+    <string name="artist_choose_title">选择歌手</string>
+    <string name="artist_not_available">这首歌没有可打开的网易云歌手信息</string>
+    <string name="artist_load_failed">歌手页加载失败：%s</string>
+    <string name="artist_follow_failed">关注操作失败：%s</string>
+    <string name="artist_songs_empty">暂无歌曲</string>
+    <string name="artist_albums_empty">暂无专辑</string>
+    <string name="artist_load_more">加载更多</string>
+    <string name="bili_uploader_detail">UP 主主页</string>
+    <string name="bili_uploader_load_failed">UP 主主页加载失败：%1$s</string>
+    <string name="bili_uploader_open_failed">无法打开 UP 主主页：%1$s</string>
+    <string name="bili_uploader_owner_unavailable">未返回 UP 主 ID</string>
+    <string name="bili_uploader_tab_videos">投稿</string>
+    <string name="bili_uploader_tab_collections">合集</string>
+    <string name="bili_uploader_tab_series">系列</string>
+    <string name="bili_uploader_mid">UID %1$d</string>
+    <plurals name="bili_uploader_video_count">
+        <item quantity="other">%1$d 个投稿</item>
+    </plurals>
+    <plurals name="bili_uploader_collection_count">
+        <item quantity="other">%1$d 个合集</item>
+    </plurals>
+    <plurals name="bili_uploader_series_count">
+        <item quantity="other">%1$d 个系列</item>
+    </plurals>
+    <plurals name="bili_uploader_content_count">
+        <item quantity="other">%1$d 个视频</item>
+    </plurals>
+    <string name="bili_uploader_videos_empty">暂无投稿</string>
+    <string name="bili_uploader_collections_empty">暂无合集</string>
+    <string name="bili_uploader_series_empty">暂无系列</string>
+    <string name="bili_uploader_load_more">加载更多</string>
+
+    <!-- Recent & Favorites -->
+    <string name="recent_title">最近播放</string>
+    <string name="recent_no_history">暂无最近播放</string>
+    <string name="recent_clear">清空最近播放</string>
+    <string name="favorite_add">收藏</string>
+    <string name="favorite_remove">取消收藏</string>
+    <string name="favorite_success">收藏成功</string>
+    <string name="favorite_added">已收藏</string>
+    <string name="favorite_removed">已取消收藏</string>
+    <string name="favorite_my_music">我喜欢的音乐</string>
+    <string name="recent_clear_confirm">确定要清空全部最近播放记录吗？此操作不可恢复。</string>
+</resources>

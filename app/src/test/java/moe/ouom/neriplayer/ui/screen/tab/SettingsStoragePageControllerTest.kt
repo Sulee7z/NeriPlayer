@@ -1,0 +1,196 @@
+package moe.ouom.neriplayer.ui.screen.tab
+
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.test.runTest
+import moe.ouom.neriplayer.data.model.storage.StorageUsageSection
+import moe.ouom.neriplayer.data.model.storage.StorageUsageSummary
+import moe.ouom.neriplayer.ui.screen.tab.settings.download.directory.DownloadDirectoryProcessingPresentation
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.SettingsPage
+import moe.ouom.neriplayer.ui.screen.tab.settings.storage.SettingsStorageDetailsController
+import moe.ouom.neriplayer.ui.screen.tab.settings.storage.SettingsStoragePageAvailability
+import moe.ouom.neriplayer.ui.screen.tab.settings.storage.SettingsStorageSelectionState
+import moe.ouom.neriplayer.ui.screen.tab.settings.storage.settingsStoragePageAvailability
+import moe.ouom.neriplayer.ui.screen.tab.settings.storage.shouldShowSharedDownloadDirectoryProcessing
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SettingsStoragePageControllerTest {
+    @Test
+    fun `shared processing details appear only on the storage page`() {
+        val shared = DownloadDirectoryProcessingPresentation(false, false, true)
+        val local = DownloadDirectoryProcessingPresentation(false, true, false)
+
+        assertTrue(shouldShowSharedDownloadDirectoryProcessing(SettingsPage.Storage, shared))
+        assertFalse(shouldShowSharedDownloadDirectoryProcessing(SettingsPage.Downloads, shared))
+        assertFalse(shouldShowSharedDownloadDirectoryProcessing(SettingsPage.Storage, local))
+    }
+
+    @Test
+    fun `storage page availability follows directory selection`() {
+        assertEquals(
+            SettingsStoragePageAvailability(false),
+            settingsStoragePageAvailability(null)
+        )
+        assertEquals(
+            SettingsStoragePageAvailability(false),
+            settingsStoragePageAvailability("")
+        )
+        assertEquals(
+            SettingsStoragePageAvailability(true),
+            settingsStoragePageAvailability("content://selected")
+        )
+    }
+
+    @Test
+    fun `cache choices keep the original safe defaults and independent toggles`() {
+        val selection = SettingsStorageSelectionState()
+
+        assertFalse(selection.showClearCacheDialog)
+        assertTrue(selection.clearAudioCache)
+        assertTrue(selection.clearImageCache)
+        assertFalse(selection.clearSharedMediaCache)
+        assertFalse(selection.clearLyricsCache)
+        assertFalse(selection.clearNeteasePlaylistCache)
+        assertFalse(selection.clearBiliFavoriteCache)
+        assertFalse(selection.clearBiliArchiveCache)
+        assertFalse(selection.clearYoutubePlaylistCache)
+        assertFalse(selection.clearLogFiles)
+        assertFalse(selection.clearCrashLogs)
+
+        selection.clearSharedMediaCache = true
+        assertTrue(selection.clearSharedMediaCache)
+        assertFalse(selection.clearLyricsCache)
+    }
+
+    @Test
+    fun `storage scan only starts after a request and publishes its result`() = runTest {
+        val request = mutableIntStateOf(0)
+        val details = mutableStateOf(StorageUsageSummary.Empty)
+        val loading = mutableStateOf(false)
+        val scanned = StorageUsageSummary(listOf(StorageUsageSection("cache", emptyList())))
+        var scanCount = 0
+        lateinit var controller: SettingsStorageDetailsController
+        controller = SettingsStorageDetailsController(details, loading, request) {
+            scanCount++
+            assertTrue(controller.isScanning)
+            assertTrue(controller.isWaitingForScan)
+            scanned
+        }
+
+        assertTrue(controller.isWaitingForScan)
+        controller.scanRequested()
+        assertEquals(0, scanCount)
+        controller.requestRefresh()
+        controller.scanRequested()
+
+        assertEquals(1, request.intValue)
+        assertEquals(1, scanCount)
+        assertEquals(scanned, controller.details)
+        assertFalse(controller.isScanning)
+        assertFalse(controller.isWaitingForScan)
+    }
+
+    @Test
+    fun `storage refresh ignores requests while scanning and clears loading on failure`() = runTest {
+        val request = mutableIntStateOf(0)
+        val loading = mutableStateOf(false)
+        lateinit var controller: SettingsStorageDetailsController
+        controller = SettingsStorageDetailsController(
+            mutableStateOf(StorageUsageSummary.Empty), loading, request
+        ) {
+            assertTrue(controller.isScanning)
+            controller.requestRefresh()
+            assertEquals(1, request.intValue)
+            throw IllegalStateException("scan failed")
+        }
+
+        controller.requestRefresh()
+        controller.scanRequested()
+
+        assertEquals(1, request.intValue)
+        assertFalse(controller.isScanning)
+        assertTrue(controller.scanFailed)
+        assertFalse(controller.hasScanned)
+        assertFalse(controller.isWaitingForScan)
+    }
+
+    @Test
+    fun `a failed scan can retry and replace the visible failure with its result`() = runTest {
+        var shouldFail = true
+        val result = StorageUsageSummary(listOf(StorageUsageSection("cache", emptyList())))
+        val controller = SettingsStorageDetailsController(
+            mutableStateOf(StorageUsageSummary.Empty), mutableStateOf(false), mutableIntStateOf(0)
+        ) {
+            if (shouldFail) throw IllegalStateException("scan failed")
+            result
+        }
+
+        controller.requestRefresh()
+        controller.scanRequested()
+        assertTrue(controller.scanFailed)
+
+        shouldFail = false
+        controller.requestRefresh()
+        assertFalse(controller.scanFailed)
+        assertTrue(controller.isScanning)
+        assertTrue(controller.isWaitingForScan)
+        controller.scanRequested()
+
+        assertEquals(result, controller.details)
+        assertTrue(controller.hasScanned)
+        assertFalse(controller.isScanning)
+        assertFalse(controller.scanFailed)
+        assertFalse(controller.isWaitingForScan)
+    }
+
+    @Test
+    fun `scan cancellation propagates without becoming a visible failure`() = runTest {
+        val controller = SettingsStorageDetailsController(
+            mutableStateOf(StorageUsageSummary.Empty), mutableStateOf(false), mutableIntStateOf(0)
+        ) { throw CancellationException("cancelled") }
+
+        controller.requestRefresh()
+        val failure = runCatching { controller.scanRequested() }.exceptionOrNull()
+
+        assertTrue(failure is CancellationException)
+        assertFalse(controller.isScanning)
+        assertFalse(controller.scanFailed)
+    }
+
+    @Test
+    fun `opening storage page starts scanning before publishing any zero size`() {
+        val request = mutableIntStateOf(0)
+        val details = mutableStateOf(StorageUsageSummary.Empty)
+        val controller = SettingsStorageDetailsController(
+            details, mutableStateOf(false), request
+        ) { StorageUsageSummary.Empty }
+
+        controller.requestIfDetailsPage(SettingsPage.Downloads)
+        assertEquals(0, request.intValue)
+        controller.requestIfDetailsPage(SettingsPage.Storage)
+        assertEquals(1, request.intValue)
+        assertTrue(controller.isScanning)
+        controller.requestIfDetailsPage(SettingsPage.StorageCacheDetails)
+        assertEquals(1, request.intValue)
+    }
+
+    @Test
+    fun `a completed empty scan does not trigger another automatic scan`() = runTest {
+        val request = mutableIntStateOf(0)
+        val controller = SettingsStorageDetailsController(
+            mutableStateOf(StorageUsageSummary.Empty), mutableStateOf(false), request
+        ) { StorageUsageSummary.Empty }
+
+        controller.requestIfDetailsPage(SettingsPage.StorageCacheDetails)
+        controller.scanRequested()
+        controller.requestIfDetailsPage(SettingsPage.StorageCacheDetails)
+
+        assertEquals(1, request.intValue)
+        assertFalse(controller.isScanning)
+    }
+
+}

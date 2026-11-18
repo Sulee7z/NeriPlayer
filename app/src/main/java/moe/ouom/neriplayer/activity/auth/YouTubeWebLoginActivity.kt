@@ -20,6 +20,8 @@ package moe.ouom.neriplayer.activity.auth
  * If not, see <https://www.gnu.org/licenses/>.
  */
 
+import moe.ouom.neriplayer.platform.youtube.api.auth.normalized
+import moe.ouom.neriplayer.platform.youtube.api.auth.toJson
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
@@ -36,12 +38,9 @@ import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
-import androidx.activity.OnBackPressedCallback
-import androidx.activity.enableEdgeToEdge
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
@@ -52,32 +51,34 @@ import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.data.auth.web.ForegroundWebLoginGuard
+import moe.ouom.neriplayer.network.weblogin.ForegroundWebLoginGuard
 import moe.ouom.neriplayer.data.auth.web.shouldAutoCompleteYouTubeWebLogin
-import moe.ouom.neriplayer.data.auth.youtube.applyYouTubeWebCookies
-import moe.ouom.neriplayer.data.auth.youtube.clearYouTubeWebCookies
-import moe.ouom.neriplayer.data.auth.youtube.collectObservedYouTubeAuthCookies
-import moe.ouom.neriplayer.data.auth.youtube.collectYouTubeWebCookies
-import moe.ouom.neriplayer.data.auth.youtube.hasMeaningfulYouTubeAuthChange
-import moe.ouom.neriplayer.data.auth.youtube.mergeYouTubeAuthBundle
-import moe.ouom.neriplayer.data.auth.youtube.preserveMatchingYouTubeAuthCookies
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthBundle
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthRepository
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeBootstrapSessionState
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeCookieSupport
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeWebLoginVerifier
-import moe.ouom.neriplayer.data.auth.youtube.YOUTUBE_MUSIC_ORIGIN
-import moe.ouom.neriplayer.data.auth.youtube.evaluateYouTubeAuthHealth
-import moe.ouom.neriplayer.data.auth.youtube.YouTubeAuthState
-import moe.ouom.neriplayer.data.platform.youtube.YOUTUBE_DEFAULT_WEB_USER_AGENT
-import moe.ouom.neriplayer.data.platform.youtube.isTrustedYouTubeLoginHost
-import moe.ouom.neriplayer.data.platform.youtube.resolveYouTubeMobileWebLoginUserAgent
-import moe.ouom.neriplayer.util.network.DynamicProxySelector
-import moe.ouom.neriplayer.core.logging.NPLogger
+import moe.ouom.neriplayer.platform.youtube.auth.web.applyYouTubeWebCookies
+import moe.ouom.neriplayer.platform.youtube.auth.web.clearYouTubeWebCookies
+import moe.ouom.neriplayer.platform.youtube.auth.collectObservedYouTubeAuthCookies
+import moe.ouom.neriplayer.platform.youtube.auth.web.collectYouTubeWebCookies
+import moe.ouom.neriplayer.platform.youtube.auth.hasMeaningfulYouTubeAuthChange
+import moe.ouom.neriplayer.platform.youtube.auth.mergeYouTubeAuthBundle
+import moe.ouom.neriplayer.platform.youtube.auth.preserveMatchingYouTubeAuthCookies
+import moe.ouom.neriplayer.data.model.youtube.auth.YouTubeAuthBundle
+import moe.ouom.neriplayer.platform.youtube.auth.YouTubeAuthRepository
+import moe.ouom.neriplayer.data.model.youtube.auth.YouTubeBootstrapSessionState
+import moe.ouom.neriplayer.platform.youtube.api.auth.YouTubeCookieSupport
+import moe.ouom.neriplayer.platform.youtube.auth.YouTubeWebLoginVerifier
+import moe.ouom.neriplayer.data.model.youtube.auth.YOUTUBE_MUSIC_ORIGIN
+import moe.ouom.neriplayer.platform.youtube.api.auth.evaluateYouTubeAuthHealth
+import moe.ouom.neriplayer.data.model.youtube.auth.YouTubeAuthState
+import moe.ouom.neriplayer.platform.youtube.api.transport.YOUTUBE_DEFAULT_WEB_USER_AGENT
+import moe.ouom.neriplayer.platform.youtube.api.transport.isTrustedYouTubeLoginHost
+import moe.ouom.neriplayer.platform.youtube.api.transport.resolveYouTubeMobileWebLoginUserAgent
+import moe.ouom.neriplayer.network.proxy.DynamicProxySelector
+import moe.ouom.neriplayer.common.logging.NPLogger
 import moe.ouom.neriplayer.ui.feedback.showNeriViewSnackbar
-import moe.ouom.neriplayer.util.network.isAllowedMainFrameRequest
+import moe.ouom.neriplayer.network.security.isAllowedMainFrameRequest
 import moe.ouom.neriplayer.util.platform.lockPortraitIfPhone
+import moe.ouom.neriplayer.activity.enableNeriEdgeToEdge
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -132,6 +133,10 @@ class YouTubeWebLoginActivity : ComponentActivity() {
     }
 
     private lateinit var webView: WebView
+    private val webBackNavigation = WebLoginBackNavigation(
+        canGoBack = { this::webView.isInitialized && webView.canGoBack() },
+        goBack = { webView.goBack() }
+    )
     private var persistedAuthBaseline: YouTubeAuthBundle = YouTubeAuthBundle()
     private var foregroundWebLoginToken: AutoCloseable? = null
     private var hasReturned = false
@@ -170,9 +175,9 @@ class YouTubeWebLoginActivity : ComponentActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (finishIfWebViewUnavailable()) return
         lockPortraitIfPhone()
-        enableEdgeToEdge()
-        WindowCompat.setDecorFitsSystemWindows(window, false)
+        enableNeriEdgeToEdge()
         foregroundWebLoginToken = ForegroundWebLoginGuard.enter("youtube")
         persistedAuthBaseline = YouTubeAuthRepository(applicationContext).getAuthOnce()
 
@@ -202,7 +207,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         }
 
         val toolbar = MaterialToolbar(this).apply {
-            title = getString(R.string.youtube_web_login)
+            title = getString(CoreCommonR.string.youtube_web_login)
             setNavigationIcon(R.drawable.ic_arrow_back_24)
             setNavigationOnClickListener { finish() }
             inflateMenu(R.menu.menu_netease_web_login)
@@ -264,26 +269,15 @@ class YouTubeWebLoginActivity : ComponentActivity() {
             insets
         }
 
-        onBackPressedDispatcher.addCallback(
-            this,
-            object : OnBackPressedCallback(true) {
-                override fun handleOnBackPressed() {
-                    if (this@YouTubeWebLoginActivity::webView.isInitialized && webView.canGoBack()) {
-                        webView.goBack()
-                    } else {
-                        finish()
-                    }
-                }
-            }
-        )
+        onBackPressedDispatcher.addCallback(this, webBackNavigation.callback)
 
         webView.loadUrl(TARGET_URL)
     }
 
     override fun onPause() {
-        persistObservedAuthIfNeeded()
-        CookieManager.getInstance().flush()
         if (this::webView.isInitialized) {
+            persistObservedAuthIfNeeded()
+            CookieManager.getInstance().flush()
             webView.onPause()
         }
         super.onPause()
@@ -299,9 +293,9 @@ class YouTubeWebLoginActivity : ComponentActivity() {
 
     override fun onDestroy() {
         loginCompletionWatcher.stop()
-        persistObservedAuthIfNeeded()
-        CookieManager.getInstance().flush()
         if (this::webView.isInitialized) {
+            persistObservedAuthIfNeeded()
+            CookieManager.getInstance().flush()
             (webView.parent as? ViewGroup)?.removeView(webView)
             webView.destroy()
         }
@@ -338,7 +332,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
             showNeriViewSnackbar(
                 webView,
                 getString(
-                    R.string.snackbar_read_failed,
+                    CoreCommonR.string.snackbar_read_failed,
                     error.message ?: error.javaClass.simpleName
                 ),
                 Snackbar.LENGTH_LONG
@@ -568,7 +562,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         dismissVerifyingSnack()
         showNeriViewSnackbar(
             webView,
-            getString(R.string.settings_youtube_auth_missing),
+            getString(CoreCommonR.string.settings_youtube_auth_missing),
             Snackbar.LENGTH_LONG
         )
     }
@@ -580,7 +574,7 @@ class YouTubeWebLoginActivity : ComponentActivity() {
         }
         verifyingSnack = showNeriViewSnackbar(
             webView,
-            getString(R.string.settings_youtube_auth_verifying),
+            getString(CoreCommonR.string.settings_youtube_auth_verifying),
             Snackbar.LENGTH_INDEFINITE
         )
     }
@@ -739,6 +733,11 @@ class YouTubeWebLoginActivity : ComponentActivity() {
     }
 
     private inner class InnerClient : WebViewClient() {
+        override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+            super.doUpdateVisitedHistory(view, url, isReload)
+            webBackNavigation.refresh()
+        }
+
         override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
             val currentRequest = request ?: return false
             val uri = currentRequest.url

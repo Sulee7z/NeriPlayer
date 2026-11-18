@@ -1,0 +1,20 @@
+schemaVersion: 1
+status: blocked_by_missing_evidence
+runId: auto
+artifactRoot: .report/usb/execution
+batch: B0
+baselineCommit: HEAD
+planPath: modules/native/src/main/cpp/tests/usb/config/host-gate-contract.md
+planSha256: 7e3e957bdfa5da9021d8b435e87c0ae309839c80514fb057584f1b1b10de5dac
+logPath:
+logSha256:
+issue247SnapshotPath:
+descriptorPath:
+feedbackTracePath:
+hostMetadataPath:
+uac2SpecReference:
+usb20SpecReference:
+dri:
+nativeReviewer:
+kotlinReviewer:
+approver:

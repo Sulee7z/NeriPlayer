@@ -29,6 +29,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
@@ -53,6 +54,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.isActive
+import moe.ouom.neriplayer.ui.animation.AMBIENT_ANIMATION_FRAME_INTERVAL_NANOS
+import moe.ouom.neriplayer.ui.animation.isNewAmbientFrameSlot
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.pow
@@ -156,19 +159,26 @@ fun WaveformSlider(
             waveProgress.resetFrameAnchor()
             val anchorPhase = phase
             var anchorFrameNs = 0L
+            var lastRenderedFrameNs = 0L
             while (isActive) {
-                val frameNs = withFrameNanos { it }
-                if (anchorFrameNs == 0L) {
-                    anchorFrameNs = frameNs
-                }
-                val elapsedNs = frameNs - anchorFrameNs
-                if (isProgressPredicting) {
-                    waveProgress.onFrame(frameNs)
-                }
-                phase = if (isWaitingPulseAnimating) {
-                    resolveWaitingPulsePhase(anchorPhase, elapsedNs)
-                } else {
-                    resolveWavePhase(anchorPhase, elapsedNs)
+                // 状态必须在帧回调内写入，协程恢复后再写会落到下一帧，和其它动画错开一个 vsync
+                withFrameNanos { frameNs ->
+                    if (!isNewAmbientFrameSlot(lastRenderedFrameNs, frameNs, AMBIENT_ANIMATION_FRAME_INTERVAL_NANOS)) {
+                        return@withFrameNanos
+                    }
+                    lastRenderedFrameNs = frameNs
+                    if (anchorFrameNs == 0L) {
+                        anchorFrameNs = frameNs
+                    }
+                    val elapsedNs = frameNs - anchorFrameNs
+                    if (isProgressPredicting) {
+                        waveProgress.onFrame(frameNs)
+                    }
+                    phase = if (isWaitingPulseAnimating) {
+                        resolveWaitingPulsePhase(anchorPhase, elapsedNs)
+                    } else {
+                        resolveWavePhase(anchorPhase, elapsedNs)
+                    }
                 }
             }
         }
@@ -184,11 +194,7 @@ fun WaveformSlider(
             detectDragGestures(
                 onDragStart = { offset ->
                     isDragging = true
-                    val width = size.width.toFloat()
-                    if (width > 0f) {
-                        val startValue = (offset.x / width).coerceIn(0f, 1f)
-                        onValueChangeStarted(startValue)
-                    }
+                    sliderFractionAt(offset.x, size.width.toFloat())?.let(onValueChangeStarted)
                 },
                 onDragEnd = {
                     isDragging = false
@@ -199,13 +205,15 @@ fun WaveformSlider(
                     onValueChangeCanceled()
                 },
                 onDrag = { change, _ ->
-                    val width = size.width.toFloat()
-                    if (width > 0f) {
-                        val newValue = (change.position.x / width).coerceIn(0f, 1f)
-                        onValueChange(newValue)
-                    }
+                    sliderFractionAt(change.position.x, size.width.toFloat())?.let(onValueChange)
                 }
             )
+        }.pointerInput(onValueChangeStarted, onValueChangeFinished) {
+            detectTapGestures { offset ->
+                val fraction = sliderFractionAt(offset.x, size.width.toFloat()) ?: return@detectTapGestures
+                onValueChangeStarted(fraction)
+                onValueChangeFinished()
+            }
         }
     } else {
         Modifier
@@ -454,3 +462,7 @@ private fun Long.floorMod(other: Long): Long {
 private fun Float.floorMod(other: Float): Float {
     return ((this % other) + other) % other
 }
+
+/** 触点在进度条上的比例；宽度未测量时返回 null */
+internal fun sliderFractionAt(x: Float, width: Float): Float? =
+    if (width > 0f) (x / width).coerceIn(0f, 1f) else null

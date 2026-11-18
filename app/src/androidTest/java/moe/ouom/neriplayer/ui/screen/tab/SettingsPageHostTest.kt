@@ -19,6 +19,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import moe.ouom.neriplayer.testutil.assumeComposeHostAvailable
+import moe.ouom.neriplayer.ui.screen.tab.settings.navigation.SettingsPageHost
 import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsPageGroupCard
 import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsResponsiveDetailScaffold
 import moe.ouom.neriplayer.ui.screen.tab.settings.page.SettingsPage
@@ -50,7 +51,9 @@ class SettingsPageHostTest {
                     SettingsPageHost(
                         activePage = activePage.value,
                         splitLayout = true,
-                        isolateAdvancedGlassTransitions = false
+                        isolateAdvancedGlassTransitions = false,
+                        backEnabled = false,
+                        onBack = {}
                     ) { page ->
                         Row(modifier = Modifier.fillMaxSize()) {
                             Box(
@@ -75,12 +78,12 @@ class SettingsPageHostTest {
             composeRule.onNodeWithTag("settings-detail-General").assertExists()
 
             composeRule.runOnIdle { activePage.value = SettingsPage.Accounts }
-            advanceRecompositionFrame()
+            advanceUntilMounted("settings-detail-Accounts")
             composeRule.onAllNodesWithTag(NAVIGATION_PANE_TAG).assertCountEquals(1)
-            composeRule.onNodeWithTag("settings-detail-Accounts").assertExists()
+            composeRule.onNodeWithTag("settings-detail-Accounts", useUnmergedTree = true).assertExists()
 
             composeRule.runOnIdle { activePage.value = SettingsPage.Theme }
-            advanceRecompositionFrame()
+            advanceUntilMounted("settings-detail-Theme")
             composeRule.onAllNodesWithTag(NAVIGATION_PANE_TAG).assertCountEquals(1)
             composeRule.onNodeWithTag("settings-detail-Theme").assertExists()
         } finally {
@@ -89,7 +92,7 @@ class SettingsPageHostTest {
     }
 
     @Test
-    fun splitDetailSwitchesWithoutKeepingOutgoingPage() {
+    fun splitDetailRetainsOutgoingPrimaryUntilItsFadeFinishes() {
         lateinit var activePage: MutableState<SettingsPage>
         composeRule.mainClock.autoAdvance = false
         try {
@@ -130,9 +133,13 @@ class SettingsPageHostTest {
             composeRule.onNodeWithTag("settings-detail-General").assertExists()
 
             composeRule.runOnIdle { activePage.value = SettingsPage.Accounts }
-            advanceRecompositionFrame()
+            advanceUntilMounted("settings-detail-Accounts")
             composeRule.onAllNodesWithTag(NAVIGATION_PANE_TAG).assertCountEquals(1)
-            composeRule.onNodeWithTag("settings-detail-Accounts").assertExists()
+            composeRule.onNodeWithTag("settings-detail-Accounts", useUnmergedTree = true).assertExists()
+            composeRule.onNodeWithTag("settings-detail-General", useUnmergedTree = true).assertExists()
+
+            composeRule.mainClock.advanceTimeBy(2_000)
+            composeRule.waitForIdle()
             composeRule.onAllNodesWithTag("settings-detail-General").assertCountEquals(0)
         } finally {
             composeRule.mainClock.autoAdvance = true
@@ -151,7 +158,7 @@ class SettingsPageHostTest {
                         pages = listOf(
                             SettingsPage.General,
                             SettingsPage.Accounts,
-                            SettingsPage.Playback
+                            SettingsPage.Storage
                         ),
                         onPageClick = { page -> activePage.value = page },
                         selectedPage = activePage.value.backTargetPage() ?: activePage.value
@@ -181,11 +188,11 @@ class SettingsPageHostTest {
                     .assertIsSelected()
             }
 
-            composeRule.runOnIdle { activePage.value = SettingsPage.UsbExclusive }
+            composeRule.runOnIdle { activePage.value = SettingsPage.StorageCacheDetails }
             advanceRecompositionFrame()
             composeRule.onNodeWithTag(settingsPageRowTestTag(SettingsPage.Accounts))
                 .assertIsNotSelected()
-            composeRule.onNodeWithTag(settingsPageRowTestTag(SettingsPage.Playback))
+            composeRule.onNodeWithTag(settingsPageRowTestTag(SettingsPage.Storage))
                 .assertIsSelected()
         } finally {
             composeRule.mainClock.autoAdvance = true
@@ -198,7 +205,7 @@ class SettingsPageHostTest {
         composeRule.mainClock.autoAdvance = false
         try {
             composeRule.setContent {
-                activePage = remember { mutableStateOf(SettingsPage.Playback) }
+                activePage = remember { mutableStateOf(SettingsPage.Storage) }
                 MaterialTheme {
                     MiuixSettingsResponsiveDetailScaffold(
                         title = "Settings",
@@ -226,17 +233,17 @@ class SettingsPageHostTest {
             }
 
             composeRule.waitForIdle()
-            composeRule.onNodeWithTag("settings-detail-Playback").assertExists()
+            composeRule.onNodeWithTag("settings-detail-Storage").assertExists()
 
-            composeRule.runOnIdle { activePage.value = SettingsPage.UsbExclusive }
+            composeRule.runOnIdle { activePage.value = SettingsPage.StorageCacheDetails }
             repeat(3) { composeRule.mainClock.advanceTimeByFrame() }
-            composeRule.onNodeWithTag("settings-detail-Playback").assertExists()
-            composeRule.onNodeWithTag("settings-detail-UsbExclusive").assertExists()
+            composeRule.onNodeWithTag("settings-detail-Storage", useUnmergedTree = true).assertExists()
+            composeRule.onNodeWithTag("settings-detail-StorageCacheDetails", useUnmergedTree = true).assertExists()
 
             composeRule.mainClock.advanceTimeBy(2_000)
             composeRule.waitForIdle()
-            composeRule.onAllNodesWithTag("settings-detail-Playback").assertCountEquals(0)
-            composeRule.onNodeWithTag("settings-detail-UsbExclusive").assertExists()
+            composeRule.onAllNodesWithTag("settings-detail-Storage").assertCountEquals(0)
+            composeRule.onNodeWithTag("settings-detail-StorageCacheDetails").assertExists()
         } finally {
             composeRule.mainClock.autoAdvance = true
         }
@@ -245,6 +252,14 @@ class SettingsPageHostTest {
     private fun advanceRecompositionFrame() {
         composeRule.mainClock.advanceTimeByFrame()
         composeRule.waitForIdle()
+    }
+
+    // 可拖动的转场在下一帧的 effect 里才开始切换目标，新场景会晚一到两帧挂载
+    private fun advanceUntilMounted(tag: String, maxFrames: Int = 3) {
+        repeat(maxFrames) {
+            advanceRecompositionFrame()
+            if (composeRule.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()) return
+        }
     }
 
     private companion object {

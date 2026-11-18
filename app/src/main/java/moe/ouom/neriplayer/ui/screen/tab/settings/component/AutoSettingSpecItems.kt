@@ -1,5 +1,8 @@
 package moe.ouom.neriplayer.ui.screen.tab.settings.component
 
+import moe.ouom.neriplayer.ui.theme.NeriDesign
+import moe.ouom.neriplayer.ui.settings.settingGlyphFor
+import moe.ouom.neriplayer.ui.settings.SettingGlyphIcon
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
@@ -64,7 +67,14 @@ import moe.ouom.neriplayer.ui.screen.tab.settings.page.settingsHighlightTarget
 @Composable
 internal fun rememberAutoSettingSpecRepository(): AutoSettingSpecRepository {
     val context = LocalContext.current
-    return remember(context) { AutoSettingSpecRepository(context) }
+    return remember(context) {
+        AutoSettingSpecRepository(
+            context,
+            onDownloadParallelismChanged = { value ->
+                moe.ouom.neriplayer.core.player.download.network.publishDownloadParallelism(value)
+            }
+        )
+    }
 }
 
 @Composable
@@ -99,7 +109,8 @@ internal fun <T> AutoSettingSpecListItem(
             AutoSettingSpecIcon(
                 painter = autoSettingSpecIconPainter(setting.iconRes),
                 imageVector = autoSettingSpecIconVector(setting.icon),
-                contentDescription = title
+                contentDescription = title,
+                glyphKey = setting.key
             )
         }
     } else {
@@ -248,8 +259,15 @@ private fun autoSettingSpecString(resId: Int): String? {
 private fun AutoSettingSpecIcon(
     painter: Painter?,
     imageVector: ImageVector?,
-    contentDescription: String
+    contentDescription: String,
+    glyphKey: String? = null
 ) {
+    if (NeriDesign.isClean) {
+        glyphKey?.let(::settingGlyphFor)?.let { glyph ->
+            SettingGlyphIcon(glyph, contentDescription)
+            return
+        }
+    }
     if (painter != null) {
         Icon(
             painter = painter,

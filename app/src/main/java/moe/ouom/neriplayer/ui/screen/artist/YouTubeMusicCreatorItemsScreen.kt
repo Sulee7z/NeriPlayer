@@ -1,9 +1,11 @@
 package moe.ouom.neriplayer.ui.screen.artist
 
+import moe.ouom.neriplayer.ui.i18n.asString
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import android.app.Application
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -24,7 +26,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -41,10 +42,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,23 +53,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import coil.compose.AsyncImage
-import kotlinx.coroutines.flow.collect
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorItem
-import moe.ouom.neriplayer.core.api.youtube.YouTubeMusicCreatorSection
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorItem
+import moe.ouom.neriplayer.data.model.youtube.music.YouTubeMusicCreatorSection
 import moe.ouom.neriplayer.data.model.SongItem
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.haptic.HapticTextButton
-import moe.ouom.neriplayer.ui.haptic.performHapticFeedback
-import moe.ouom.neriplayer.ui.util.currentWindowWidthDp
-import moe.ouom.neriplayer.ui.util.rememberSongDisplayCoverUrl
 import moe.ouom.neriplayer.ui.viewmodel.artist.YouTubeMusicCreatorItemsUiState
 import moe.ouom.neriplayer.ui.viewmodel.artist.YouTubeMusicCreatorItemsViewModel
 import moe.ouom.neriplayer.ui.viewmodel.artist.toCreatorSongItem
-import moe.ouom.neriplayer.util.format.formatDuration
-import moe.ouom.neriplayer.util.media.fastScrollableImageRequest
 
 internal fun resolveYouTubeMusicCreatorItemsTitle(
     creatorName: String,
@@ -135,7 +129,7 @@ fun YouTubeMusicCreatorItemsScreen(
                     HapticIconButton(onClick = onBack) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.cd_back)
+                            contentDescription = stringResource(CoreCommonR.string.cd_back)
                         )
                     }
                 },
@@ -149,14 +143,14 @@ fun YouTubeMusicCreatorItemsScreen(
                 onLoadMore = viewModel::loadMore,
                 onSongClick = viewModel::playSong,
                 offlineMode = offlineMode,
-                isTabletLayout = currentWindowWidthDp() >= 720.dp
+                isTabletLayout = LocalConfiguration.current.smallestScreenWidthDp >= 600
             )
         }
     }
 }
 
 @Composable
-private fun YouTubeMusicCreatorItemsContent(
+internal fun YouTubeMusicCreatorItemsContent(
     uiState: YouTubeMusicCreatorItemsUiState,
     listState: LazyListState,
     onRetry: () -> Unit,
@@ -170,214 +164,151 @@ private fun YouTubeMusicCreatorItemsContent(
     }
     val songs = playableItems.map { (_, song) -> song }
     val miniPlayerHeight = LocalMiniPlayerHeight.current
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.navigationBars),
         contentAlignment = Alignment.TopCenter
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .widthIn(max = 1080.dp)
-                .fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = if (isTabletLayout) 36.dp else 20.dp,
-                end = if (isTabletLayout) 36.dp else 20.dp,
-                top = 4.dp,
-                bottom = 40.dp + miniPlayerHeight
-            ),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+        val tabletLayout = useCreatorDetailSplitLayout(isTabletLayout, maxWidth.value, maxHeight.value)
+        Surface(
+            modifier = Modifier.widthIn(max = if (tabletLayout) 1000.dp else 1080.dp)
+                .fillMaxSize()
+                .padding(
+                    horizontal = if (tabletLayout) 24.dp else 0.dp,
+                    vertical = if (tabletLayout) 8.dp else 0.dp
+                )
+                .padding(bottom = if (tabletLayout) miniPlayerHeight else 0.dp)
+                .testTag("youtubeCreatorItemsPane"),
+            shape = neriRoundedShape(if (tabletLayout) 28.dp else 0.dp),
+            color = if (tabletLayout) MaterialTheme.colorScheme.surfaceContainerLow else Color.Transparent
         ) {
-            if ((uiState.loading || uiState.playbackQueueLoading) && songs.isNotEmpty()) {
-                item(key = "creator-items-loading") {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-            }
-            if (uiState.loading && songs.isEmpty()) {
-                item(key = "creator-items-first-loading") {
-                    CreatorItemsLoadingBlock()
-                }
-                return@LazyColumn
-            }
-            if (uiState.error != null && songs.isEmpty()) {
-                item(key = "creator-items-error") {
-                    CreatorItemsErrorBlock(
-                        message = uiState.error,
-                        onRetry = onRetry
-                    )
-                }
-                return@LazyColumn
-            }
-            if (uiState.error != null) {
-                item(key = "creator-items-stale-error") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = uiState.error,
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        HapticTextButton(onClick = onRetry) {
-                            Text(stringResource(R.string.action_retry))
-                        }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .widthIn(max = 1080.dp)
+                    .fillMaxSize()
+                    .testTag("youtubeCreatorItemsList"),
+                contentPadding = PaddingValues(
+                    start = if (tabletLayout) 24.dp else 20.dp,
+                    end = if (tabletLayout) 24.dp else 20.dp,
+                    top = if (tabletLayout) 12.dp else 4.dp,
+                    bottom = if (tabletLayout) 20.dp else 40.dp + miniPlayerHeight
+                ),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if ((uiState.loading || uiState.playbackQueueLoading) && songs.isNotEmpty()) {
+                    item(key = "creator-items-loading") {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                 }
-            }
-            if (uiState.playbackQueueError != null) {
-                item(key = "creator-items-playback-error") {
-                    Text(
-                        text = uiState.playbackQueueError,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-            }
-            if (songs.isEmpty()) {
-                item(key = "creator-items-empty") {
-                    Text(
-                        text = stringResource(R.string.youtube_creator_items_empty),
-                        modifier = Modifier.padding(vertical = 28.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            } else {
-                itemsIndexed(
-                    playableItems,
-                    key = { _, pair -> pair.second.id }
-                ) { index, pair ->
-                    val (item, song) = pair
-                    CreatorItemsSongRow(
-                        song = song,
-                        index = index + 1,
-                        offlineMode = offlineMode,
-                        enabled = !uiState.playbackQueueLoading && !uiState.loadingMore,
-                        onClick = { onSongClick(item) }
-                    )
-                }
-            }
-            if (uiState.loadMoreError != null) {
-                item(key = "creator-items-load-more-error") {
-                    Row(
-                        modifier = Modifier.padding(vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = uiState.loadMoreError,
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        HapticTextButton(onClick = onLoadMore) {
-                            Text(stringResource(R.string.action_retry))
-                        }
+                if (uiState.loading && songs.isEmpty()) {
+                    item(key = "creator-items-first-loading") {
+                        CreatorItemsLoadingBlock()
                     }
+                    return@LazyColumn
                 }
-            }
-            if (uiState.continuation != null) {
-                item(key = "creator-items-load-more") {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        TextButton(
-                            onClick = onLoadMore,
-                            enabled = !uiState.loadingMore && !uiState.playbackQueueLoading
-                        ) {
-                            if (uiState.loadingMore) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(Modifier.width(8.dp))
+                if (uiState.error != null && songs.isEmpty()) {
+                    item(key = "creator-items-error") {
+                        CreatorItemsErrorBlock(
+                            message = uiState.error.asString(),
+                            onRetry = onRetry
+                        )
+                    }
+                    return@LazyColumn
+                }
+                if (uiState.error != null) {
+                    item(key = "creator-items-stale-error") {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = uiState.error.asString(),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            HapticTextButton(onClick = onRetry) {
+                                Text(stringResource(CoreCommonR.string.action_retry))
                             }
-                            Text(stringResource(R.string.youtube_creator_load_more))
+                        }
+                    }
+                }
+                if (uiState.playbackQueueError != null) {
+                    item(key = "creator-items-playback-error") {
+                        Text(
+                            text = uiState.playbackQueueError.asString(),
+                            modifier = Modifier.padding(vertical = 4.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+                if (songs.isEmpty()) {
+                    item(key = "creator-items-empty") {
+                        Text(
+                            text = stringResource(CoreCommonR.string.youtube_creator_items_empty),
+                            modifier = Modifier.padding(vertical = 28.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                } else {
+                    itemsIndexed(
+                        playableItems,
+                        key = { _, pair -> pair.second.id }
+                    ) { index, pair ->
+                        val (item, song) = pair
+                        CreatorPlayableRow(
+                            song = song,
+                            index = index + 1,
+                            offlineMode = offlineMode,
+                            enabled = !uiState.playbackQueueLoading && !uiState.loadingMore,
+                            onClick = { onSongClick(item) }
+                        )
+                    }
+                }
+                if (uiState.loadMoreError != null) {
+                    item(key = "creator-items-load-more-error") {
+                        Row(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = uiState.loadMoreError.asString(),
+                                modifier = Modifier.weight(1f),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            HapticTextButton(onClick = onLoadMore) {
+                                Text(stringResource(CoreCommonR.string.action_retry))
+                            }
+                        }
+                    }
+                }
+                if (uiState.continuation != null) {
+                    item(key = "creator-items-load-more") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            TextButton(
+                                onClick = onLoadMore,
+                                enabled = !uiState.loadingMore && !uiState.playbackQueueLoading
+                            ) {
+                                if (uiState.loadingMore) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                }
+                                Text(stringResource(CoreCommonR.string.youtube_creator_load_more))
+                            }
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun CreatorItemsSongRow(
-    song: SongItem,
-    index: Int,
-    offlineMode: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    val context = LocalContext.current
-    val coverUrl = rememberSongDisplayCoverUrl(song)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled) {
-                context.performHapticFeedback()
-                onClick()
-            }
-            .padding(vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = index.toString(),
-            modifier = Modifier.width(28.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Box(
-            modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!coverUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = fastScrollableImageRequest(
-                        context = context,
-                        data = coverUrl,
-                        sizePx = 128,
-                        offlineMode = offlineMode
-                    ),
-                    contentDescription = song.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Filled.PlayCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = song.name,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = song.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        if (song.durationMs > 0L) {
-            Text(
-                text = formatDuration(song.durationMs),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }
@@ -411,7 +342,7 @@ private fun CreatorItemsErrorBlock(
             color = MaterialTheme.colorScheme.error
         )
         HapticTextButton(onClick = onRetry) {
-            Text(stringResource(R.string.action_retry))
+            Text(stringResource(CoreCommonR.string.action_retry))
         }
     }
 }

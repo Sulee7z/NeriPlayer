@@ -1,17 +1,19 @@
 package moe.ouom.neriplayer.ui.screen.tab
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.runtime.remember
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.testutil.assumeComposeHostAvailable
+import moe.ouom.neriplayer.ui.screen.tab.explore.ExploreSongRowActions
+import moe.ouom.neriplayer.ui.screen.tab.explore.ExploreSongRowState
+import moe.ouom.neriplayer.ui.screen.tab.explore.SongRow
+import moe.ouom.neriplayer.ui.screen.tab.explore.buildExploreSongInfo
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
@@ -36,40 +38,43 @@ class ExploreSongRowTest {
 
         composeRule.setContent {
             MaterialTheme {
-                val snackbarHostState = remember { SnackbarHostState() }
                 SongRow(
-                    index = 1,
-                    song = testSong(),
-                    isFavorite = false,
-                    favoriteActionEnabled = true,
-                    offlineMode = true,
-                    snackbarHostState = snackbarHostState,
-                    onClick = {},
-                    onPlayNow = {},
-                    onPlayNext = {},
-                    onAddToQueueEnd = {},
-                    onDownload = { downloadCount += 1 },
-                    onToggleFavorite = {}
+                    state = ExploreSongRowState(
+                        index = 1,
+                        song = testSong(),
+                        isFavorite = false,
+                        favoriteActionEnabled = true,
+                        offlineMode = true
+                    ),
+                    actions = ExploreSongRowActions(
+                        onClick = {},
+                        onPlayNow = {},
+                        onPlayNext = {},
+                        onAddToQueueEnd = {},
+                        onDownload = { downloadCount += 1 },
+                        onToggleFavorite = {},
+                        onCopyInfo = {}
+                    )
                 )
             }
         }
 
         composeRule.onNodeWithContentDescription(
-            context.getString(R.string.cd_more_actions)
+            context.getString(CoreCommonR.string.cd_more_actions)
         ).performClick()
 
         listOf(
-            R.string.search_result_play_keep_queue,
-            R.string.local_playlist_play_next,
-            R.string.search_result_add_to_current_queue,
-            R.string.favorite_add,
-            R.string.download_to_local,
-            R.string.action_copy_song_info
+            CoreCommonR.string.search_result_play_keep_queue,
+            CoreCommonR.string.local_playlist_play_next,
+            CoreCommonR.string.search_result_add_to_current_queue,
+            CoreCommonR.string.favorite_add,
+            CoreCommonR.string.download_to_local,
+            CoreCommonR.string.action_copy_song_info
         ).forEach { labelRes ->
             composeRule.onNodeWithText(context.getString(labelRes)).assertExists()
         }
 
-        composeRule.onNodeWithText(context.getString(R.string.download_to_local)).performClick()
+        composeRule.onNodeWithText(context.getString(CoreCommonR.string.download_to_local)).performClick()
         composeRule.runOnIdle {
             assertEquals(1, downloadCount)
         }

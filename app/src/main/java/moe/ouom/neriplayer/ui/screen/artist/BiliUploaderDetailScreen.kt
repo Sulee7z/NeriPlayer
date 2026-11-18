@@ -23,12 +23,18 @@ package moe.ouom.neriplayer.ui.screen.artist
  * Created: 2026/8/3
  */
 
+import moe.ouom.neriplayer.ui.i18n.asString
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
+import moe.ouom.neriplayer.ui.theme.NeriDesign
+import moe.ouom.neriplayer.ui.component.common.CleanSegmentedTabs
 import android.app.Application
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -78,21 +84,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.api.bili.BiliClient
-import moe.ouom.neriplayer.core.api.bili.buildBiliThumbnailUrl
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.model.bilibili.uploader.UploaderContent
+import moe.ouom.neriplayer.data.model.bilibili.uploader.UploaderContentKind
+import moe.ouom.neriplayer.data.model.bilibili.uploader.UploaderVideo
+import moe.ouom.neriplayer.data.model.bilibili.video.VideoBasicInfo
+import moe.ouom.neriplayer.platform.bilibili.api.image.buildBiliThumbnailUrl
 import moe.ouom.neriplayer.data.model.BiliUploaderSummary
-import moe.ouom.neriplayer.ui.BlurTransformation
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.data.model.playlist.FavoritePlaylist
+import moe.ouom.neriplayer.data.playlist.favorite.FAVORITE_SOURCE_BILI_ARTIST
+import moe.ouom.neriplayer.ui.theme.background.BlurTransformation
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassRole
 import moe.ouom.neriplayer.ui.effect.glass.AdvancedGlassSurface
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
@@ -104,7 +119,6 @@ import moe.ouom.neriplayer.ui.screen.playlist.preloadBiliPlaylistDetailVisuals
 import moe.ouom.neriplayer.ui.viewmodel.tab.BiliPlaylist
 import moe.ouom.neriplayer.ui.viewmodel.tab.BiliPlaylistKind
 import moe.ouom.neriplayer.ui.viewmodel.playlist.BiliVideoItem
-import moe.ouom.neriplayer.ui.util.currentWindowWidthDp
 import moe.ouom.neriplayer.util.format.formatDurationSec
 import moe.ouom.neriplayer.util.format.formatPlayCount
 import moe.ouom.neriplayer.util.media.offlineCachedImageRequest
@@ -127,18 +141,39 @@ internal fun resolveBiliUploaderBackdropSources(
     )
 }
 
+private fun BiliUploaderHeader?.matchingUploaderOrBlank(uploader: BiliUploaderSummary): BiliUploaderHeader =
+    this?.takeIf { it.mid == uploader.mid }
+        ?: BiliUploaderHeader(mid = uploader.mid, name = "", avatarUrl = "", sign = "", bannerUrl = "")
+
+internal fun createBiliUploaderFavorite(
+    uploader: BiliUploaderSummary,
+    header: BiliUploaderHeader?
+): FavoritePlaylist {
+    val currentHeader = header.matchingUploaderOrBlank(uploader)
+    return FavoritePlaylist(
+        id = uploader.mid,
+        name = currentHeader.name.ifBlank { uploader.name },
+        coverUrl = currentHeader.avatarUrl.ifBlank { uploader.avatarUrl }.takeIf { it.isNotBlank() },
+        trackCount = 0,
+        source = FAVORITE_SOURCE_BILI_ARTIST,
+        subtitle = currentHeader.sign.takeIf { it.isNotBlank() },
+        songs = emptyList()
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BiliUploaderDetailScreen(
     uploader: BiliUploaderSummary,
     onBack: () -> Unit = {},
     onPlayAudio: (List<BiliVideoItem>, Int) -> Unit = { _, _ -> },
-    onPlayParts: (BiliClient.VideoBasicInfo, Int, String) -> Unit = { _, _, _ -> },
+    onPlayParts: (VideoBasicInfo, Int, String) -> Unit = { _, _, _ -> },
     onContentClick: (BiliPlaylist) -> Unit = {},
     offlineMode: Boolean = false
 ) {
     val context = LocalContext.current
     val viewModel: BiliUploaderDetailViewModel = viewModel(
+        key = "bili_uploader_detail_view_model_${uploader.mid}",
         factory = viewModelFactory {
             initializer {
                 BiliUploaderDetailViewModel(context.applicationContext as Application)
@@ -148,9 +183,20 @@ fun BiliUploaderDetailScreen(
     val ui by viewModel.uiState.collectAsState()
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var selectedTab by rememberSaveable(uploader.mid) { mutableIntStateOf(0) }
-    val isTabletLayout = currentWindowWidthDp() >= 720.dp
-    val listState = rememberSaveable(uploader.mid, saver = LazyListState.Saver) {
+    val tabletDevice = LocalConfiguration.current.smallestScreenWidthDp >= 600
+    val videosListState = rememberSaveable(uploader.mid, saver = LazyListState.Saver) {
         LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
+    }
+    val collectionsListState = rememberSaveable(uploader.mid, saver = LazyListState.Saver) {
+        LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
+    }
+    val seriesListState = rememberSaveable(uploader.mid, saver = LazyListState.Saver) {
+        LazyListState(firstVisibleItemIndex = 0, firstVisibleItemScrollOffset = 0)
+    }
+    val listState = when (selectedTab) {
+        0 -> videosListState
+        1 -> collectionsListState
+        else -> seriesListState
     }
 
     LaunchedEffect(uploader.mid) {
@@ -171,7 +217,7 @@ fun BiliUploaderDetailScreen(
                     HapticIconButton(onClick = onBack) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.cd_back)
+                            contentDescription = stringResource(CoreCommonR.string.cd_back)
                         )
                     }
                 },
@@ -180,6 +226,7 @@ fun BiliUploaderDetailScreen(
             )
             BiliUploaderContent(
                 ui = ui,
+                followFavorite = createBiliUploaderFavorite(uploader, ui.header),
                 listState = listState,
                 selectedTab = selectedTab,
                 onTabSelected = { selectedTab = it },
@@ -191,7 +238,7 @@ fun BiliUploaderDetailScreen(
                         runCatching { viewModel.getVideoInfo(video.bvid) }
                             .onSuccess { info ->
                                 if (info.pages.size <= 1) {
-                                    onPlayAudio(ui.videos.map(BiliClient.UploaderVideo::toBiliVideoItem), index)
+                                    onPlayAudio(ui.videos.map(UploaderVideo::toBiliVideoItem), index)
                                 } else {
                                     onPlayParts(info, 0, video.coverUrl)
                                 }
@@ -210,140 +257,165 @@ fun BiliUploaderDetailScreen(
                     onContentClick(playlist)
                 },
                 offlineMode = offlineMode,
-                isTabletLayout = isTabletLayout
+                tabletDevice = tabletDevice
             )
         }
     }
 }
 
 @Composable
-private fun BiliUploaderContent(
+internal fun BiliUploaderContent(
     ui: BiliUploaderDetailUiState,
+    followFavorite: FavoritePlaylist,
     listState: LazyListState,
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
     onRetry: () -> Unit,
     onLoadMoreVideos: () -> Unit,
     onLoadMoreContents: () -> Unit,
-    onVideoClick: (BiliClient.UploaderVideo, Int) -> Unit,
-    onContentClick: (BiliClient.UploaderContent) -> Unit,
+    onVideoClick: (UploaderVideo, Int) -> Unit,
+    onContentClick: (UploaderContent) -> Unit,
     offlineMode: Boolean,
-    isTabletLayout: Boolean
+    tabletDevice: Boolean
 ) {
     val miniPlayerHeight = LocalMiniPlayerHeight.current
-    val collectionsEmptyText = stringResource(R.string.bili_uploader_collections_empty)
-    val seriesEmptyText = stringResource(R.string.bili_uploader_series_empty)
-    Box(
+    val collectionsEmptyText = stringResource(CoreCommonR.string.bili_uploader_collections_empty)
+    val seriesEmptyText = stringResource(CoreCommonR.string.bili_uploader_series_empty)
+    val showTabs = ui.videos.isNotEmpty() || ui.collections.isNotEmpty() ||
+        ui.series.isNotEmpty() || (!ui.loading && ui.error == null)
+    CreatorDetailAdaptiveLayout(
+        tabletDevice = tabletDevice,
+        miniPlayerHeight = miniPlayerHeight,
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.navigationBars),
-        contentAlignment = Alignment.TopCenter
-    ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .widthIn(max = 1080.dp)
-                .fillMaxSize(),
-            contentPadding = PaddingValues(
-                start = if (isTabletLayout) 36.dp else 20.dp,
-                end = if (isTabletLayout) 36.dp else 20.dp,
-                top = 4.dp,
-                bottom = 40.dp + miniPlayerHeight
-            ),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            item {
-                BiliUploaderHeaderCard(
-                    header = ui.header,
-                    videoCount = ui.videos.size,
-                    collectionCount = ui.collections.size,
-                    seriesCount = ui.series.size,
-                    offlineMode = offlineMode,
-                    isTabletLayout = isTabletLayout
-                )
-            }
-
-            if (ui.error != null && !ui.loading) {
-                item {
-                    Text(
-                        text = ui.error,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                }
-            }
-
-            if (ui.loading && ui.videos.isEmpty() && ui.collections.isEmpty() && ui.series.isEmpty()) {
-                item { LoadingBlock() }
-                return@LazyColumn
-            }
-
-            if (ui.error != null && ui.videos.isEmpty() && ui.collections.isEmpty() && ui.series.isEmpty()) {
-                item { ErrorBlock(error = ui.error, onRetry = onRetry) }
-                return@LazyColumn
-            }
-
-            item {
+        profile = {
+            BiliUploaderHeaderCard(
+                header = ui.header,
+                followFavorite = followFavorite,
+                videoCount = ui.videos.size,
+                collectionCount = ui.collections.size,
+                seriesCount = ui.series.size,
+                offlineMode = offlineMode,
+                isTabletLayout = true
+            )
+        }
+    ) { tabletLayout ->
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (tabletLayout && showTabs) {
                 BiliUploaderTabs(
                     selectedTab = selectedTab,
                     onTabSelected = onTabSelected
                 )
             }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .widthIn(max = 1080.dp)
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(
+                    start = if (tabletLayout) 16.dp else 20.dp,
+                    end = if (tabletLayout) 16.dp else 20.dp,
+                    top = 4.dp,
+                    bottom = if (tabletLayout) 16.dp else 40.dp + miniPlayerHeight
+                ),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                item(key = "uploader_header") {
+                    if (!tabletLayout) BiliUploaderHeaderCard(
+                        header = ui.header,
+                        followFavorite = followFavorite,
+                        videoCount = ui.videos.size,
+                        collectionCount = ui.collections.size,
+                        seriesCount = ui.series.size,
+                        offlineMode = offlineMode,
+                        isTabletLayout = false
+                    )
+                }
 
-            when (selectedTab) {
-                0 -> {
-                    if (ui.videos.isEmpty()) {
-                        item { EmptyBlock(stringResource(R.string.bili_uploader_videos_empty)) }
-                    } else {
-                        itemsIndexed(ui.videos, key = { _, video -> video.bvid }) { index, video ->
-                            BiliUploaderVideoRow(
-                                video = video,
-                                onClick = { onVideoClick(video, index) },
-                                offlineMode = offlineMode
-                            )
-                        }
-                    }
-                    if (ui.videosHasMore) {
-                        item {
-                            BiliUploaderLoadMoreButton(
-                                loading = ui.videosLoadingMore,
-                                onClick = onLoadMoreVideos
-                            )
-                        }
+                if (ui.error != null && !ui.loading) {
+                    item {
+                        Text(
+                            text = ui.error.asString(),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
                     }
                 }
 
-                1 -> {
-                    BiliUploaderContentRows(
-                        items = ui.collections,
-                        emptyText = collectionsEmptyText,
-                        onContentClick = onContentClick,
-                        offlineMode = offlineMode
-                    )
-                    if (ui.contentsHasMore) {
-                        item {
-                            BiliUploaderLoadMoreButton(
-                                loading = ui.contentsLoadingMore,
-                                onClick = onLoadMoreContents
-                            )
-                        }
-                    }
+                if (ui.loading && ui.videos.isEmpty() && ui.collections.isEmpty() && ui.series.isEmpty()) {
+                    item { LoadingBlock() }
+                    return@LazyColumn
                 }
 
-                else -> {
-                    BiliUploaderContentRows(
-                        items = ui.series,
-                        emptyText = seriesEmptyText,
-                        onContentClick = onContentClick,
-                        offlineMode = offlineMode
+                if (ui.error != null && ui.videos.isEmpty() && ui.collections.isEmpty() && ui.series.isEmpty()) {
+                    item { ErrorBlock(error = ui.error.asString(), onRetry = onRetry) }
+                    return@LazyColumn
+                }
+
+                item(key = "uploader_tabs") {
+                    if (!tabletLayout) BiliUploaderTabs(
+                        selectedTab = selectedTab,
+                        onTabSelected = onTabSelected
                     )
-                    if (ui.contentsHasMore) {
-                        item {
-                            BiliUploaderLoadMoreButton(
-                                loading = ui.contentsLoadingMore,
-                                onClick = onLoadMoreContents
-                            )
+                }
+
+                when (selectedTab) {
+                    0 -> {
+                        if (ui.videos.isEmpty()) {
+                            item { EmptyBlock(stringResource(CoreCommonR.string.bili_uploader_videos_empty)) }
+                        } else {
+                            itemsIndexed(ui.videos, key = { _, video -> video.bvid }) { index, video ->
+                                BiliUploaderVideoRow(
+                                    video = video,
+                                    onClick = { onVideoClick(video, index) },
+                                    offlineMode = offlineMode
+                                )
+                            }
+                        }
+                        if (ui.videosHasMore) {
+                            item {
+                                BiliUploaderLoadMoreButton(
+                                    loading = ui.videosLoadingMore,
+                                    onClick = onLoadMoreVideos
+                                )
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        BiliUploaderContentRows(
+                            items = ui.collections,
+                            emptyText = collectionsEmptyText,
+                            onContentClick = onContentClick,
+                            offlineMode = offlineMode
+                        )
+                        if (ui.contentsHasMore) {
+                            item {
+                                BiliUploaderLoadMoreButton(
+                                    loading = ui.contentsLoadingMore,
+                                    onClick = onLoadMoreContents
+                                )
+                            }
+                        }
+                    }
+
+                    else -> {
+                        BiliUploaderContentRows(
+                            items = ui.series,
+                            emptyText = seriesEmptyText,
+                            onContentClick = onContentClick,
+                            offlineMode = offlineMode
+                        )
+                        if (ui.contentsHasMore) {
+                            item {
+                                BiliUploaderLoadMoreButton(
+                                    loading = ui.contentsLoadingMore,
+                                    onClick = onLoadMoreContents
+                                )
+                            }
                         }
                     }
                 }
@@ -353,9 +425,9 @@ private fun BiliUploaderContent(
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.BiliUploaderContentRows(
-    items: List<BiliClient.UploaderContent>,
+    items: List<UploaderContent>,
     emptyText: String,
-    onContentClick: (BiliClient.UploaderContent) -> Unit,
+    onContentClick: (UploaderContent) -> Unit,
     offlineMode: Boolean
 ) {
     if (items.isEmpty()) {
@@ -374,45 +446,108 @@ private fun androidx.compose.foundation.lazy.LazyListScope.BiliUploaderContentRo
 @Composable
 private fun BiliUploaderHeaderCard(
     header: BiliUploaderHeader?,
+    followFavorite: FavoritePlaylist,
     videoCount: Int,
     collectionCount: Int,
     seriesCount: Int,
     offlineMode: Boolean,
     isTabletLayout: Boolean
 ) {
-    val context = LocalContext.current
-    val heroHeight = if (isTabletLayout) 260.dp else 210.dp
-    val avatarSize = if (isTabletLayout) 82.dp else 64.dp
-    val backdrop = resolveBiliUploaderBackdropSources(
-        bannerUrl = header?.bannerUrl,
-        avatarUrl = header?.avatarUrl
-    )
-    val avatarBackdropRequest = remember(
-        context,
-        backdrop.avatarUrl,
-        offlineMode
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        shape = neriRoundedShape(28.dp)
     ) {
-        offlineCachedImageRequest(
-            context = context,
-            data = buildBiliThumbnailUrl(
-                imageUrl = backdrop.avatarUrl,
-                width = UPLOADER_AVATAR_BACKDROP_SIZE_PX,
-                height = UPLOADER_AVATAR_BACKDROP_SIZE_PX
-            ),
-            sizePx = UPLOADER_AVATAR_BACKDROP_SIZE_PX,
-            allowHardware = false,
-            offlineMode = offlineMode,
-            transformations = if (backdrop.avatarUrl.isNotEmpty()) {
-                listOf(
-                    BlurTransformation(
-                        context = context,
-                        radius = UPLOADER_AVATAR_BACKDROP_BLUR_RADIUS
-                    )
-                )
-            } else {
-                emptyList()
-            }
+        BiliUploaderHero(header = header, offlineMode = offlineMode, isTabletLayout = isTabletLayout)
+        BiliUploaderProfileDetails(
+            header = header,
+            followFavorite = followFavorite,
+            videoCount = videoCount,
+            collectionCount = collectionCount,
+            seriesCount = seriesCount,
+            isTabletLayout = isTabletLayout
         )
+    }
+}
+
+private fun biliUploaderAvatarBackdropRequest(
+    context: Context,
+    avatarUrl: String,
+    offlineMode: Boolean
+): ImageRequest = offlineCachedImageRequest(
+    context = context,
+    data = buildBiliThumbnailUrl(
+        imageUrl = avatarUrl,
+        width = UPLOADER_AVATAR_BACKDROP_SIZE_PX,
+        height = UPLOADER_AVATAR_BACKDROP_SIZE_PX
+    ),
+    sizePx = UPLOADER_AVATAR_BACKDROP_SIZE_PX,
+    allowHardware = false,
+    offlineMode = offlineMode,
+    transformations = if (avatarUrl.isNotEmpty()) {
+        listOf(
+            BlurTransformation(
+                context = context,
+                radius = UPLOADER_AVATAR_BACKDROP_BLUR_RADIUS
+            )
+        )
+    } else {
+        emptyList()
+    }
+)
+
+@Composable
+private fun BiliUploaderHero(
+    header: BiliUploaderHeader?,
+    offlineMode: Boolean,
+    isTabletLayout: Boolean
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(if (isTabletLayout) 160.dp else 210.dp)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        BiliUploaderBackdrop(
+            backdrop = resolveBiliUploaderBackdropSources(
+                bannerUrl = header?.bannerUrl,
+                avatarUrl = header?.avatarUrl
+            ),
+            bannerDescription = header?.name,
+            offlineMode = offlineMode
+        )
+        Box(
+            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.32f))
+        )
+        if (isTabletLayout) {
+            Box(Modifier.align(Alignment.BottomStart).padding(16.dp)) {
+                BiliUploaderAvatar(header = header, offlineMode = offlineMode, size = 82.dp)
+            }
+        } else Row(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BiliUploaderAvatar(header = header, offlineMode = offlineMode, size = 64.dp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                BiliUploaderIdentity(header, contentColor = Color.White, maxNameLines = 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BiliUploaderBackdrop(
+    backdrop: BiliUploaderBackdropSources,
+    bannerDescription: String?,
+    offlineMode: Boolean
+) {
+    val context = LocalContext.current
+    val avatarBackdropRequest = remember(context, backdrop.avatarUrl, offlineMode) {
+        biliUploaderAvatarBackdropRequest(context, backdrop.avatarUrl, offlineMode)
     }
     val bannerRequest = remember(context, backdrop.bannerUrl, offlineMode) {
         offlineCachedImageRequest(
@@ -426,121 +561,135 @@ private fun BiliUploaderHeaderCard(
             offlineMode = offlineMode
         )
     }
-    ElevatedCard(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        shape = RoundedCornerShape(28.dp)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(heroHeight)
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            if (backdrop.avatarUrl.isNotEmpty()) {
-                AsyncImage(
-                    model = avatarBackdropRequest,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            if (backdrop.bannerUrl.isNotEmpty()) {
-                AsyncImage(
-                    model = bannerRequest,
-                    contentDescription = header?.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.32f))
+    if (backdrop.avatarUrl.isNotEmpty()) {
+        AsyncImage(
+            model = avatarBackdropRequest,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+    if (backdrop.bannerUrl.isNotEmpty()) {
+        AsyncImage(
+            model = bannerRequest,
+            contentDescription = bannerDescription,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+}
+
+@Composable
+private fun BiliUploaderAvatar(
+    header: BiliUploaderHeader?,
+    offlineMode: Boolean,
+    size: Dp
+) {
+    val context = LocalContext.current
+    val avatarUrl = header?.avatarUrl
+    AsyncImage(
+        model = remember(context, avatarUrl, offlineMode) {
+            offlineCachedImageRequest(
+                context = context,
+                data = buildBiliThumbnailUrl(
+                    imageUrl = avatarUrl.orEmpty(),
+                    width = 160,
+                    height = 160
+                ),
+                sizePx = 160,
+                allowHardware = false,
+                offlineMode = offlineMode
             )
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AsyncImage(
-                    model = remember(context, header?.avatarUrl, offlineMode) {
-                        offlineCachedImageRequest(
-                            context = context,
-                            data = buildBiliThumbnailUrl(
-                                imageUrl = header?.avatarUrl.orEmpty(),
-                                width = 160,
-                                height = 160
-                            ),
-                            sizePx = 160,
-                            allowHardware = false,
-                            offlineMode = offlineMode
+        },
+        contentDescription = header?.name,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+    )
+}
+
+@Composable
+private fun BiliUploaderProfileDetails(
+    header: BiliUploaderHeader?,
+    followFavorite: FavoritePlaylist,
+    videoCount: Int,
+    collectionCount: Int,
+    seriesCount: Int,
+    isTabletLayout: Boolean
+) {
+    Column(modifier = Modifier.padding(if (isTabletLayout) 16.dp else 20.dp)) {
+        if (isTabletLayout) {
+            BiliUploaderIdentity(
+                header = header,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                maxNameLines = 3
+            )
+            Spacer(Modifier.height(12.dp))
+        }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            AssistChip(
+                onClick = {},
+                label = {
+                    Text(pluralStringResource(CoreCommonR.plurals.bili_uploader_video_count, videoCount, videoCount))
+                }
+            )
+            AssistChip(
+                onClick = {},
+                label = {
+                    Text(
+                        pluralStringResource(
+                            CoreCommonR.plurals.bili_uploader_collection_count,
+                            collectionCount,
+                            collectionCount
                         )
-                    },
-                    contentDescription = header?.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(avatarSize)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                )
-                Spacer(Modifier.width(14.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        text = header?.name.orEmpty(),
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = Color.White,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = stringResource(R.string.bili_uploader_mid, header?.mid ?: 0L),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.White.copy(alpha = 0.82f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
+            )
+            AssistChip(
+                onClick = {},
+                label = {
+                    Text(pluralStringResource(CoreCommonR.plurals.bili_uploader_series_count, seriesCount, seriesCount))
+                }
+            )
         }
-        Column(modifier = Modifier.padding(20.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(
-                    onClick = {},
-                    label = {
-                        Text(stringResource(R.string.bili_uploader_video_count, videoCount))
-                    }
-                )
-                AssistChip(
-                    onClick = {},
-                    label = {
-                        Text(
-                            stringResource(
-                                R.string.bili_uploader_collection_count,
-                                collectionCount
-                            )
-                        )
-                    }
-                )
-                AssistChip(
-                    onClick = {},
-                    label = {
-                        Text(stringResource(R.string.bili_uploader_series_count, seriesCount))
-                    }
-                )
-            }
-            if (!header?.sign.isNullOrBlank()) {
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = header.sign.orEmpty(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+        val sign = header?.sign
+        if (!sign.isNullOrBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = sign,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
         }
+        Spacer(Modifier.height(14.dp))
+        CreatorFollowButton(favorite = followFavorite)
     }
+}
+
+@Composable
+private fun BiliUploaderIdentity(
+    header: BiliUploaderHeader?,
+    contentColor: Color,
+    maxNameLines: Int
+) {
+    Text(
+        text = header?.name.orEmpty(),
+        style = MaterialTheme.typography.headlineSmall,
+        color = contentColor,
+        maxLines = maxNameLines,
+        overflow = TextOverflow.Ellipsis
+    )
+    Text(
+        text = stringResource(CoreCommonR.string.bili_uploader_mid, header?.mid ?: 0L),
+        style = MaterialTheme.typography.bodySmall,
+        color = contentColor.copy(alpha = 0.82f),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
+    )
 }
 
 @Composable
@@ -548,17 +697,30 @@ private fun BiliUploaderTabs(
     selectedTab: Int,
     onTabSelected: (Int) -> Unit
 ) {
+    if (NeriDesign.isClean) {
+        CleanSegmentedTabs(
+            labels = listOf(
+                stringResource(CoreCommonR.string.bili_uploader_tab_videos),
+                stringResource(CoreCommonR.string.bili_uploader_tab_collections),
+                stringResource(CoreCommonR.string.bili_uploader_tab_series)
+            ),
+            selectedIndex = selectedTab,
+            onSelected = onTabSelected,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+        )
+        return
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 8.dp),
-        shape = RoundedCornerShape(24.dp),
+        shape = neriRoundedShape(24.dp),
         color = Color.Transparent
     ) {
         AdvancedGlassSurface(
             role = AdvancedGlassRole.ScreenTopTab,
             modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
+            shape = neriRoundedShape(24.dp),
             fallbackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
             tintColor = MaterialTheme.colorScheme.surfaceVariant
         ) {
@@ -570,19 +732,19 @@ private fun BiliUploaderTabs(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { onTabSelected(0) },
-                    text = { Text(stringResource(R.string.bili_uploader_tab_videos)) },
+                    text = { Text(stringResource(CoreCommonR.string.bili_uploader_tab_videos)) },
                     icon = { Icon(Icons.Outlined.VideoLibrary, contentDescription = null) }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { onTabSelected(1) },
-                    text = { Text(stringResource(R.string.bili_uploader_tab_collections)) },
+                    text = { Text(stringResource(CoreCommonR.string.bili_uploader_tab_collections)) },
                     icon = { Icon(Icons.Outlined.Folder, contentDescription = null) }
                 )
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { onTabSelected(2) },
-                    text = { Text(stringResource(R.string.bili_uploader_tab_series)) },
+                    text = { Text(stringResource(CoreCommonR.string.bili_uploader_tab_series)) },
                     icon = {
                         Icon(
                             Icons.AutoMirrored.Outlined.PlaylistPlay,
@@ -597,7 +759,7 @@ private fun BiliUploaderTabs(
 
 @Composable
 private fun BiliUploaderVideoRow(
-    video: BiliClient.UploaderVideo,
+    video: UploaderVideo,
     onClick: () -> Unit,
     offlineMode: Boolean
 ) {
@@ -631,7 +793,7 @@ private fun BiliUploaderVideoRow(
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(width = 100.dp, height = 60.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(neriRoundedShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         )
         Spacer(Modifier.width(12.dp))
@@ -645,7 +807,7 @@ private fun BiliUploaderVideoRow(
             val playCount = video.play?.let { formatPlayCount(context, it) }
             val duration = formatDurationSec(video.durationSec)
             Text(
-                text = listOfNotNull(playCount, duration.takeIf { it.isNotBlank() }).joinToString(" · "),
+                text = listOfNotNull(playCount, duration).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -657,7 +819,7 @@ private fun BiliUploaderVideoRow(
 
 @Composable
 private fun BiliUploaderContentRow(
-    content: BiliClient.UploaderContent,
+    content: UploaderContent,
     onClick: () -> Unit,
     offlineMode: Boolean
 ) {
@@ -691,7 +853,7 @@ private fun BiliUploaderContentRow(
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(58.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(neriRoundedShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
         )
         Spacer(Modifier.width(14.dp))
@@ -703,7 +865,7 @@ private fun BiliUploaderContentRow(
                 overflow = TextOverflow.Ellipsis
             )
             val subtitle = content.description.ifBlank {
-                stringResource(R.string.bili_uploader_content_count, content.total)
+                pluralStringResource(CoreCommonR.plurals.bili_uploader_content_count, content.total, content.total)
             }
             Text(
                 text = subtitle,
@@ -714,7 +876,7 @@ private fun BiliUploaderContentRow(
             )
         }
         Icon(
-            imageVector = if (content.kind == BiliClient.UploaderContentKind.COLLECTION) {
+            imageVector = if (content.kind == UploaderContentKind.COLLECTION) {
                 Icons.Outlined.Folder
             } else {
                 Icons.AutoMirrored.Outlined.PlaylistPlay
@@ -744,12 +906,12 @@ private fun BiliUploaderLoadMoreButton(
                 )
                 Spacer(Modifier.width(8.dp))
             }
-            Text(stringResource(R.string.bili_uploader_load_more))
+            Text(stringResource(CoreCommonR.string.bili_uploader_load_more))
         }
     }
 }
 
-private fun BiliClient.UploaderContent.toBiliPlaylist(uploaderName: String): BiliPlaylist {
+private fun UploaderContent.toBiliPlaylist(uploaderName: String): BiliPlaylist {
     return BiliPlaylist(
         mediaId = id,
         fid = id,
@@ -758,8 +920,8 @@ private fun BiliClient.UploaderContent.toBiliPlaylist(uploaderName: String): Bil
         count = total,
         coverUrl = coverUrl,
         kind = when (kind) {
-            BiliClient.UploaderContentKind.COLLECTION -> BiliPlaylistKind.COLLECTION
-            BiliClient.UploaderContentKind.SERIES -> BiliPlaylistKind.SERIES
+            UploaderContentKind.COLLECTION -> BiliPlaylistKind.COLLECTION
+            UploaderContentKind.SERIES -> BiliPlaylistKind.SERIES
         },
         subtitle = uploaderName
     )

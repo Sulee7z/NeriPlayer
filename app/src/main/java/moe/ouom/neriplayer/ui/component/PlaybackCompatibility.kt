@@ -2,7 +2,6 @@ package moe.ouom.neriplayer.ui.component
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import moe.ouom.neriplayer.core.player.model.PlaybackSoundState
 
 typealias NeriMiniPlayerDefaults = moe.ouom.neriplayer.ui.component.playback.NeriMiniPlayerDefaults
 typealias PlaybackSourceType = moe.ouom.neriplayer.ui.component.playback.PlaybackSourceType
@@ -22,7 +21,13 @@ fun NeriMiniPlayer(
     enableBlur: Boolean = true,
     offlineMode: Boolean = false,
     isPlaybackWaiting: Boolean = false,
-    isAudioRouteMuted: Boolean = false
+    isAudioRouteMuted: Boolean = false,
+    visualCoverUrl: String? = null,
+    coverIdentityKey: String? = null,
+    visualCoverIdentityKey: String? = null,
+    hasCurrentSong: Boolean = true,
+    tabletControls: moe.ouom.neriplayer.ui.component.playback.MiniPlayerTabletControls? = null,
+    clearCover: Boolean = false
 ) {
     moe.ouom.neriplayer.ui.component.playback.NeriMiniPlayer(
         title = title,
@@ -38,32 +43,13 @@ fun NeriMiniPlayer(
         enableBlur = enableBlur,
         offlineMode = offlineMode,
         isPlaybackWaiting = isPlaybackWaiting,
-        isAudioRouteMuted = isAudioRouteMuted
-    )
-}
-
-@Composable
-fun PlaybackSoundSheet(
-    state: PlaybackSoundState,
-    onSpeedChange: (Float, Boolean) -> Unit,
-    onPitchChange: (Float, Boolean) -> Unit,
-    onLoudnessGainChange: (Int, Boolean) -> Unit,
-    onEqualizerEnabledChange: (Boolean) -> Unit,
-    onPresetSelected: (String) -> Unit,
-    onBandLevelChange: (Int, Int, Boolean) -> Unit,
-    onReset: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    moe.ouom.neriplayer.ui.component.playback.PlaybackSoundSheet(
-        state = state,
-        onSpeedChange = onSpeedChange,
-        onPitchChange = onPitchChange,
-        onLoudnessGainChange = onLoudnessGainChange,
-        onEqualizerEnabledChange = onEqualizerEnabledChange,
-        onPresetSelected = onPresetSelected,
-        onBandLevelChange = onBandLevelChange,
-        onReset = onReset,
-        onDismiss = onDismiss
+        isAudioRouteMuted = isAudioRouteMuted,
+        visualCoverUrl = visualCoverUrl,
+        coverIdentityKey = coverIdentityKey,
+        visualCoverIdentityKey = visualCoverIdentityKey,
+        hasCurrentSong = hasCurrentSong,
+        tabletControls = tabletControls,
+        clearCover = clearCover
     )
 }
 

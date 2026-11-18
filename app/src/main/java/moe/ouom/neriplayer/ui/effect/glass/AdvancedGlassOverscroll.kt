@@ -1,12 +1,15 @@
 package moe.ouom.neriplayer.ui.effect.glass
 
+import androidx.compose.animation.core.AnimationState
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateTo
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.OverscrollEffect
 import androidx.compose.foundation.OverscrollFactory
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.draw.drawBehind
@@ -24,8 +27,13 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.exp
@@ -87,30 +95,34 @@ private class AdvancedGlassOverscrollEffect : OverscrollEffect {
         if (
             abs(offsetY) > OFFSET_THRESHOLD_PX &&
             delta.y != 0f &&
-            sign(delta.y) != sign(rawDragY)
+            sign(delta.y) != sign(offsetY)
         ) {
-            val consumed = if (abs(rawDragY) <= abs(delta.y)) -rawDragY else delta.y
-            if (abs(rawDragY) <= abs(delta.y)) {
+            // 反向手势只需收回可见位移，不能继续偿还阻尼前的隐藏拖动量
+            val consumed = if (abs(offsetY) <= abs(delta.y)) -offsetY else delta.y
+            if (abs(offsetY) <= abs(delta.y)) {
                 resetOffset()
-                scrollDeltaY -= consumed
-                overscrollConsumedY = consumed
             } else {
-                applyDrag(consumed)
-                scrollDeltaY = 0f
-                overscrollConsumedY = delta.y
+                offsetY += consumed
+                rawDragY = restoredAdvancedGlassOverscrollDrag(offsetY, resistanceScalePx)
             }
+            scrollDeltaY -= consumed
+            overscrollConsumedY = consumed
         }
 
         val adjustedDelta = Offset(delta.x, scrollDeltaY)
         val scrollConsumed = performScroll(adjustedDelta)
         val unconsumedY = adjustedDelta.y - scrollConsumed.y
-        if (unconsumedY != 0f) {
+        // 列表的亚像素舍入残差不代表真正到达边界
+        val overscrollDeltaY = if (abs(unconsumedY) > MIN_OVERSCROLL_DELTA_PX) {
             applyDrag(unconsumedY)
+            unconsumedY
+        } else {
+            0f
         }
 
         return Offset(
             x = scrollConsumed.x,
-            y = overscrollConsumedY + scrollConsumed.y + unconsumedY
+            y = overscrollConsumedY + scrollConsumed.y + overscrollDeltaY
         )
     }
 
@@ -122,19 +134,72 @@ private class AdvancedGlassOverscrollEffect : OverscrollEffect {
 
         var flingVelocity = velocity
         val hadActiveOverscroll = abs(offsetY) > OFFSET_THRESHOLD_PX && velocity.y != 0f
+        if (hadActiveOverscroll && sign(velocity.y) != sign(offsetY)) {
+            handOffReverseFling(velocity, performFling)
+            return
+        }
         if (hadActiveOverscroll) {
             startReturnAnimation(velocity.y)
-            flingVelocity = if (sign(velocity.y) == sign(offsetY)) {
-                Velocity(velocity.x, 0f)
-            } else {
-                Velocity(velocity.x, velocity.y / REVERSE_FLING_ATTENUATION)
-            }
+            flingVelocity = Velocity(velocity.x, 0f)
         }
 
         val consumed = performFling(flingVelocity)
         val remaining = flingVelocity - consumed
         if (!hadActiveOverscroll) {
             startReturnAnimation(remaining.y / POST_FLING_ATTENUATION)
+        }
+    }
+
+    private suspend fun handOffReverseFling(
+        incoming: Velocity,
+        performFling: suspend (Velocity) -> Velocity
+    ) = coroutineScope {
+        val release = async<Unit>(start = CoroutineStart.LAZY) {
+            var remainingVelocityY = 0f
+            // 动量回收和列表 fling 一样不随系统动画倍率改变
+            withContext(ReverseFlingPhysicsDurationScale) {
+                val direction = sign(offsetY)
+                AnimationState(
+                    initialValue = offsetY,
+                    initialVelocity = incoming.y.coerceIn(
+                        -resistanceScalePx * MAX_INITIAL_VELOCITY_SCALE_MULTIPLIER,
+                        resistanceScalePx * MAX_INITIAL_VELOCITY_SCALE_MULTIPLIER
+                    )
+                ).animateTo(
+                    targetValue = 0f,
+                    animationSpec = spring(
+                        dampingRatio = CRITICAL_DAMPING_RATIO,
+                        stiffness = springStiffness(
+                            advancedGlassOverscrollReturnPeriodSeconds(offsetY, resistanceScalePx)
+                        ),
+                        visibilityThreshold = OFFSET_THRESHOLD_PX
+                    )
+                ) {
+                    val crossedOrigin = isRunning && value * direction <= 0f
+                    val maxOffset = maxAdvancedGlassOverscrollOffset(resistanceScalePx)
+                    offsetY = if (direction > 0f) {
+                        value.coerceIn(0f, maxOffset)
+                    } else {
+                        value.coerceIn(-maxOffset, 0f)
+                    }
+                    rawDragY = restoredAdvancedGlassOverscrollDrag(offsetY, resistanceScalePx)
+                    if (crossedOrigin) {
+                        // 长帧可能错过过零点，只能交接仍指向列表内部的余速
+                        remainingVelocityY = if (this.velocity * incoming.y > 0f) this.velocity else 0f
+                        cancelAnimation()
+                    }
+                }
+            }
+            ensureActive()
+            resetOffset()
+            performFling(Velocity(incoming.x, remainingVelocityY))
+        }
+        animationJob = release
+        try {
+            release.start()
+            release.await()
+        } finally {
+            if (animationJob === release) animationJob = null
         }
     }
 
@@ -183,6 +248,7 @@ private class AdvancedGlassOverscrollEffect : OverscrollEffect {
         }
         val launch = launchAnimation ?: return
         animationJob?.cancel()
+        val returnDirection = sign(if (offsetY != 0f) offsetY else initialVelocity)
         animationJob = launch {
             val stiffness = springStiffness(
                 advancedGlassOverscrollReturnPeriodSeconds(
@@ -203,10 +269,13 @@ private class AdvancedGlassOverscrollEffect : OverscrollEffect {
                     visibilityThreshold = OFFSET_THRESHOLD_PX
                 )
             ) { value, _ ->
-                offsetY = value.coerceIn(
-                    -maxAdvancedGlassOverscrollOffset(resistanceScalePx),
-                    maxAdvancedGlassOverscrollOffset(resistanceScalePx)
-                )
+                val maxOffset = maxAdvancedGlassOverscrollOffset(resistanceScalePx)
+                // 回弹不能跨过原点，制造相反边缘并吞掉下一次滑动
+                offsetY = if (returnDirection > 0f) {
+                    value.coerceIn(0f, maxOffset)
+                } else {
+                    value.coerceIn(-maxOffset, 0f)
+                }
                 rawDragY = restoredAdvancedGlassOverscrollDrag(offsetY, resistanceScalePx)
             }
             resetOffset()
@@ -356,13 +425,17 @@ internal fun advancedGlassOverscrollReturnPeriodSeconds(
 private fun springStiffness(periodSeconds: Float): Float =
     ((2.0 * PI) / periodSeconds).pow(2.0).toFloat()
 
+private object ReverseFlingPhysicsDurationScale : MotionDurationScale {
+    override val scaleFactor: Float = 1f
+}
+
 private const val OVERSCROLL_RESISTANCE_SCALE_DP = 108f
 private const val OFFSET_THRESHOLD_PX = 1f
+private const val MIN_OVERSCROLL_DELTA_PX = 0.5f
 private const val CRITICAL_DAMPING_RATIO = 1f
 private const val MIN_RETURN_SPRING_PERIOD_SECONDS = 0.44f
 private const val MAX_RETURN_SPRING_PERIOD_SECONDS = 0.62f
 private const val MAX_INITIAL_VELOCITY_SCALE_MULTIPLIER = 18f
-private const val REVERSE_FLING_ATTENUATION = 2.13333f
 private const val POST_FLING_ATTENUATION = 1.53333f
 private const val MAX_OVERSCROLL_OFFSET_RATIO = 0.66f
 private const val INVERSE_EPSILON = 0.0001f

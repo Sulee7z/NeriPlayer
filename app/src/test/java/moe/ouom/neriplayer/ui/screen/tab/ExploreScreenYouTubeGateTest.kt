@@ -1,6 +1,12 @@
 package moe.ouom.neriplayer.ui.screen.tab
 
 import androidx.compose.ui.unit.dp
+import moe.ouom.neriplayer.ui.screen.tab.explore.exploreSearchResultsBottomPadding
+import moe.ouom.neriplayer.ui.screen.tab.explore.exploreSearchScrollContextKey
+import moe.ouom.neriplayer.ui.screen.tab.explore.exploreSearchSourceDisplayOrder
+import moe.ouom.neriplayer.ui.screen.tab.explore.shouldClearExploreSearchQuery
+import moe.ouom.neriplayer.ui.screen.tab.explore.shouldRenderExploreSearchResults
+import moe.ouom.neriplayer.ui.screen.tab.explore.shouldResetExploreSearchScroll
 import moe.ouom.neriplayer.ui.viewmodel.tab.NeteaseExploreSearchType
 import moe.ouom.neriplayer.ui.viewmodel.tab.SearchSource
 import moe.ouom.neriplayer.ui.viewmodel.tab.YouTubeExploreSearchType
@@ -27,6 +33,16 @@ class ExploreScreenYouTubeGateTest {
             ),
             sources
         )
+    }
+
+    @Test
+    fun `qq music search is appended while preserving the upstream YouTube gate`() {
+        assertEquals(SearchSource.QQ_MUSIC,
+            exploreSearchSourceDisplayOrder(isInternational = false, youtubeEnabled = true, includeQqMusic = true)[3])
+        assertTrue(exploreSearchSourceDisplayOrder(isInternational = false, youtubeEnabled = false, includeQqMusic = true)
+            .contains(SearchSource.QQ_MUSIC))
+        assertFalse(exploreSearchSourceDisplayOrder(isInternational = false, youtubeEnabled = false, includeQqMusic = true)
+            .contains(SearchSource.YOUTUBE_MUSIC))
     }
 
     @Test

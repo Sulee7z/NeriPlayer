@@ -24,6 +24,8 @@ package moe.ouom.neriplayer.ui.viewmodel.auth
  */
 
 import android.app.Application
+import moe.ouom.neriplayer.ui.i18n.UiText
+import java.io.IOException
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -34,10 +36,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.R
+import moe.ouom.neriplayer.common.R as CoreCommonR
 import moe.ouom.neriplayer.core.di.AppContainer
-import moe.ouom.neriplayer.data.auth.common.parseRawCookieText
-import moe.ouom.neriplayer.data.auth.common.SavedCookieAuthHealth
+import moe.ouom.neriplayer.network.http.parsing.parseRawCookieText
+import moe.ouom.neriplayer.data.model.auth.SavedCookieAuthHealth
 import moe.ouom.neriplayer.data.auth.web.clearWebViewLoginState
 import moe.ouom.neriplayer.data.auth.web.WebLoginPlatform
 import org.json.JSONObject
@@ -48,7 +50,7 @@ data class BiliAuthUiState(
 )
 
 sealed interface BiliAuthEvent {
-    data class ShowSnack(val message: String) : BiliAuthEvent
+    data class ShowSnack(val message: UiText) : BiliAuthEvent
     data object LoginSuccess : BiliAuthEvent
 }
 
@@ -99,14 +101,23 @@ class BiliAuthViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearCookies() {
         viewModelScope.launch(Dispatchers.IO) {
-            repo.clear()
+            try {
+                repo.clear()
+            } catch (_: IOException) {
+                _events.send(
+                    BiliAuthEvent.ShowSnack(
+                        UiText.Resource(CoreCommonR.string.auth_storage_clear_failed)
+                    )
+                )
+                return@launch
+            }
             clearWebViewLoginState(
                 context = getApplication(),
                 platform = WebLoginPlatform.BILI
             )
             _events.send(
                 BiliAuthEvent.ShowSnack(
-                    getApplication<Application>().getString(R.string.auth_cookie_cleared)
+                    UiText.Resource(CoreCommonR.string.auth_cookie_cleared)
                 )
             )
         }
@@ -121,7 +132,7 @@ class BiliAuthViewModel(app: Application) : AndroidViewModel(app) {
             if (map.isEmpty()) {
                 _events.send(
                     BiliAuthEvent.ShowSnack(
-                        getApplication<Application>().getString(R.string.auth_cookie_empty)
+                        UiText.Resource(CoreCommonR.string.auth_cookie_empty)
                     )
                 )
                 return@launch
@@ -129,13 +140,22 @@ class BiliAuthViewModel(app: Application) : AndroidViewModel(app) {
             if (map["SESSDATA"].isNullOrBlank()) {
                 _events.send(
                     BiliAuthEvent.ShowSnack(
-                        getApplication<Application>().getString(R.string.auth_cookie_invalid)
+                        UiText.Resource(CoreCommonR.string.auth_cookie_invalid)
                     )
                 )
                 return@launch
             }
 
-            repo.saveCookies(map)
+            try {
+                repo.saveCookies(map)
+            } catch (_: IOException) {
+                _events.send(
+                    BiliAuthEvent.ShowSnack(
+                        UiText.Resource(CoreCommonR.string.auth_storage_save_failed)
+                    )
+                )
+                return@launch
+            }
             _events.send(BiliAuthEvent.LoginSuccess)
         }
     }

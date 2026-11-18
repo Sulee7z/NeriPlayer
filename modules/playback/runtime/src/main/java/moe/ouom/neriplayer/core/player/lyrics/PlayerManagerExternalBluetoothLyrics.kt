@@ -1,0 +1,336 @@
+package moe.ouom.neriplayer.core.player.lyrics
+
+import moe.ouom.neriplayer.data.identity.sameIdentityAs
+import moe.ouom.neriplayer.data.identity.stableKey
+
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import moe.ouom.neriplayer.common.logging.NPLogger
+import moe.ouom.neriplayer.core.player.PlayerManager
+import moe.ouom.neriplayer.core.player.audio.isBluetoothOutputType
+import moe.ouom.neriplayer.core.player.metadata.ExternalBluetoothLyricPayload
+import moe.ouom.neriplayer.core.player.metadata.findExternalBluetoothLyricLine
+import moe.ouom.neriplayer.core.player.metadata.msUntilNextExternalLyricLine
+import moe.ouom.neriplayer.core.player.metadata.findFloatingTranslatedLyricLine
+import moe.ouom.neriplayer.core.player.metadata.resolveExternalBluetoothLyricPayload
+import moe.ouom.neriplayer.data.model.SongItem
+import moe.ouom.neriplayer.core.player.policy.progress.PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS
+import moe.ouom.neriplayer.core.player.policy.progress.resolveLyricBoundaryProgressIntervalMs
+import moe.ouom.neriplayer.data.model.settings.lyrics.LyricSourcePreference
+import moe.ouom.neriplayer.lyrics.offset.resolveEffectiveLyricOffsetMs
+import moe.ouom.neriplayer.data.model.lyrics.LyricEntry
+import moe.ouom.neriplayer.lyrics.parser.matchTranslationsToLineIndices
+
+internal fun PlayerManager.syncExternalBluetoothLyrics(song: SongItem?): Unit = synchronized(this) {
+    val currentSong = _currentSongFlow.value
+    if (currentSong != null && !currentSong.sameIdentityAs(song)) return@synchronized
+    val request = colorOsLyricTimelineOwner.begin(song?.stableKey())
+    externalLyricRequest = request
+    externalTranslationRequestId++
+    externalBluetoothLyricsLoadJob?.cancel()
+    externalBluetoothLyricsLoadJob = null
+    externalBluetoothTranslationLoadJob?.cancel()
+    externalBluetoothTranslationLoadJob = null
+    externalBluetoothLyrics = emptyList()
+    externalBluetoothPreferredLyricSource = null
+    floatingTranslatedLyrics = emptyList()
+    floatingTranslationMatchesByIndex = emptyMap()
+    externalBluetoothLyricsSongKey = song?.stableKey()
+    clearExternalBluetoothLyricLine()
+    onLiveLyricSongChanged()
+
+    if (!shouldProvideExternalLyricLine() || song == null) {
+        return@synchronized
+    }
+
+    val songKey = song.stableKey()
+    externalBluetoothLyricsLoadJob = ioScope.launch {
+        val (loadedLyrics, preferredSource) = loadExternalLyrics(song)
+        val lyrics = loadedLyrics.sortedBy { it.startTimeMs }
+        currentCoroutineContext().ensureActive()
+
+        synchronized(this@syncExternalBluetoothLyrics) {
+            val currentSong = _currentSongFlow.value
+            if (!shouldProvideExternalLyricLine() || currentSong?.sameIdentityAs(song) != true ||
+                !colorOsLyricTimelineOwner.isCurrent(request)
+            ) return@launch
+
+            externalBluetoothLyricsSongKey = songKey
+            externalBluetoothLyrics = lyrics
+            externalBluetoothPreferredLyricSource = preferredSource
+            publishColorOsLyricTimeline(song)
+            updateExternalBluetoothLyricLine(_playbackPositionMs.value)
+            if (shouldProvideExternalTranslatedLyricLine()) {
+                startExternalBluetoothTranslationLoad(song, songKey)
+            }
+        }
+    }
+}
+
+internal fun PlayerManager.syncExternalTranslatedLyrics(song: SongItem?): Unit = synchronized(this) {
+    val currentSong = _currentSongFlow.value
+    if (currentSong != null && !currentSong.sameIdentityAs(song)) return@synchronized
+    externalTranslationRequestId++
+    externalBluetoothTranslationLoadJob?.cancel()
+    externalBluetoothTranslationLoadJob = null
+    if (!shouldProvideExternalTranslatedLyricLine()) {
+        clearFloatingTranslatedLyricLine()
+        song?.let { publishColorOsLyricTimeline(it) }
+        updateExternalBluetoothLyricLine(_playbackPositionMs.value)
+        return@synchronized
+    }
+    if (!shouldProvideExternalLyricLine() || song == null) {
+        clearExternalBluetoothLyricLine()
+        return@synchronized
+    }
+
+    val songKey = song.stableKey()
+    if (externalBluetoothLyricsSongKey != songKey || externalBluetoothLyrics.isEmpty()) {
+        syncExternalBluetoothLyrics(song)
+        return@synchronized
+    }
+
+    startExternalBluetoothTranslationLoad(song, songKey)
+}
+
+private fun PlayerManager.startExternalBluetoothTranslationLoad(
+    song: SongItem,
+    songKey: String
+) {
+    externalBluetoothTranslationLoadJob?.cancel()
+    val translationRequestId = ++externalTranslationRequestId
+    val lyricRequest = externalLyricRequest
+    val skipPreferredSource = externalBluetoothPreferredLyricSource == null
+    externalBluetoothTranslationLoadJob = ioScope.launch {
+        val translatedLyrics = loadExternalTranslatedLyrics(
+            song,
+            skipPreferredSource = skipPreferredSource
+        )
+            .sortedBy { it.startTimeMs }
+        currentCoroutineContext().ensureActive()
+
+        synchronized(this@startExternalBluetoothTranslationLoad) {
+            val currentSong = _currentSongFlow.value
+            if (
+                !shouldProvideExternalTranslatedLyricLine() ||
+                currentSong?.sameIdentityAs(song) != true ||
+                externalBluetoothLyricsSongKey != songKey ||
+                externalTranslationRequestId != translationRequestId ||
+                lyricRequest == null || !colorOsLyricTimelineOwner.isCurrent(lyricRequest)
+            ) return@launch
+
+            floatingTranslatedLyrics = translatedLyrics
+            floatingTranslationMatchesByIndex = matchTranslationsToLineIndices(
+                lines = externalBluetoothLyrics,
+                translations = translatedLyrics.filter { it.text.isNotBlank() }
+            )
+            publishColorOsLyricTimeline(song)
+            updateExternalBluetoothLyricLine(_playbackPositionMs.value)
+        }
+    }
+}
+
+private suspend fun PlayerManager.loadExternalLyrics(
+    song: SongItem
+): Pair<List<LyricEntry>, LyricSourcePreference?> {
+    return try {
+        val preferred = getPreferredLyricSourceResult(song, defaultLyricSource)
+        (preferred?.lyrics ?: getLyrics(song, skipPreferredSource = true)) to preferred?.source
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        NPLogger.w(
+            "NERI-PlayerManager",
+            "external lyrics load failed: song=${song.name}/${song.id}",
+            error
+        )
+        emptyList<LyricEntry>() to null
+    }
+}
+
+private suspend fun PlayerManager.loadExternalTranslatedLyrics(
+    song: SongItem,
+    skipPreferredSource: Boolean
+): List<LyricEntry> {
+    return try {
+        getTranslatedLyrics(song, skipPreferredSource)
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        NPLogger.w(
+            "NERI-PlayerManager",
+            "external translated lyrics load failed: song=${song.name}/${song.id}",
+            error
+        )
+        emptyList()
+    }
+}
+
+private fun PlayerManager.externalLyricOffsetMs(song: SongItem): Long = resolveEffectiveLyricOffsetMs(
+    lyricSource = song.matchedLyricSource,
+    cloudMusicDefaultOffsetMs = cloudMusicLyricDefaultOffsetMs,
+    qqMusicDefaultOffsetMs = qqMusicLyricDefaultOffsetMs,
+    userLyricOffsetMs = song.userLyricOffsetMs,
+    kugouDefaultOffsetMs = kugouLyricDefaultOffsetMs,
+    lrclibDefaultOffsetMs = lrclibLyricDefaultOffsetMs,
+    amllTtmlDefaultOffsetMs = amllTtmlLyricDefaultOffsetMs,
+    preferredLyricSource = externalBluetoothPreferredLyricSource,
+    biliCcSubtitleDefaultOffsetMs = biliCcSubtitleLyricDefaultOffsetMs,
+    isBiliCcSubtitleLyrics = isBiliCcSubtitleLyricsActive(song),
+)
+
+/** 当前歌曲外部歌词的下一行距离；歌词不属于当前歌曲时返回 null */
+internal fun PlayerManager.msUntilNextExternalLyricLine(positionMs: Long): Long? {
+    val song = _currentSongFlow.value ?: return null
+    if (externalBluetoothLyricsSongKey != song.stableKey()) return null
+    return msUntilNextExternalLyricLine(externalBluetoothLyrics, positionMs, externalLyricOffsetMs(song))
+}
+
+/** 只有外部歌词需要进度时的下一次刷新间隔；读不到位置时保持交互间隔 */
+internal fun PlayerManager.externalLyricBoundaryProgressIntervalMs(positionMs: Long?): Long {
+    positionMs ?: return PLAYBACK_PROGRESS_INTERACTIVE_UPDATE_INTERVAL_MS
+    return resolveLyricBoundaryProgressIntervalMs(
+        msUntilNextLine = msUntilNextExternalLyricLine(positionMs),
+        playbackSpeed = player.playbackParameters.speed
+    )
+}
+
+internal fun PlayerManager.updateExternalBluetoothLyricLine(positionMs: Long): Unit = synchronized(this) {
+    if (!shouldProvideExternalLyricLine()) {
+        clearExternalBluetoothLyricLine()
+        return@synchronized
+    }
+
+    val song = _currentSongFlow.value
+    val songKey = externalBluetoothLyricsSongKey
+    if (song == null || songKey == null || songKey != song.stableKey()) {
+        clearExternalBluetoothLyricLine()
+        return@synchronized
+    }
+
+    val lyricOffsetMs = externalLyricOffsetMs(song)
+    colorOsLyricTimelineOwner.updateOffset(lyricOffsetMs)
+    if (floatingLyricsEnabled) {
+        floatingLyricsContentSource.update(
+            songKey = songKey,
+            lyrics = externalBluetoothLyrics,
+            translations = floatingTranslationMatchesByIndex,
+            positionMs = positionMs,
+            offsetMs = lyricOffsetMs
+        )
+    } else {
+        floatingLyricsContentSource.clear()
+    }
+
+    val line = findExternalBluetoothLyricLine(
+        lyrics = externalBluetoothLyrics,
+        positionMs = positionMs,
+        lyricOffsetMs = lyricOffsetMs
+    )
+    val translatedLine = findFloatingTranslatedLyricLine(
+        lyrics = externalBluetoothLyrics,
+        translations = floatingTranslatedLyrics,
+        positionMs = positionMs,
+        lyricOffsetMs = lyricOffsetMs,
+        translationMatchesByIndex = floatingTranslationMatchesByIndex
+    )
+
+    if (_externalBluetoothLyricLineFlow.value != line) {
+        _externalBluetoothLyricLineFlow.value = line
+    }
+    if (_floatingTranslatedLyricLineFlow.value != translatedLine) {
+        _floatingTranslatedLyricLineFlow.value = translatedLine
+    }
+    val payload = resolveExternalBluetoothLyricPayload(
+        lyricEnabled = externalBluetoothLyricsEnabled || dynamicIslandLyricsEnabled,
+        translationEnabled = externalBluetoothTranslationEnabled ||
+            dynamicIslandLyricsEnabled,
+        lyricLine = line,
+        translationLine = translatedLine
+    )
+    if (_externalBluetoothLyricPayloadFlow.value != payload) {
+        _externalBluetoothLyricPayloadFlow.value = payload
+    }
+
+    publishLiveLyricSurfaces(song, positionMs, lyricOffsetMs)
+}
+
+internal fun PlayerManager.clearExternalBluetoothLyricLine(): Unit = synchronized(this) {
+    colorOsLyricTimelineOwner.clear()
+    floatingLyricsContentSource.clear()
+    if (_externalBluetoothLyricLineFlow.value != null) {
+        _externalBluetoothLyricLineFlow.value = null
+    }
+    clearFloatingTranslatedLyricLine()
+    if (_externalBluetoothLyricPayloadFlow.value != ExternalBluetoothLyricPayload()) {
+        _externalBluetoothLyricPayloadFlow.value = ExternalBluetoothLyricPayload()
+    }
+    clearLiveUpdateLyric()
+}
+
+private fun PlayerManager.clearFloatingTranslatedLyricLine() {
+    floatingTranslatedLyrics = emptyList()
+    floatingTranslationMatchesByIndex = emptyMap()
+    if (_floatingTranslatedLyricLineFlow.value != null) {
+        _floatingTranslatedLyricLineFlow.value = null
+    }
+}
+
+private fun PlayerManager.shouldProvideExternalLyricLine(): Boolean {
+    return externalBluetoothLyricsEnabled ||
+        externalBluetoothTranslationEnabled ||
+        dynamicIslandLyricsEnabled ||
+        colorOsLockscreenLyricsEnabled ||
+        xiaomiSuperIslandLyricEnabled ||
+        liveUpdateLyricEnabled ||
+        statusBarLyricsEnable ||
+        floatingLyricsEnabled
+}
+
+private fun PlayerManager.shouldProvideExternalTranslatedLyricLine(): Boolean {
+    return shouldProvideExternalTranslatedLyricLine(
+        externalBluetoothTranslationEnabled = externalBluetoothTranslationEnabled,
+        floatingLyricsEnabled = floatingLyricsEnabled,
+        floatingLyricsShowTranslation = floatingLyricsShowTranslation,
+        dynamicIslandLyricsEnabled = dynamicIslandLyricsEnabled,
+        xiaomiSuperIslandLyricEnabled = xiaomiSuperIslandLyricEnabled,
+        liveUpdateLyricEnabled = liveUpdateLyricEnabled,
+        colorOsLockscreenLyricsEnabled = colorOsLockscreenLyricsEnabled,
+    )
+}
+
+private fun PlayerManager.publishColorOsLyricTimeline(song: SongItem) {
+    if (!colorOsLockscreenLyricsEnabled || externalBluetoothLyricsSongKey != song.stableKey()) return
+    val request = externalLyricRequest ?: return
+    colorOsLyricTimelineOwner.publish(
+        request, externalBluetoothLyrics, floatingTranslatedLyrics, externalLyricOffsetMs(song),
+    )
+}
+
+internal fun shouldProvideExternalTranslatedLyricLine(
+    externalBluetoothTranslationEnabled: Boolean,
+    floatingLyricsEnabled: Boolean,
+    floatingLyricsShowTranslation: Boolean,
+    dynamicIslandLyricsEnabled: Boolean,
+    xiaomiSuperIslandLyricEnabled: Boolean = false,
+    liveUpdateLyricEnabled: Boolean = false,
+    colorOsLockscreenLyricsEnabled: Boolean = false,
+): Boolean {
+    return externalBluetoothTranslationEnabled ||
+        dynamicIslandLyricsEnabled ||
+        xiaomiSuperIslandLyricEnabled ||
+        liveUpdateLyricEnabled ||
+        colorOsLockscreenLyricsEnabled ||
+        (floatingLyricsEnabled && floatingLyricsShowTranslation)
+}
+
+internal fun PlayerManager.isExternalBluetoothLyricCadenceActive(): Boolean {
+    val deviceType = _currentAudioDevice.value?.type
+    val hasBluetoothOutput = deviceType != null && isBluetoothOutputType(deviceType)
+    return (dynamicIslandLyricsEnabled || xiaomiSuperIslandLyricEnabled || liveUpdateLyricEnabled || hasBluetoothOutput) &&
+        (externalBluetoothLyricsEnabled || externalBluetoothTranslationEnabled ||
+            dynamicIslandLyricsEnabled || xiaomiSuperIslandLyricEnabled || liveUpdateLyricEnabled) &&
+        externalBluetoothLyrics.isNotEmpty()
+}

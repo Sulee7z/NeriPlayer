@@ -1,0 +1,1478 @@
+package moe.ouom.neriplayer.ui.screen.tab.settings.component.backup
+
+/*
+ * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
+ * Copyright (C) 2025-2025 NeriPlayer developers
+ * https://github.com/cwuom/NeriPlayer
+ *
+ * This software is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This software is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ * See the GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this software.
+ * If not, see <https://www.gnu.org/licenses/>.
+ *
+ * File: moe.ouom.neriplayer.ui.screen.tab.settings.component/SettingsBackupRestoreSection
+ * Updated: 2026/3/23
+ */
+
+import moe.ouom.neriplayer.ui.i18n.asString
+import moe.ouom.neriplayer.ui.settings.SettingRowIcon
+import moe.ouom.neriplayer.ui.screen.tab.settings.component.ExpandableHeader
+import moe.ouom.neriplayer.ui.screen.tab.settings.component.LazyAnimatedVisibility
+import moe.ouom.neriplayer.ui.screen.tab.settings.component.settingsItemClickable
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.EaseInCubic
+import androidx.compose.animation.core.EaseOutCubic
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
+import androidx.compose.material.icons.outlined.Backup
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.Timer
+import androidx.compose.material.icons.outlined.Upload
+import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.FileUpload
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
+import androidx.compose.material.icons.rounded.FileDownload
+import androidx.compose.material.icons.rounded.FileUpload
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
+import moe.ouom.neriplayer.ui.theme.ContinuousRoundedCornerShape
+import moe.ouom.neriplayer.ui.theme.NeriDesign
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import moe.ouom.neriplayer.common.R as CoreCommonR
+import moe.ouom.neriplayer.data.settings.generated.AutoSettingsRepository
+import moe.ouom.neriplayer.data.settings.generated.AutoSettingsScopes
+import moe.ouom.neriplayer.ui.settings.AutoSettingsSwitchItems
+import moe.ouom.neriplayer.data.sync.store.preferences.PlayHistoryUpdateMode
+import moe.ouom.neriplayer.data.sync.store.preferences.PlayHistorySyncPreferences
+import moe.ouom.neriplayer.data.sync.store.github.SecureTokenStorage
+import moe.ouom.neriplayer.data.sync.store.secure.SyncStorageUnavailableException
+import moe.ouom.neriplayer.data.sync.host.SyncProtocolUpgradeRepository
+import moe.ouom.neriplayer.ui.viewmodel.ConfigTransferUiState
+import moe.ouom.neriplayer.ui.viewmodel.BackupRestoreUiState
+import moe.ouom.neriplayer.ui.viewmodel.GitHubSyncUiState
+import moe.ouom.neriplayer.ui.viewmodel.GitHubSyncViewModel
+import moe.ouom.neriplayer.ui.viewmodel.WebDavSyncUiState
+import moe.ouom.neriplayer.ui.viewmodel.WebDavSyncViewModel
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsChoiceRow
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsDialog
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsInlineMessage
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsSwitch
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextButton
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsSectionCard
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsSectionIntro
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.settingsHighlightTarget
+import moe.ouom.neriplayer.ui.screen.tab.settings.state.collectAsStateWithLifecycleCompat
+import moe.ouom.neriplayer.ui.screen.tab.settings.state.formatSyncTime
+import moe.ouom.neriplayer.ui.screen.tab.settings.dialog.WebDavCleartextWarning
+import moe.ouom.neriplayer.ui.sync.upgrade.SyncProtocolUpgradeSetting
+import moe.ouom.neriplayer.ui.sync.upgrade.SyncProtocolUpgradeWarning
+import moe.ouom.neriplayer.ui.sync.upgrade.rememberSyncProtocolUpgradeViewModel
+import moe.ouom.neriplayer.R as AppR
+
+@Composable
+internal fun SettingsBackupRestoreSection(
+    expanded: Boolean,
+    arrowRotation: Float,
+    onExpandedChange: (Boolean) -> Unit,
+    showHeader: Boolean = true,
+    currentPlaylistCount: Int,
+    backupRestoreUiState: BackupRestoreUiState,
+    configTransferUiState: ConfigTransferUiState,
+    onExportClick: () -> Unit,
+    onImportClick: () -> Unit,
+    onExportConfigClick: () -> Unit,
+    onImportConfigClick: () -> Unit,
+    onClearExportStatus: () -> Unit,
+    onClearImportStatus: () -> Unit,
+    onClearConfigExportStatus: () -> Unit,
+    onClearConfigImportStatus: () -> Unit,
+    autoSettingsRepository: AutoSettingsRepository,
+    scope: kotlinx.coroutines.CoroutineScope,
+    showGitHubConfigDialog: Boolean,
+    showWebDavConfigDialog: Boolean,
+    onOpenGitHubConfig: () -> Unit,
+    onOpenClearGitHubConfig: () -> Unit,
+    onOpenWebDavConfig: () -> Unit,
+    onOpenClearWebDavConfig: () -> Unit,
+    cardIndex: Int? = null,
+    highlightTargetId: String? = null,
+    highlightPulse: Int = 0,
+    onHighlightFinished: (() -> Unit)? = null
+) {
+    fun shouldShowCard(index: Int): Boolean = cardIndex == null || cardIndex == index
+
+    if (showHeader) {
+        ExpandableHeader(
+            icon = Icons.Outlined.Backup,
+            title = stringResource(CoreCommonR.string.settings_backup_restore),
+            subtitleCollapsed = stringResource(CoreCommonR.string.settings_backup_expand),
+            subtitleExpanded = stringResource(CoreCommonR.string.settings_login_platforms_collapse),
+            expanded = expanded,
+            onToggle = { onExpandedChange(!expanded) },
+            arrowRotation = arrowRotation
+        )
+    }
+
+    val content: @Composable () -> Unit = {
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val applicationContext = context.applicationContext
+        val syncUpgradeVm = rememberSyncProtocolUpgradeViewModel()
+        val syncUpgradeState by syncUpgradeVm.uiState.collectAsStateWithLifecycleCompat()
+        val needsGitHubState = shouldShowCard(2) || shouldShowCard(4)
+        val needsWebDavState = shouldShowCard(3) || shouldShowCard(4)
+        val needsPlayHistoryMode = shouldShowCard(1)
+        val needsDataSaverMode = shouldShowCard(2)
+        val githubVm: GitHubSyncViewModel? = if (needsGitHubState) {
+            viewModel<GitHubSyncViewModel>()
+        } else {
+            null
+        }
+        val webDavVm: WebDavSyncViewModel? = if (needsWebDavState) {
+            viewModel<WebDavSyncViewModel>()
+        } else {
+            null
+        }
+        val githubState = if (githubVm != null) {
+            githubVm.uiState.collectAsStateWithLifecycleCompat().value
+        } else {
+            GitHubSyncUiState()
+        }
+        val webDavState = if (webDavVm != null) {
+            webDavVm.uiState.collectAsStateWithLifecycleCompat().value
+        } else {
+            WebDavSyncUiState()
+        }
+        val githubTarget = if (githubState.isConfigured) {
+            SyncProtocolUpgradeRepository.githubTargetHash(githubState.repoOwner, githubState.repoName)
+        } else null
+        val webDavTarget = if (webDavState.isConfigured) {
+            SyncProtocolUpgradeRepository.webDavTargetHash(
+                webDavState.serverUrl, webDavState.basePath, webDavState.username
+            )
+        } else null
+        LaunchedEffect(githubTarget, webDavTarget, configTransferUiState.lastImportSuccess) {
+            syncUpgradeVm.refreshTargets()
+        }
+        fun performGitHubSync(targetId: String) {
+            githubVm?.performSyncForTarget(context, targetId, onFinished = syncUpgradeVm::refreshTargets) { challenge ->
+                syncUpgradeVm.requestUpgrade(challenge) { performGitHubSync(challenge.targetId) }
+            }
+        }
+        fun requestGitHubSync() {
+            val targetId = githubTarget ?: return
+            syncUpgradeVm.requestSync(targetId) { performGitHubSync(targetId) }
+        }
+        fun performWebDavSync(targetId: String) {
+            webDavVm?.performSyncForTarget(context, targetId, onFinished = syncUpgradeVm::refreshTargets) { challenge ->
+                syncUpgradeVm.requestUpgrade(challenge) { performWebDavSync(challenge.targetId) }
+            }
+        }
+        fun requestWebDavSync() {
+            val targetId = webDavTarget ?: return
+            syncUpgradeVm.requestSync(targetId) { performWebDavSync(targetId) }
+        }
+        var showPlayHistoryModeDialog by remember { mutableStateOf(false) }
+        var currentMode by remember { mutableStateOf<PlayHistoryUpdateMode?>(null) }
+        var dataSaverMode by remember { mutableStateOf<Boolean?>(null) }
+        var pendingDataSaverMode by remember { mutableStateOf<Boolean?>(null) }
+        var pendingDataSaverGeneration by remember { mutableLongStateOf(0L) }
+        var preferenceLoadFailed by remember { mutableStateOf(false) }
+        var preferenceReload by remember { mutableIntStateOf(0) }
+        var dataSaverSaveFailed by remember { mutableStateOf(false) }
+        var isSavingDataSaver by remember { mutableStateOf(false) }
+        var lastObservedImportState by remember { mutableStateOf<Pair<Boolean, Boolean?>?>(null) }
+
+        githubVm?.let { viewModel ->
+            LaunchedEffect(viewModel, applicationContext) {
+                withContext(Dispatchers.IO) {
+                    viewModel.initialize(applicationContext)
+                }
+            }
+        }
+        webDavVm?.let { viewModel ->
+            LaunchedEffect(viewModel, applicationContext) {
+                withContext(Dispatchers.IO) {
+                    viewModel.initialize(applicationContext)
+                }
+            }
+        }
+        LaunchedEffect(
+            needsPlayHistoryMode,
+            needsDataSaverMode,
+            applicationContext,
+            configTransferUiState.isImporting,
+            configTransferUiState.lastImportSuccess,
+            preferenceReload
+        ) {
+            val pendingGenerationAtLoad = pendingDataSaverGeneration
+            val importState = configTransferUiState.isImporting to configTransferUiState.lastImportSuccess
+            val importChanged = lastObservedImportState != importState
+            lastObservedImportState = importState
+            var preferenceReadSucceeded = true
+            if (needsPlayHistoryMode || needsDataSaverMode) {
+                val loaded = withContext(Dispatchers.IO) {
+                    loadBackupSyncPreferenceSnapshot(
+                        context = applicationContext,
+                        needsPlayHistoryMode = needsPlayHistoryMode,
+                        needsDataSaverMode = needsDataSaverMode
+                    )
+                }
+                val snapshot = loaded.snapshot
+                if (needsPlayHistoryMode) {
+                    snapshot.playHistoryUpdateMode?.let { currentMode = it }
+                }
+                if (needsDataSaverMode) {
+                    snapshot.dataSaverMode?.let { dataSaverMode = it }
+                }
+                preferenceReadSucceeded = loaded is BackupSyncPreferenceLoad.Loaded
+                preferenceLoadFailed = !preferenceReadSucceeded
+                if (preferenceReadSucceeded) dataSaverSaveFailed = false
+            }
+            if (preferenceReadSucceeded && !configTransferUiState.isImporting && configTransferUiState.lastImportSuccess == true) {
+                withContext(Dispatchers.IO) {
+                    githubVm?.initialize(applicationContext)
+                    webDavVm?.initialize(applicationContext)
+                }
+                if (importChanged && pendingDataSaverGeneration == pendingGenerationAtLoad) {
+                    pendingDataSaverMode = null
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Transparent)
+                .padding(
+                    start = if (showHeader) 16.dp else 0.dp,
+                    end = if (showHeader) 8.dp else 0.dp,
+                    bottom = if (showHeader) 8.dp else 0.dp
+                )
+        ) {
+            val localBackupTargets = setOf("manual:backup_local")
+            val messageTargets = setOf("manual:backup_messages")
+            val isSyncConfigDialogOpen = showGitHubConfigDialog || showWebDavConfigDialog
+            val hasSyncMessage =
+                !isSyncConfigDialogOpen &&
+                    (
+                        githubState.errorMessage != null ||
+                            githubState.successMessage != null ||
+                            webDavState.errorMessage != null ||
+                            webDavState.successMessage != null
+                        )
+
+            if (preferenceLoadFailed || dataSaverSaveFailed) {
+                MiuixSettingsInlineMessage(
+                    message = stringResource(CoreCommonR.string.sync_secure_storage_unavailable),
+                    isSuccess = false
+                )
+                MiuixSettingsTextButton(onClick = { preferenceReload++ }) {
+                    Text(stringResource(CoreCommonR.string.action_retry))
+                }
+            }
+
+            if (shouldShowCard(0)) {
+                SyncProtocolUpgradeWarning(syncUpgradeState) { syncUpgradeVm.openConfirmation() }
+            }
+
+            if (shouldShowCard(0)) BackupDetailCard(
+                showCard = !showHeader,
+                highlighted = highlightTargetId in localBackupTargets,
+                highlightPulse = highlightPulse,
+                onHighlightFinished = onHighlightFinished
+            ) {
+            MiuixSettingsSectionIntro(
+                title = stringResource(CoreCommonR.string.settings_backup_local_section),
+                description = stringResource(CoreCommonR.string.settings_backup_local_section_desc)
+            )
+            if (NeriDesign.isClean) {
+                CleanBackupTransferGroup(
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    hue = Color(0xFF0A84FF),
+                    title = stringResource(CoreCommonR.string.settings_backup_group_playlists),
+                    subtitle = pluralStringResource(
+                        CoreCommonR.plurals.playlist_count_format,
+                        currentPlaylistCount,
+                        currentPlaylistCount
+                    ),
+                    exportLabel = stringResource(CoreCommonR.string.playlist_export),
+                    importLabel = stringResource(CoreCommonR.string.playlist_import),
+                    exportModifier = Modifier.settingsHighlightTarget(
+                        targetId = "manual:playlist_export",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    ),
+                    importModifier = Modifier.settingsHighlightTarget(
+                        targetId = "manual:playlist_import",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    ),
+                    onExport = onExportClick,
+                    onImport = onImportClick
+                )
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant
+                )
+                CleanBackupTransferGroup(
+                    icon = Icons.Rounded.Tune,
+                    hue = Color(0xFF8E8E93),
+                    title = stringResource(CoreCommonR.string.settings_backup_group_config),
+                    subtitle = stringResource(CoreCommonR.string.settings_backup_group_config_desc),
+                    exportLabel = stringResource(CoreCommonR.string.settings_export_config),
+                    importLabel = stringResource(CoreCommonR.string.settings_import_config),
+                    exportModifier = Modifier.settingsHighlightTarget(
+                        targetId = "manual:config_export",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    ),
+                    importModifier = Modifier.settingsHighlightTarget(
+                        targetId = "manual:config_import",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    ),
+                    onExport = {
+                        if (!configTransferUiState.isExporting) {
+                            onExportConfigClick()
+                        }
+                    },
+                    onImport = onImportConfigClick
+                )
+            } else {
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.PlaylistPlay,
+                        contentDescription = stringResource(CoreCommonR.string.settings_current_playlist),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.playlist_count)) },
+                supportingContent = {
+                    Text(
+                        pluralStringResource(
+                            CoreCommonR.plurals.playlist_count_format,
+                            currentPlaylistCount,
+                            currentPlaylistCount
+                        )
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.FileUpload,
+                        contentDescription = stringResource(CoreCommonR.string.settings_export_playlist),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.playlist_export)) },
+                supportingContent = { Text(stringResource(CoreCommonR.string.playlist_export_desc)) },
+                modifier = Modifier
+                    .settingsHighlightTarget(
+                        targetId = "manual:playlist_export",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    )
+                    .settingsItemClickable(onClick = onExportClick),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            ListItem(
+                leadingContent = {
+                    SettingRowIcon(
+                        key = null,
+                        Icons.Outlined.FileDownload,
+                        contentDescription = stringResource(CoreCommonR.string.settings_import_playlist),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.playlist_import)) },
+                supportingContent = { Text(stringResource(CoreCommonR.string.playlist_import_desc)) },
+                modifier = Modifier
+                    .settingsHighlightTarget(
+                        targetId = "manual:playlist_import",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    )
+                    .settingsItemClickable(onClick = onImportClick),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            ListItem(
+                leadingContent = {
+                    SettingRowIcon(
+                        key = null,
+                        Icons.Outlined.Upload,
+                        contentDescription = stringResource(CoreCommonR.string.settings_export_config),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.settings_export_config)) },
+                supportingContent = { Text(stringResource(CoreCommonR.string.settings_export_config_desc)) },
+                modifier = Modifier
+                    .settingsHighlightTarget(
+                        targetId = "manual:config_export",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    )
+                    .settingsItemClickable {
+                        if (!configTransferUiState.isExporting) {
+                            onExportConfigClick()
+                        }
+                    },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            ListItem(
+                leadingContent = {
+                    SettingRowIcon(
+                        key = null,
+                        Icons.Outlined.Download,
+                        contentDescription = stringResource(CoreCommonR.string.settings_import_config),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.settings_import_config)) },
+                supportingContent = { Text(stringResource(CoreCommonR.string.settings_import_config_desc)) },
+                modifier = Modifier
+                    .settingsHighlightTarget(
+                        targetId = "manual:config_import",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    )
+                    .settingsItemClickable(onClick = onImportConfigClick),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+            }
+
+            backupRestoreUiState.exportProgress?.let { progress ->
+                ProgressStatusItem(
+                    title = stringResource(CoreCommonR.string.playlist_export_progress),
+                    message = progress.asString()
+                )
+            }
+            backupRestoreUiState.importProgress?.let { progress ->
+                ProgressStatusItem(
+                    title = stringResource(CoreCommonR.string.playlist_import_progress),
+                    message = progress.asString()
+                )
+            }
+            configTransferUiState.exportProgress?.let { progress ->
+                ProgressStatusItem(
+                    title = stringResource(CoreCommonR.string.settings_config_export_progress),
+                    message = progress.asString()
+                )
+            }
+            configTransferUiState.importProgress?.let { progress ->
+                ProgressStatusItem(
+                    title = stringResource(CoreCommonR.string.settings_config_import_progress),
+                    message = progress.asString()
+                )
+            }
+            backupRestoreUiState.analysisProgress?.let { progress ->
+                ProgressStatusItem(
+                    title = stringResource(CoreCommonR.string.sync_analysis_progress),
+                    message = progress.asString()
+                )
+            }
+
+            AnimatedVisibility(
+                visible = backupRestoreUiState.lastExportMessage != null,
+                enter = slideInVertically(
+                    initialOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)
+                ) + fadeIn(animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)),
+                exit = slideOutVertically(
+                    targetOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 250, easing = EaseInCubic)
+                ) + fadeOut(animationSpec = tween(durationMillis = 250, easing = EaseInCubic))
+            ) {
+                backupRestoreUiState.lastExportMessage?.let { message ->
+                    ResultStatusCard(
+                        title = if (backupRestoreUiState.lastExportSuccess == true) {
+                            stringResource(CoreCommonR.string.settings_export_success)
+                        } else {
+                            stringResource(CoreCommonR.string.settings_export_failed)
+                        },
+                        message = message.asString(),
+                        isSuccess = backupRestoreUiState.lastExportSuccess == true,
+                        onClose = onClearExportStatus
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = backupRestoreUiState.lastImportMessage != null,
+                enter = slideInVertically(
+                    initialOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)
+                ) + fadeIn(animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)),
+                exit = slideOutVertically(
+                    targetOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 250, easing = EaseInCubic)
+                ) + fadeOut(animationSpec = tween(durationMillis = 250, easing = EaseInCubic))
+            ) {
+                backupRestoreUiState.lastImportMessage?.let { message ->
+                    ResultStatusCard(
+                        title = if (backupRestoreUiState.lastImportSuccess == true) {
+                            stringResource(CoreCommonR.string.settings_import_success)
+                        } else {
+                            stringResource(CoreCommonR.string.settings_import_failed)
+                        },
+                        message = message.asString(),
+                        isSuccess = backupRestoreUiState.lastImportSuccess == true,
+                        onClose = onClearImportStatus
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = configTransferUiState.lastExportMessage != null,
+                enter = slideInVertically(
+                    initialOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)
+                ) + fadeIn(animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)),
+                exit = slideOutVertically(
+                    targetOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 250, easing = EaseInCubic)
+                ) + fadeOut(animationSpec = tween(durationMillis = 250, easing = EaseInCubic))
+            ) {
+                configTransferUiState.lastExportMessage?.let { message ->
+                    ResultStatusCard(
+                        title = if (configTransferUiState.lastExportSuccess == true) {
+                            stringResource(CoreCommonR.string.settings_config_export_success)
+                        } else {
+                            stringResource(CoreCommonR.string.settings_config_export_failed)
+                        },
+                        message = message.asString(),
+                        isSuccess = configTransferUiState.lastExportSuccess == true,
+                        onClose = onClearConfigExportStatus
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = configTransferUiState.lastImportMessage != null,
+                enter = slideInVertically(
+                    initialOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)
+                ) + fadeIn(animationSpec = tween(durationMillis = 300, easing = EaseOutCubic)),
+                exit = slideOutVertically(
+                    targetOffsetY = { -it },
+                    animationSpec = tween(durationMillis = 250, easing = EaseInCubic)
+                ) + fadeOut(animationSpec = tween(durationMillis = 250, easing = EaseInCubic))
+            ) {
+                configTransferUiState.lastImportMessage?.let { message ->
+                    ResultStatusCard(
+                        title = if (configTransferUiState.lastImportSuccess == true) {
+                            stringResource(CoreCommonR.string.settings_config_import_success)
+                        } else {
+                            stringResource(CoreCommonR.string.settings_config_import_failed)
+                        },
+                        message = message.asString(),
+                        isSuccess = configTransferUiState.lastImportSuccess == true,
+                        onClose = onClearConfigImportStatus
+                    )
+                }
+            }
+
+            }
+
+            if (cardIndex == null) BackupDetailGap(showHeader)
+            if (shouldShowCard(1)) BackupDetailCard(
+                showCard = !showHeader,
+                highlighted = false,
+                highlightPulse = highlightPulse,
+                onHighlightFinished = onHighlightFinished
+            ) {
+            MiuixSettingsSectionIntro(
+                title = stringResource(CoreCommonR.string.settings_backup_history_section),
+                description = stringResource(CoreCommonR.string.settings_backup_history_section_desc)
+            )
+
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.Timer,
+                        contentDescription = stringResource(CoreCommonR.string.settings_play_history_update_freq),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.sync_history_frequency)) },
+                supportingContent = {
+                    currentMode?.let { Text(playHistoryUpdateModeSummary(it)) }
+                },
+                modifier = Modifier
+                    .settingsHighlightTarget(
+                        targetId = "manual:backup_history",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    )
+                    .settingsItemClickable(enabled = currentMode != null) {
+                        showPlayHistoryModeDialog = true
+                    },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            }
+
+            if (cardIndex == null) BackupDetailGap(showHeader)
+            if (shouldShowCard(2)) BackupDetailCard(
+                showCard = !showHeader,
+                highlighted = false,
+                highlightPulse = highlightPulse,
+                onHighlightFinished = onHighlightFinished
+            ) {
+            MiuixSettingsSectionIntro(
+                title = stringResource(CoreCommonR.string.settings_backup_github_section),
+                description = stringResource(CoreCommonR.string.settings_backup_github_section_desc)
+            )
+
+            SyncProtocolUpgradeSetting(githubTarget)
+
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.CloudSync,
+                        contentDescription = stringResource(CoreCommonR.string.github_auto_sync),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.github_auto_sync)) },
+                supportingContent = {
+                    Text(
+                        if (githubState.isConfigured) {
+                            stringResource(CoreCommonR.string.settings_configured)
+                        } else {
+                            stringResource(CoreCommonR.string.settings_not_configured)
+                        }
+                    )
+                },
+                modifier = Modifier.settingsHighlightTarget(
+                    targetId = "manual:github_sync",
+                    highlightTargetId = highlightTargetId,
+                    highlightPulse = highlightPulse,
+                    onHighlightFinished = onHighlightFinished
+                ),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            if (!githubState.isConfigured) {
+                ListItem(
+                    leadingContent = {
+                        SettingRowIcon(
+                            key = "github_sync",
+                            Icons.Outlined.Settings,
+                            contentDescription = stringResource(CoreCommonR.string.settings_configure),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_config)) },
+                    supportingContent = { Text(stringResource(CoreCommonR.string.sync_config_desc)) },
+                    modifier = Modifier
+                        .settingsHighlightTarget(
+                            targetId = "manual:github_auto_sync",
+                            highlightTargetId = highlightTargetId,
+                            highlightPulse = highlightPulse,
+                            onHighlightFinished = onHighlightFinished
+                        )
+                        .settingsItemClickable(onClick = onOpenGitHubConfig),
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+            } else {
+                ListItem(
+                    leadingContent = {
+                        SettingRowIcon(
+                            key = "github_auto_sync",
+                            Icons.Outlined.Sync,
+                            contentDescription = stringResource(CoreCommonR.string.settings_auto_sync),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_auto)) },
+                    supportingContent = { Text(stringResource(CoreCommonR.string.sync_auto_desc)) },
+                    trailingContent = {
+                        MiuixSettingsSwitch(
+                            checked = githubState.autoSyncEnabled,
+                            onCheckedChange = { githubVm?.toggleAutoSync(context, it) }
+                        )
+                    },
+                    modifier = Modifier.settingsHighlightTarget(
+                        targetId = "manual:github_auto_sync",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    ),
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+
+                ListItem(
+                    leadingContent = {
+                        SettingRowIcon(
+                            key = "github_auto_sync",
+                            Icons.Outlined.CloudUpload,
+                            contentDescription = stringResource(CoreCommonR.string.settings_sync_now),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_now)) },
+                    supportingContent = {
+                        if (githubState.lastSyncTime > 0) {
+                            Text(
+                                stringResource(
+                                    CoreCommonR.string.sync_last_time,
+                                    formatSyncTime(githubState.lastSyncTime)
+                                )
+                            )
+                        } else {
+                            Text(stringResource(CoreCommonR.string.sync_not_synced))
+                        }
+                    },
+                    trailingContent = {
+                        if (githubState.isSyncing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            MiuixSettingsTextButton(onClick = ::requestGitHubSync) {
+                                Text(stringResource(CoreCommonR.string.sync_title))
+                            }
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            Icons.Outlined.Download,
+                            contentDescription = stringResource(CoreCommonR.string.settings_data_saver),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_data_saver)) },
+                    supportingContent = { Text(stringResource(CoreCommonR.string.sync_data_saver_desc)) },
+                    trailingContent = {
+                        dataSaverMode?.let { savedMode ->
+                            MiuixSettingsSwitch(
+                                checked = savedMode,
+                                enabled = !isSavingDataSaver,
+                                onCheckedChange = { enabled ->
+                                    if (enabled != savedMode) {
+                                        pendingDataSaverGeneration++
+                                        pendingDataSaverMode = enabled
+                                    }
+                                }
+                            )
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+
+                MiuixSettingsTextButton(
+                    onClick = onOpenClearGitHubConfig,
+                    modifier = Modifier.padding(start = 16.dp)
+                ) {
+                    Text(
+                        stringResource(CoreCommonR.string.settings_clear_config),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            AutoSettingsSwitchItems(
+                repository = autoSettingsRepository,
+                scope = scope,
+                sectionScope = AutoSettingsScopes.backup,
+                highlightTargetId = highlightTargetId,
+                highlightPulse = highlightPulse,
+                onHighlightFinished = onHighlightFinished
+            )
+
+            }
+
+            if (cardIndex == null) BackupDetailGap(showHeader)
+            if (shouldShowCard(3)) BackupDetailCard(
+                showCard = !showHeader,
+                highlighted = false,
+                highlightPulse = highlightPulse,
+                onHighlightFinished = onHighlightFinished
+            ) {
+            MiuixSettingsSectionIntro(
+                title = stringResource(CoreCommonR.string.settings_backup_webdav_section),
+                description = stringResource(CoreCommonR.string.settings_backup_webdav_section_desc)
+            )
+
+            SyncProtocolUpgradeSetting(webDavTarget)
+
+            if (webDavState.isConfigured) {
+                WebDavCleartextWarning(
+                    serverUrl = webDavState.serverUrl,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+
+            ListItem(
+                leadingContent = {
+                    Icon(
+                        Icons.Outlined.Cloud,
+                        contentDescription = stringResource(CoreCommonR.string.webdav_sync_title),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                headlineContent = { Text(stringResource(CoreCommonR.string.webdav_sync_title)) },
+                supportingContent = {
+                    Text(
+                        if (webDavState.isConfigured) {
+                            stringResource(CoreCommonR.string.settings_configured)
+                        } else {
+                            stringResource(CoreCommonR.string.settings_not_configured)
+                        }
+                    )
+                },
+                modifier = Modifier.settingsHighlightTarget(
+                    targetId = "manual:webdav_sync",
+                    highlightTargetId = highlightTargetId,
+                    highlightPulse = highlightPulse,
+                    onHighlightFinished = onHighlightFinished
+                ),
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+            )
+
+            if (!webDavState.isConfigured) {
+                ListItem(
+                    leadingContent = {
+                        SettingRowIcon(
+                            key = "webdav_sync",
+                            Icons.Outlined.Settings,
+                            contentDescription = stringResource(CoreCommonR.string.settings_configure),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_config)) },
+                    supportingContent = { Text(stringResource(CoreCommonR.string.webdav_sync_desc)) },
+                    modifier = Modifier
+                        .settingsHighlightTarget(
+                            targetId = "manual:webdav_auto_sync",
+                            highlightTargetId = highlightTargetId,
+                            highlightPulse = highlightPulse,
+                            onHighlightFinished = onHighlightFinished
+                        )
+                        .settingsItemClickable(onClick = onOpenWebDavConfig),
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+            } else {
+                ListItem(
+                    leadingContent = {
+                        SettingRowIcon(
+                            key = "webdav_auto_sync",
+                            Icons.Outlined.Sync,
+                            contentDescription = stringResource(CoreCommonR.string.settings_auto_sync),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_auto)) },
+                    supportingContent = { Text(stringResource(CoreCommonR.string.webdav_auto_sync_desc)) },
+                    trailingContent = {
+                        MiuixSettingsSwitch(
+                            checked = webDavState.autoSyncEnabled,
+                            onCheckedChange = { webDavVm?.toggleAutoSync(context, it) }
+                        )
+                    },
+                    modifier = Modifier.settingsHighlightTarget(
+                        targetId = "manual:webdav_auto_sync",
+                        highlightTargetId = highlightTargetId,
+                        highlightPulse = highlightPulse,
+                        onHighlightFinished = onHighlightFinished
+                    ),
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+
+                ListItem(
+                    leadingContent = {
+                        SettingRowIcon(
+                            key = "webdav_auto_sync",
+                            Icons.Outlined.CloudUpload,
+                            contentDescription = stringResource(CoreCommonR.string.settings_sync_now),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    headlineContent = { Text(stringResource(CoreCommonR.string.sync_now)) },
+                    supportingContent = {
+                        if (webDavState.lastSyncTime > 0) {
+                            Text(
+                                stringResource(
+                                    CoreCommonR.string.sync_last_time,
+                                    formatSyncTime(webDavState.lastSyncTime)
+                                )
+                            )
+                        } else {
+                            Text(stringResource(CoreCommonR.string.sync_not_synced))
+                        }
+                    },
+                    trailingContent = {
+                        if (webDavState.isSyncing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            MiuixSettingsTextButton(onClick = ::requestWebDavSync) {
+                                Text(stringResource(CoreCommonR.string.sync_title))
+                            }
+                        }
+                    },
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                )
+
+                MiuixSettingsTextButton(
+                    onClick = onOpenClearWebDavConfig,
+                    modifier = Modifier.padding(start = 16.dp)
+                ) {
+                    Text(
+                        stringResource(CoreCommonR.string.settings_clear_config),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            }
+
+            if (hasSyncMessage && shouldShowCard(4)) {
+                if (cardIndex == null) BackupDetailGap(showHeader)
+                BackupDetailCard(
+                    showCard = !showHeader,
+                    highlighted = highlightTargetId in messageTargets,
+                    highlightPulse = highlightPulse,
+                    onHighlightFinished = onHighlightFinished
+                ) {
+                    MiuixSettingsSectionIntro(
+                        title = stringResource(CoreCommonR.string.settings_backup_message_section),
+                        description = stringResource(CoreCommonR.string.settings_backup_message_section_desc)
+                    )
+                    githubState.errorMessage?.let { error ->
+                        SyncMessageCard(
+                            message = error.asString(),
+                            isSuccess = false,
+                            onClose = { githubVm?.clearMessages() }
+                        )
+                    }
+
+                    githubState.successMessage?.let { message ->
+                        SyncMessageCard(
+                            message = message.asString(),
+                            isSuccess = true,
+                            onClose = { githubVm?.clearMessages() }
+                        )
+                    }
+
+                    webDavState.errorMessage?.let { error ->
+                        SyncMessageCard(
+                            message = error.asString(),
+                            isSuccess = false,
+                            onClose = { webDavVm?.clearMessages() }
+                        )
+                    }
+
+                    webDavState.successMessage?.let { message ->
+                        SyncMessageCard(
+                            message = message.asString(),
+                            isSuccess = true,
+                            onClose = { webDavVm?.clearMessages() }
+                        )
+                    }
+                }
+            }
+        }
+
+        currentMode?.takeIf { showPlayHistoryModeDialog }?.let { selectedMode ->
+            PlayHistoryModeDialog(
+                currentMode = selectedMode,
+                onDismiss = { showPlayHistoryModeDialog = false },
+                onSelect = { mode ->
+                    currentMode = mode
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            PlayHistorySyncPreferences(context.applicationContext)
+                                .setUpdateMode(mode)
+                        }
+                    }
+                    showPlayHistoryModeDialog = false
+                }
+            )
+        }
+
+        if (pendingDataSaverMode != null) {
+            MiuixSettingsDialog(
+                onDismissRequest = { pendingDataSaverMode = null },
+                title = { Text(stringResource(CoreCommonR.string.sync_data_saver_warning_title)) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(stringResource(CoreCommonR.string.sync_data_saver_warning_message))
+                        if (dataSaverSaveFailed) MiuixSettingsInlineMessage(
+                            message = stringResource(CoreCommonR.string.sync_secure_storage_unavailable),
+                            isSuccess = false
+                        )
+                    }
+                },
+                confirmButton = {
+                    MiuixSettingsTextButton(
+                        onClick = {
+                            val enabled = pendingDataSaverMode ?: return@MiuixSettingsTextButton
+                            isSavingDataSaver = true
+                            scope.launch {
+                                try {
+                                    withContext(Dispatchers.IO) {
+                                        SecureTokenStorage(context.applicationContext).setDataSaverMode(enabled)
+                                    }
+                                    dataSaverMode = enabled
+                                    pendingDataSaverMode = null
+                                    dataSaverSaveFailed = false
+                                    preferenceReload++
+                                } catch (_: SyncStorageUnavailableException) {
+                                    dataSaverSaveFailed = true
+                                } finally {
+                                    isSavingDataSaver = false
+                                }
+                            }
+                        },
+                        enabled = !isSavingDataSaver
+                    ) {
+                        Text(stringResource(CoreCommonR.string.sync_data_saver_warning_confirm))
+                    }
+                },
+                dismissButton = {
+                    MiuixSettingsTextButton(onClick = { pendingDataSaverMode = null }) {
+                        Text(stringResource(CoreCommonR.string.action_cancel))
+                    }
+                }
+            )
+        }
+    }
+
+    if (showHeader) {
+        LazyAnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            content()
+        }
+    } else {
+        content()
+    }
+}
+
+internal data class BackupSyncPreferenceSnapshot(
+    val playHistoryUpdateMode: PlayHistoryUpdateMode? = null,
+    val dataSaverMode: Boolean? = null
+)
+
+internal sealed interface BackupSyncPreferenceLoad {
+    val snapshot: BackupSyncPreferenceSnapshot
+
+    data class Loaded(override val snapshot: BackupSyncPreferenceSnapshot) : BackupSyncPreferenceLoad
+    data class Unavailable(override val snapshot: BackupSyncPreferenceSnapshot) : BackupSyncPreferenceLoad
+}
+
+internal fun loadBackupSyncPreferenceSnapshot(
+    context: android.content.Context,
+    needsPlayHistoryMode: Boolean,
+    needsDataSaverMode: Boolean
+): BackupSyncPreferenceLoad {
+    var unavailable = false
+    val mode = if (needsPlayHistoryMode) {
+        try {
+            val preferences = PlayHistorySyncPreferences(context.applicationContext)
+            val snapshot = preferences.snapshot {
+                SecureTokenStorage(context.applicationContext).getLegacyPlayHistoryUpdateModeName()
+            }
+            PlayHistoryUpdateMode.fromStoredName(snapshot.playHistoryUpdateMode)
+        } catch (_: SyncStorageUnavailableException) {
+            unavailable = true
+            null
+        }
+    } else null
+    val dataSaver = if (needsDataSaverMode) {
+        try {
+            SecureTokenStorage(context.applicationContext).isDataSaverMode()
+        } catch (_: SyncStorageUnavailableException) {
+            unavailable = true
+            null
+        }
+    } else null
+    val snapshot = BackupSyncPreferenceSnapshot(
+        playHistoryUpdateMode = mode,
+        dataSaverMode = dataSaver
+    )
+    return if (unavailable) BackupSyncPreferenceLoad.Unavailable(snapshot) else BackupSyncPreferenceLoad.Loaded(snapshot)
+}
+
+@Composable
+private fun BackupDetailCard(
+    showCard: Boolean,
+    highlighted: Boolean = false,
+    highlightPulse: Int = 0,
+    onHighlightFinished: (() -> Unit)? = null,
+    content: @Composable () -> Unit
+) {
+    if (showCard) {
+        MiuixSettingsSectionCard(
+            highlighted = highlighted,
+            highlightPulse = highlightPulse,
+            onHighlightFinished = if (highlighted) onHighlightFinished else null,
+            content = content
+        )
+    } else {
+        content()
+    }
+}
+
+@Composable
+private fun BackupDetailGap(showHeader: Boolean) {
+    if (showHeader) {
+        HorizontalDivider(
+            modifier = Modifier.padding(vertical = 8.dp),
+            color = MaterialTheme.colorScheme.outlineVariant
+        )
+    } else {
+        Spacer(Modifier.height(12.dp))
+    }
+}
+
+@Composable
+private fun ProgressStatusItem(title: String, message: String) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(message) },
+        trailingContent = {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp
+            )
+        },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+    )
+}
+
+@Composable
+private fun ResultStatusCard(
+    title: String,
+    message: String,
+    isSuccess: Boolean,
+    onClose: () -> Unit
+) {
+    val resolvedMessage = buildString {
+        append(title)
+        if (message.isNotBlank()) {
+            append('\n')
+            append(message)
+        }
+    }
+    MiuixSettingsInlineMessage(
+        message = resolvedMessage,
+        isSuccess = isSuccess,
+        modifier = Modifier.padding(horizontal = 8.dp),
+        onClose = onClose
+    )
+}
+
+@Composable
+private fun SyncMessageCard(
+    message: String,
+    isSuccess: Boolean,
+    onClose: () -> Unit
+) {
+    MiuixSettingsInlineMessage(
+        message = message,
+        isSuccess = isSuccess,
+        modifier = Modifier.padding(horizontal = 8.dp),
+        onClose = onClose
+    )
+}
+
+@Composable
+private fun PlayHistoryModeDialog(
+    currentMode: PlayHistoryUpdateMode,
+    onDismiss: () -> Unit,
+    onSelect: (PlayHistoryUpdateMode) -> Unit
+) {
+    MiuixSettingsDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(CoreCommonR.string.sync_history_frequency)) },
+        text = {
+            Column {
+                Text(
+                    text = stringResource(CoreCommonR.string.sync_frequency_desc),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                PlayHistorySyncPreferences.UpdateMode.selectableModes.forEach { mode ->
+                    PlayHistoryModeOption(
+                        selected = currentMode == mode,
+                        title = playHistoryUpdateModeTitle(mode),
+                        description = playHistoryUpdateModeDescription(mode),
+                        onClick = {
+                            onSelect(mode)
+                        }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            MiuixSettingsTextButton(onClick = onDismiss) {
+                Text(stringResource(CoreCommonR.string.action_close))
+            }
+        }
+    )
+}
+
+@Composable
+private fun playHistoryUpdateModeSummary(
+    mode: PlayHistoryUpdateMode
+): String {
+    return when (mode) {
+        PlayHistoryUpdateMode.IMMEDIATE -> {
+            stringResource(CoreCommonR.string.settings_update_immediate)
+        }
+        else -> {
+            val intervalMinutes = mode.intervalMinutes
+                ?: return stringResource(CoreCommonR.string.settings_update_immediate)
+            pluralStringResource(
+                AppR.plurals.settings_update_every_minutes,
+                intervalMinutes,
+                intervalMinutes
+            )
+        }
+    }
+}
+
+@Composable
+private fun playHistoryUpdateModeTitle(
+    mode: PlayHistoryUpdateMode
+): String {
+    return when (mode) {
+        PlayHistoryUpdateMode.IMMEDIATE -> {
+            stringResource(CoreCommonR.string.sync_after_play)
+        }
+        else -> {
+            val intervalMinutes = mode.intervalMinutes
+                ?: return stringResource(CoreCommonR.string.sync_after_play)
+            pluralStringResource(
+                AppR.plurals.sync_every_minutes,
+                intervalMinutes,
+                intervalMinutes
+            )
+        }
+    }
+}
+
+@Composable
+private fun playHistoryUpdateModeDescription(
+    mode: PlayHistoryUpdateMode
+): String {
+    return when (mode) {
+        PlayHistoryUpdateMode.IMMEDIATE -> {
+            stringResource(CoreCommonR.string.sync_after_play_desc)
+        }
+        else -> {
+            val intervalMinutes = mode.intervalMinutes
+                ?: return stringResource(CoreCommonR.string.sync_after_play_desc)
+            pluralStringResource(
+                AppR.plurals.sync_every_minutes_desc,
+                intervalMinutes,
+                intervalMinutes
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayHistoryModeOption(
+    selected: Boolean,
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    MiuixSettingsChoiceRow(
+        title = title,
+        subtitle = description,
+        selected = selected,
+        onClick = onClick
+    )
+}
+
+private val BackupGlyphShape = ContinuousRoundedCornerShape(9.dp)
+private val BackupActionShape = ContinuousRoundedCornerShape(16.dp)
+
+/**
+ * One backup subject with its two directions side by side. Export always points out of the
+ * tray and import into it, so the pair cannot be confused even before reading the labels.
+ */
+@Composable
+private fun CleanBackupTransferGroup(
+    icon: ImageVector,
+    hue: Color,
+    title: String,
+    subtitle: String,
+    exportLabel: String,
+    importLabel: String,
+    exportModifier: Modifier,
+    importModifier: Modifier,
+    onExport: () -> Unit,
+    onImport: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(BackupGlyphShape)
+                    .background(hue),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(19.dp))
+            }
+            Column(Modifier.padding(start = 12.dp).weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurface)
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CleanBackupActionTile(
+                icon = Icons.Rounded.FileUpload,
+                label = exportLabel,
+                hint = stringResource(CoreCommonR.string.settings_backup_action_export_hint),
+                modifier = exportModifier.weight(1f),
+                onClick = onExport
+            )
+            CleanBackupActionTile(
+                icon = Icons.Rounded.FileDownload,
+                label = importLabel,
+                hint = stringResource(CoreCommonR.string.settings_backup_action_import_hint),
+                modifier = importModifier.weight(1f),
+                onClick = onImport
+            )
+        }
+    }
+}
+
+@Composable
+private fun CleanBackupActionTile(
+    icon: ImageVector,
+    label: String,
+    hint: String,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = modifier
+            .heightIn(min = 76.dp)
+            .clip(BackupActionShape)
+            .background(colors.onSurface.copy(alpha = 0.06f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = colors.primary, modifier = Modifier.size(22.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = colors.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            hint,
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}

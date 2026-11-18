@@ -6,20 +6,66 @@ import android.database.Cursor;
 import android.database.MatrixCursor;
 import android.net.Uri;
 import android.os.ParcelFileDescriptor;
+import android.os.Bundle;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import androidx.annotation.NonNull;
+import moe.ouom.neriplayer.test.BuildConfig;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 
 public final class StagedMetadataTestProvider extends ContentProvider {
     public static final String AUTHORITY =
-        "moe.ouom.neriplayer.test.stagedmetadataprovider";
+        BuildConfig.APPLICATION_ID + ".stagedmetadataprovider";
     public static final String DIRECTORY_NAME = "staged_metadata_test";
     public static final String DISPLAY_NAME = "staged-content-probe.m4a";
     public static final Uri CONTENT_URI = Uri.parse(
         "content://" + AUTHORITY + "/audio/" + DISPLAY_NAME
     );
+
+    private boolean failNextWrite;
+    private final ArrayList<String> writeModes = new ArrayList<>();
+
+    @Override
+    public Bundle call(@NonNull String method, String arg, Bundle extras) {
+        if ("failNextWrite".equals(method)) {
+            failNextWrite = true;
+            return new Bundle();
+        }
+        if ("resetWriteModes".equals(method)) {
+            writeModes.clear();
+            return new Bundle();
+        }
+        if ("writeModes".equals(method)) {
+            Bundle result = new Bundle();
+            result.putStringArrayList("modes", new ArrayList<>(writeModes));
+            return result;
+        }
+        if ("replaceWithSameBytes".equals(method)) {
+            File file = backingFile();
+            try {
+                File replacement = File.createTempFile("replacement-", ".m4a", file.getParentFile());
+                try {
+                    Files.copy(file.toPath(), replacement.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                    if (!replacement.renameTo(file)) throw new IOException("Unable to replace provider object");
+                } finally {
+                    if (replacement.exists() && !replacement.delete()) {
+                        throw new IOException("Unable to remove replacement fixture");
+                    }
+                }
+                return new Bundle();
+            } catch (IOException error) {
+                throw new IllegalStateException("Unable to replace provider object", error);
+            }
+        }
+        return super.call(method, arg, extras);
+    }
 
     @Override
     public boolean onCreate() {
@@ -27,13 +73,13 @@ public final class StagedMetadataTestProvider extends ContentProvider {
     }
 
     @Override
-    public String getType(Uri uri) {
+    public String getType(@NonNull Uri uri) {
         return "audio/mp4";
     }
 
     @Override
     public Cursor query(
-        Uri uri,
+        @NonNull Uri uri,
         String[] projection,
         String selection,
         String[] selectionArgs,
@@ -62,32 +108,52 @@ public final class StagedMetadataTestProvider extends ContentProvider {
     }
 
     @Override
-    public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
+    public ParcelFileDescriptor openFile(@NonNull Uri uri, @NonNull String mode) throws FileNotFoundException {
         File file = backingFile();
-        if ("rw".equals(mode)) {
+        if (mode.contains("w")) writeModes.add(mode);
+        if ("rw".equals(mode) && "true".equals(uri.getQueryParameter("noRw"))) {
             throw new FileNotFoundException("The provider does not support direct rw access");
         }
-        int flags = mode.contains("w")
-            ? ParcelFileDescriptor.MODE_READ_WRITE
-                | ParcelFileDescriptor.MODE_CREATE
-                | ParcelFileDescriptor.MODE_TRUNCATE
-            : ParcelFileDescriptor.MODE_READ_ONLY;
-        return ParcelFileDescriptor.open(file, flags);
+        if ("r".equals(mode) && "true".equals(uri.getQueryParameter("pipe"))) {
+            try {
+                ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
+                new Thread(() -> {
+                    try (FileInputStream input = new FileInputStream(file);
+                         ParcelFileDescriptor.AutoCloseOutputStream output = new ParcelFileDescriptor.AutoCloseOutputStream(pipe[1])) {
+                        byte[] buffer = new byte[4096];
+                        int count;
+                        while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+                    } catch (IOException ignored) {
+                        // 消费者提前关闭时结束本次受控管道写入
+                    }
+                }, "metadata-pipe-fixture").start();
+                return pipe[0];
+            } catch (IOException error) {
+                throw new FileNotFoundException(error.getMessage());
+            }
+        }
+        if (mode.contains("w") && (failNextWrite || "true".equals(uri.getQueryParameter("readOnlyWrites")))) {
+            failNextWrite = false;
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY);
+        }
+        return ParcelFileDescriptor.open(file, ParcelFileDescriptor.parseMode(mode));
     }
 
     @Override
-    public Uri insert(Uri uri, ContentValues values) {
+    public Uri insert(@NonNull Uri uri, ContentValues values) {
         return null;
     }
 
     @Override
-    public int delete(Uri uri, String selection, String[] selectionArgs) {
+    public int delete(@NonNull Uri uri, String selection, String[] selectionArgs) {
+        failNextWrite = false;
+        writeModes.clear();
         return backingFile().delete() ? 1 : 0;
     }
 
     @Override
     public int update(
-        Uri uri,
+        @NonNull Uri uri,
         ContentValues values,
         String selection,
         String[] selectionArgs

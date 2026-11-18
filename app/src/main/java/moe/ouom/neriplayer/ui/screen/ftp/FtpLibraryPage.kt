@@ -1,4 +1,4 @@
-﻿package moe.ouom.neriplayer.ui.screen.ftp
+package moe.ouom.neriplayer.ui.screen.ftp
 
 /*
  * NeriPlayer - A unified Android player for streaming music and videos from multiple online platforms.
@@ -70,9 +70,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import moe.ouom.neriplayer.R
-import moe.ouom.neriplayer.core.ftp.FtpEntry
-import moe.ouom.neriplayer.ui.LocalMiniPlayerHeight
+import moe.ouom.neriplayer.common.R
+import moe.ouom.neriplayer.platform.ftp.FtpEntry
+import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import androidx.compose.ui.res.stringResource
 import moe.ouom.neriplayer.ui.viewmodel.ftp.FtpViewModel
 import java.util.Locale
@@ -443,7 +443,7 @@ private fun FtpEntryRow(
 @Composable
 private fun FtpConfigForm(
     vm: FtpViewModel,
-    config: moe.ouom.neriplayer.data.ftp.FtpServerConfig,
+    config: moe.ouom.neriplayer.platform.ftp.storage.FtpServerConfig,
     saving: Boolean,
     error: String?,
     canClear: Boolean,

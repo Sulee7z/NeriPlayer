@@ -30,7 +30,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
-import moe.ouom.neriplayer.core.customsource.CustomAudioSource
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.update
+import moe.ouom.neriplayer.platform.customsource.CustomAudioSource
 import moe.ouom.neriplayer.core.di.AppContainer
 
 data class CustomSourceUiState(
@@ -50,7 +52,10 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
 
     init {
         viewModelScope.launch {
-            repo.load()
+            try { repo.load() } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                _uiState.update { it.copy(message = "音源加载失败: ${error.message}") }
+            }
             combine(repo.sources, repo.priorityMode) { sources, priority ->
                 sources to priority
             }.collect { (sources, priority) ->
@@ -77,7 +82,7 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
         }
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val result = runCatching {
+            val result = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation {
                 val probe = manager.probeScript(scriptContent)
                 repo.importScript(
                     scriptContent = scriptContent,
@@ -105,11 +110,11 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
         if (trimmed.isBlank()) return
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val result = runCatching {
+            val result = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation {
                 val content = manager.fetchScriptFromUrl(trimmed)
-                    ?: return@runCatching "下载失败,请确认链接可访问(需以 http/https 开头)"
+                    ?: return@runCatchingNonCancellation "下载失败,请确认链接可访问(需以 http/https 开头)"
                 if (!manager.validateScriptContent(content)) {
-                    return@runCatching "下载的内容看起来不像 LX 音源脚本, 已取消导入"
+                    return@runCatchingNonCancellation "下载的内容看起来不像 LX 音源脚本, 已取消导入"
                 }
                 val probe = manager.probeScript(content)
                 repo.importScript(
@@ -133,7 +138,7 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun setEnabled(id: String, enabled: Boolean) {
-        viewModelScope.launch {
+        mutate {
             repo.setEnabled(id, enabled)
             manager.onActiveSourceChanged()
             if (enabled) manager.warmActive()
@@ -142,23 +147,23 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
 
     fun rename(id: String, name: String) {
         if (name.trim().isBlank()) return
-        viewModelScope.launch { repo.rename(id, name) }
+        mutate { repo.rename(id, name) }
     }
 
     fun moveUp(id: String) {
-        viewModelScope.launch { repo.move(id, -1) }
+        mutate { repo.move(id, -1); manager.onActiveSourceChanged() }
     }
 
     fun moveDown(id: String) {
-        viewModelScope.launch { repo.move(id, 1) }
+        mutate { repo.move(id, 1); manager.onActiveSourceChanged() }
     }
 
     fun setPriorityMode(priority: Boolean) {
-        viewModelScope.launch { repo.setPriorityMode(priority) }
+        mutate { repo.setPriorityMode(priority); manager.onActiveSourceChanged() }
     }
 
     fun delete(id: String) {
-        viewModelScope.launch {
+        mutate {
             repo.delete(id)
             manager.onActiveSourceChanged()
         }
@@ -170,9 +175,35 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
             val source = _uiState.value.sources.firstOrNull { it.id == id }
                 ?: return@launch
             _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val msg = runCatching { manager.diagnoseNetease(source) }
+            val msg = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation { manager.diagnoseNetease(source) }
                 .getOrElse { "测试异常: ${it.message}" }
             _uiState.value = _uiState.value.copy(busy = false, message = msg)
+        }
+    }
+
+    fun importScriptFromUri(uri: android.net.Uri) {
+        mutate {
+            val content = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        require(read <= 2 * 1024 * 1024 - output.size()) { "脚本超过 2 MiB" }
+                        output.write(buffer, 0, read)
+                    }
+                    output.toString(Charsets.UTF_8)
+                } ?: error("无法读取音源文件")
+            }
+            importScript(content)
+        }
+    }
+
+    private fun mutate(block: suspend () -> Unit) {
+        viewModelScope.launch {
+            try { block() } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _uiState.update { it.copy(message = "保存失败: ${error.message}") } }
         }
     }
 }
