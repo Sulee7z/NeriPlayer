@@ -71,8 +71,8 @@
 - `module_boundaries.py`: passed.
 - Final targeted verification passed with zero failures: app (18), local (10),
   platform (11), network (3), playback logic (3), and listen-together (9).
-- Python quality-tool tests: 165 passed. The final APK SHA-256 is recorded by
-  the build session; the artifact was rebuilt after the latest code changes.
+- Python quality-tool tests: 165 passed.
+- Final APK SHA-256: `f4a7eb6cd4b777bb9ffe4a652fd424f37ca306e1540f250fe62f05d06c7cc455`.
 - A full app JVM run completed 4032 tests with 20 failures and 1 skipped on this
   Windows host. Failures span Robolectric storage/URI assumptions, filesystem and
   image fixtures, and a UI rendering test. Do not treat the entire suite as passing
