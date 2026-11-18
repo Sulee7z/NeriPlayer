@@ -1,4 +1,4 @@
-# Upstream sync and fork audit
+﻿# Upstream sync and fork audit
 
 ## Revisions
 
@@ -69,8 +69,10 @@
 - `gradle help`: passed.
 - `:app:assembleDebug`: passed; final APK at `app/build/outputs/apk/debug/app-debug.apk`.
 - `module_boundaries.py`: passed.
-- Final targeted verification passed with zero failures: app (42), local (38),
-  platform (287), network (46), playback logic (3), and listen-together (14).
+- Final targeted verification passed with zero failures: app (18), local (10),
+  platform (11), network (3), playback logic (3), and listen-together (9).
+- Python quality-tool tests: 165 passed. The final APK SHA-256 is recorded by
+  the build session; the artifact was rebuilt after the latest code changes.
 - A full app JVM run completed 4032 tests with 20 failures and 1 skipped on this
   Windows host. Failures span Robolectric storage/URI assumptions, filesystem and
   image fixtures, and a UI rendering test. Do not treat the entire suite as passing
