@@ -4,6 +4,9 @@
 
 - Fork base: `fe680a3bb2503e5c727bfb0e767265056c6ca5d5`
 - Upstream snapshot: `7b4a47cb2ea76866968c6f6e7743d008cdbb7b9e`
+- Local upstream merge: `fe680a3b` (two parents: fork and upstream)
+- Local audit integration: `c840d008`
+- Local post-audit hardening: `c0c93004`
 - Strategy: preserve the upstream module split, storage/sync/playback architecture,
   and UI implementation; port fork-only platform APIs and UI through host
   dependencies rather than restoring the old `AppContainer` calls inside libraries.
@@ -68,17 +71,18 @@
 - `module_boundaries.py`: passed.
 - Final targeted verification passed with zero failures: app (42), local (38),
   platform (287), network (46), playback logic (3), and listen-together (14).
-- A separate full app JVM run completed 4032 tests with 20 failures and 1 skipped.
-  This included pre-existing Windows/Robolectric filesystem, datastore and bitmap
-  fixture failures. The three newly added library tabs and QQ search are opt-in
-  to their display-order helpers, retaining the upstream default order.
+- A full app JVM run completed 4032 tests with 20 failures and 1 skipped on this
+  Windows host. Failures span Robolectric storage/URI assumptions, filesystem and
+  image fixtures, and a UI rendering test. Do not treat the entire suite as passing
+  on this host; the upstream-only `YouTubeEjsWebViewFallbackSolverTest` also hits
+  the Windows internal-storage sandbox limitation noted below.
 - Upstream `YouTubeEjsWebViewFallbackSolverTest` fails on this Windows Robolectric
   environment because its temporary WebView directory is not recognized as an
   allowed internal-storage path. No production source for that upstream test
   was modified.
-- Boundary checker identified that Bilibili search must be an app-host adapter,
-  not a platform-library dependency on `BiliClient`; it is hosted under
-  `app/core/integration/search` and injected into playback.
+- Boundary checker passed after placing Bilibili search in the app host adapter at
+  `app/src/main/java/moe/ouom/neriplayer/core/integration/search` and injecting
+  it through playback dependencies.
 
-The upstream merge commit is on local branch `sync/upstream-20261118`; audit/fix
-changes are staged but not committed. No remote changes have been pushed.
+The merged branch is `sync/upstream-20261118`. Audit changes are local commits;
+no remote changes have been pushed.
