@@ -211,6 +211,7 @@ internal fun settingsSearchScrollAnchor(
     if (targetId.startsWith("page:")) {
         return SettingsSearchScrollAnchor(itemIndex = 0)
     }
+    if (page == SettingsPage.CustomSource) return SettingsSearchScrollAnchor(itemIndex = 0)
 
     return when (page) {
         SettingsPage.Accounts -> SettingsSearchScrollAnchor(itemIndex = 0)
@@ -894,6 +895,7 @@ private val PageSearchAliases = mapOf(
     SettingsPage.Playback to listOf("playback", "audio", "queue", "volume", "fade", "crossfade", "bofang"),
     SettingsPage.UsbExclusive to listOf("usb", "dac", "pcm", "uac", "exclusive", "bit perfect", "dizhan"),
     SettingsPage.PlaybackSource to listOf("source", "fallback", "bili", "netease", "yinyuan", "huanyuan"),
+    SettingsPage.CustomSource to listOf("custom source", "LX", "LX Music", "洛雪", "音源", "自定义音源", "脚本", "导入", "zidingyi", "yinyuan"),
     SettingsPage.AudioQuality to listOf("quality", "lossless", "hires", "dolby", "bitrate", "yinzhi"),
     SettingsPage.Storage to listOf(
         "storage",

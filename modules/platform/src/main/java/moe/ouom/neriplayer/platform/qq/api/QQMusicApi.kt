@@ -37,7 +37,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import moe.ouom.neriplayer.common.logging.NPLogger
-import moe.ouom.neriplayer.network.http.readUtf8Bounded
+import moe.ouom.neriplayer.network.http.readTextBounded
 import moe.ouom.neriplayer.data.model.SongItem
 import moe.ouom.neriplayer.network.http.awaitResponse
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -671,7 +671,7 @@ class QQMusicApi(
             if (!response.isSuccessful) {
                 throw IOException("QQ 请求失败: ${response.code} for url: ${request.url}")
             }
-            response.body.readUtf8Bounded(4 * 1024 * 1024)
+            response.body.readTextBounded(4 * 1024 * 1024)
         }
     }
 }

@@ -65,6 +65,7 @@ internal fun SettingsPage.cleanGlyph(): SettingsPageGlyph = when (this) {
     SettingsPage.AudioQuality -> SettingsPageGlyph(Icons.Rounded.HighQuality, Orange)
     SettingsPage.AudioEffects -> SettingsPageGlyph(Icons.Rounded.GraphicEq, Pink)
     SettingsPage.PlaybackSource -> SettingsPageGlyph(Icons.AutoMirrored.Rounded.AltRoute, Teal)
+    SettingsPage.CustomSource -> SettingsPageGlyph(Icons.Rounded.Headphones, Teal)
     SettingsPage.UsbExclusive -> SettingsPageGlyph(Icons.Rounded.Usb, Green)
     SettingsPage.Theme -> SettingsPageGlyph(Icons.Rounded.Palette, Purple)
     SettingsPage.NowPlaying -> SettingsPageGlyph(Icons.Rounded.Album, Pink)

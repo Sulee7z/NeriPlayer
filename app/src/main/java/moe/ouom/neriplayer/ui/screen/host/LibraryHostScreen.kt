@@ -754,7 +754,11 @@ fun LibraryHostScreen(
                                         playlist.picUrl, playlist.trackCount, source = playlist.source)
                                 }
                             },
-                            onOpenNeteaseRecent = { openLibrarySelectedItem(LibrarySelectedItem.NeteaseRecent) },
+                            onOpenNeteaseRecent = {
+                                skipDetailCloseAnimation = false
+                                captureLibraryScrollPosition(LibraryScrollSource.NeteasePlaylist)
+                                openLibrarySelectedItem(LibrarySelectedItem.NeteaseRecent)
+                            },
                             onOpenStats = onOpenStats
                         )
                         }

@@ -33,6 +33,8 @@ import moe.ouom.neriplayer.ui.viewmodel.auth.QqAuthEvent
 import moe.ouom.neriplayer.ui.viewmodel.auth.KugouAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.KuwoAuthViewModel
 import moe.ouom.neriplayer.ui.viewmodel.auth.KugouKuwoAuthEvent
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.LocalSettingsPageNavigator
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.SettingsPage
 
 @Composable
 internal fun ForkSettingsEntry() {
@@ -48,6 +50,7 @@ internal fun ForkSettingsEntry() {
     val bypass by settings.customSourceBypassProxyFlow.collectAsStateWithLifecycle(true)
     val alwaysProxy by settings.customSourceAlwaysProxyFlow.collectAsStateWithLifecycle(false)
     val scope = rememberCoroutineScope()
+    val navigate = LocalSettingsPageNavigator.current
     LaunchedEffect(qq) { qq.events.collect {
         when (it) {
             QqAuthEvent.LoginSuccess -> { page = null; message = null }
@@ -67,8 +70,9 @@ internal fun ForkSettingsEntry() {
         }
     } }
     Column {
-        ListItem(headlineContent = { Text(stringResource(R.string.custom_source_title)) },
-            modifier = Modifier.clickable { page = "source" })
+        CustomSourceSettingsLink {
+            if (navigate != null) navigate(SettingsPage.CustomSource) else page = "source"
+        }
         ListItem(headlineContent = { Text(stringResource(R.string.settings_custom_source_bypass_proxy)) },
             trailingContent = { Switch(bypass, { scope.launch { settings.setCustomSourceBypassProxy(it) } }) })
         ListItem(headlineContent = { Text(stringResource(R.string.settings_custom_source_always_proxy)) },

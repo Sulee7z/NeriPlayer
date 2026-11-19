@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -55,6 +56,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -136,12 +141,17 @@ fun NeteaseRecentScreen(
     onSongClick: (List<SongItem>, Int) -> Unit = { _, _ -> },
     offlineMode: Boolean = false
 ) {
-    val offlineError = stringResource(R.string.qq_playlist_offline_unavailable)
+    val offlineError = stringResource(R.string.netease_recent_offline)
     val needLoginText = stringResource(R.string.netease_recent_need_login)
+    val cookies by AppContainer.neteaseCookieRepo.cookieFlow.collectAsStateWithLifecycle()
+    var refresh by rememberSaveable { mutableIntStateOf(0) }
     val state by produceState<NeteaseRecentUiState>(
         initialValue = NeteaseRecentUiState.Loading,
-        key1 = offlineMode
+        key1 = offlineMode,
+        key2 = cookies["MUSIC_U"],
+        key3 = refresh
     ) {
+        value = NeteaseRecentUiState.Loading
         value = if (offlineMode) {
             NeteaseRecentUiState.Error(offlineError)
         } else {
@@ -198,6 +208,11 @@ fun NeteaseRecentScreen(
                         )
                     }
                 },
+                actions = {
+                    HapticIconButton(onClick = { refresh++ }) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = stringResource(R.string.action_retry))
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = Color.Transparent,
                     scrolledContainerColor = MaterialTheme.colorScheme.surface
@@ -240,14 +255,19 @@ fun NeteaseRecentScreen(
                             modifier = Modifier.padding(horizontal = 32.dp)
                         )
                         Spacer(Modifier.height(12.dp))
-                        OutlinedButton(onClick = onBack) {
-                            Text(stringResource(R.string.action_back))
+                        OutlinedButton(onClick = { refresh++ }) {
+                            Text(stringResource(R.string.action_retry))
                         }
                     }
                 }
             }
 
             is NeteaseRecentUiState.Ready -> {
+                if (current.records.isEmpty()) {
+                    Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                        Text(stringResource(R.string.netease_recent_empty))
+                    }
+                } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize().padding(padding),
                     contentPadding = PaddingValues(
@@ -321,6 +341,7 @@ fun NeteaseRecentScreen(
                             }
                         }
                     }
+                }
                 }
             }
         }

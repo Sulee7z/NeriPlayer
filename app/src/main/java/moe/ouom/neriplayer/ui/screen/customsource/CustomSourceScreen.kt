@@ -83,15 +83,20 @@ import moe.ouom.neriplayer.platform.customsource.CustomAudioSource
 import moe.ouom.neriplayer.platform.customsource.CustomSourceMetadataParser
 import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.viewmodel.customsource.CustomSourceViewModel
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.platform.testTag
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CustomSourceScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    listState: LazyListState = rememberLazyListState(),
+    sourceViewModel: CustomSourceViewModel? = null
 ) {
     val context = LocalContext.current
     val appContext = remember(context) { context.applicationContext }
-    val vm: CustomSourceViewModel = viewModel(
+    val vm: CustomSourceViewModel = sourceViewModel ?: viewModel(
         factory = viewModelFactory {
             initializer {
                 CustomSourceViewModel(appContext as Application)
@@ -125,7 +130,7 @@ fun CustomSourceScreen(
     }
 
     Scaffold(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().testTag("custom-source-manager"),
         topBar = {
             TopAppBar(
                 modifier = Modifier.statusBarsPadding(),
@@ -141,6 +146,7 @@ fun CustomSourceScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         LazyColumn(
+            state = listState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),

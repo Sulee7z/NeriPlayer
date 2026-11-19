@@ -47,6 +47,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.rounded.Cloud
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -90,7 +92,8 @@ internal fun NeteaseLibraryList(
     onAlbumClick: (AlbumSummary) -> Unit,
     onCloudClick: () -> Unit,
     showCloudEntry: Boolean,
-    offlineMode: Boolean
+    offlineMode: Boolean,
+    onRecentClick: () -> Unit = {}
 ) {
     var playlistSearchQuery by rememberSaveable { mutableStateOf("") }
     var albumSearchQuery by rememberSaveable { mutableStateOf("") }
@@ -135,6 +138,7 @@ internal fun NeteaseLibraryList(
                     }
                 }
             )
+            NeteaseRecentEntryRow(cardShape = cardShape, onClick = onRecentClick)
             LibraryInlineSearchField(
                 query = searchQuery,
                 onQueryChange = { value ->
@@ -217,6 +221,26 @@ internal fun NeteaseLibraryList(
                 )
             }
         }
+    }
+}
+
+/** Always visible, including logged-out/offline states; the destination explains them. */
+@Composable
+internal fun NeteaseRecentEntryRow(cardShape: Shape, onClick: () -> Unit) {
+    Card(
+        shape = cardShape,
+        colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
+            .testTag("netease-cloud-history-entry").clickable(onClick = onClick)
+    ) {
+        ListItem(
+            headlineContent = { Text(stringResource(CoreCommonR.string.netease_recent_title)) },
+            supportingContent = { Text(stringResource(CoreCommonR.string.netease_recent_entry_desc)) },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            leadingContent = { Icon(Icons.Outlined.History, contentDescription = null,
+                modifier = Modifier.size(56.dp).padding(14.dp)) }
+        )
     }
 }
 

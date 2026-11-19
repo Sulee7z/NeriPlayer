@@ -391,11 +391,6 @@ fun LibraryScreen(
                 scrolledContainerColor = Color.Transparent
             ),
             actions = {
-                if (orderedTabs.getOrNull(pagerState.currentPage) == LibraryTab.NETEASE && ui.neteaseLoggedIn) {
-                    androidx.compose.material3.TextButton(onClick = onOpenNeteaseRecent) {
-                        Text(stringResource(CoreCommonR.string.netease_recent_title))
-                    }
-                }
                 HapticIconButton(onClick = onOpenStats) {
                     Icon(
                         Icons.Filled.BarChart,
@@ -504,7 +499,8 @@ fun LibraryScreen(
                             onAlbumClick = onNeteaseAlbumClick,
                             onCloudClick = onNeteaseCloudClick,
                             showCloudEntry = ui.neteaseLoggedIn,
-                            offlineMode = offlineMode
+                            offlineMode = offlineMode,
+                            onRecentClick = onOpenNeteaseRecent
                         ) }
 
                         LibraryTab.YTMUSIC -> LibraryPullToRefresh(

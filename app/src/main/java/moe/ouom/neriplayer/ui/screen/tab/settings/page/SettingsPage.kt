@@ -149,6 +149,11 @@ internal enum class SettingsPage(
         titleRes = CoreCommonR.string.settings_about,
         descriptionRes = CoreCommonR.string.settings_about_desc,
         icon = Icons.Outlined.Info
+    ),
+    CustomSource(
+        titleRes = CoreCommonR.string.custom_source_entry_title,
+        descriptionRes = CoreCommonR.string.custom_source_entry_desc,
+        icon = Icons.Outlined.LibraryMusic
     );
 
     constructor(section: AutoSettingsSectionEntry, fallbackIcon: ImageVector) : this(
@@ -173,6 +178,7 @@ internal val SettingsHomePageGroups: List<List<SettingsPage>> = listOf(
         SettingsPage.AudioQuality,
         SettingsPage.AudioEffects,
         SettingsPage.PlaybackSource,
+        SettingsPage.CustomSource,
         SettingsPage.UsbExclusive
     ),
     listOf(

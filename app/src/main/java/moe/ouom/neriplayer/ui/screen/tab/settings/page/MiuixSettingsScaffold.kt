@@ -535,9 +535,15 @@ internal fun MiuixSettingsResponsiveDetailScaffold(
     detailContent: (LazyListScope.(SettingsPage) -> Unit)? = null,
     detailListStates: Map<SettingsPage, LazyListState>? = null,
     detailTopAppBarStates: Map<SettingsPage, TopAppBarState>? = null,
+    customPageContent: Map<SettingsPage, @Composable () -> Unit> = emptyMap(),
     content: LazyListScope.() -> Unit
 ) {
     if (!splitLayout) {
+        val custom = customPageContent[selectedPage]
+        if (custom != null) {
+            custom()
+            return
+        }
         MiuixSettingsDetailScaffold(
             title = title,
             onBack = onBack,
@@ -587,6 +593,10 @@ internal fun MiuixSettingsResponsiveDetailScaffold(
                     onBack = onBack
                 ) { page ->
                     if (page != null) {
+                        val custom = customPageContent[page]
+                        if (custom != null) {
+                            custom()
+                        } else {
                         MiuixSettingsDetailScaffold(
                             title = stringResource(page.titleRes),
                             onBack = onBack,
@@ -603,6 +613,7 @@ internal fun MiuixSettingsResponsiveDetailScaffold(
                             } else {
                                 detailContent(page)
                             }
+                        }
                         }
                     }
                 }

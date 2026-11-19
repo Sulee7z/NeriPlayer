@@ -16,6 +16,13 @@ import org.mockito.stubbing.Answer
 
 class SettingsPageTest {
     @Test
+    fun customSourceSearchTargetsTheVisibleManagementPage() {
+        val group = SettingsHomePageGroups.first { SettingsPage.PlaybackSource in it }
+        assertTrue(SettingsPage.CustomSource in group)
+        assertEquals(null, SettingsPage.CustomSource.backTargetPage())
+        assertEquals(0, settingsSearchScrollAnchor(SettingsPage.CustomSource, "page:CustomSource").itemIndex)
+    }
+    @Test
     fun colorOsLyricsSearchOpensExternalLyricsConfigurationCard() {
         val setting = AutoSettingsMetadata.settings.first {
             it.keyName == "coloros_lockscreen_lyrics_enabled"

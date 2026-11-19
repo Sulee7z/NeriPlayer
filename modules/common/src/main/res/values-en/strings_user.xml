@@ -85,6 +85,8 @@
 <string name="netease_recent_entry_desc">View recent plays from your NetEase account</string>
 <string name="netease_recent_need_login">Please sign in to NetEase first</string>
 <string name="netease_recent_title">NetEase Listening History</string>
+<string name="netease_recent_offline">NetEase listening history is unavailable offline. Connect and try again.</string>
+<string name="netease_recent_empty">No listening history in this NetEase account yet</string>
 <string name="platform_kugou">Kugou Music</string>
 <string name="platform_kuwo">Kuwo Music</string>
 <string name="platform_qqmusic">QQ Music</string>

@@ -337,6 +337,12 @@ internal fun SettingsScreen(
                 )
             },
             detail = { requestedDetailPage ->
+                val customSourceContent: @Composable () -> Unit = {
+                    moe.ouom.neriplayer.ui.screen.customsource.CustomSourceScreen(
+                        onBack = ::navigateBackFromActiveSettingsPage,
+                        listState = detailListStates.getValue(SettingsPage.CustomSource)
+                    )
+                }
                 val cleanStyle = NeriDesign.isClean
                 val settingsDetailContent: LazyListScope.(SettingsPage) -> Unit = { selectedPage ->
                     settingsDetailHeaderItem(
@@ -347,6 +353,7 @@ internal fun SettingsScreen(
                     settingsStorageProcessingItem(selectedPage, downloadDirectorySettings)
 
                     val pageItems = mapOf<SettingsPage, LazyListScope.() -> Unit>(
+                        SettingsPage.CustomSource to {},
                         SettingsPage.General to {
                             miuixSettingsSectionCardItem("${selectedPage.name}:content") {
                                 AutoSettingsSwitchItems(
@@ -949,6 +956,9 @@ internal fun SettingsScreen(
 
                         SettingsPage.PlaybackSource to {
                             miuixSettingsSectionCardItem(key = "${selectedPage.name}:content") {
+                                CustomSourceSettingsLink {
+                                    navigation.activePage = SettingsPage.CustomSource
+                                }
                                 YouTubePlaybackSourceSetting(
                                     repository = repository,
                                     highlightTargetId = settingsHighlightTargetId,
@@ -1205,7 +1215,8 @@ internal fun SettingsScreen(
                     homeContent = settingsHomeContent,
                     detailContent = settingsDetailContent,
                     detailListStates = detailListStates,
-                    detailTopAppBarStates = detailTopAppBarStates
+                    detailTopAppBarStates = detailTopAppBarStates,
+                    customPageContent = mapOf(SettingsPage.CustomSource to customSourceContent)
                 ) {
                     settingsDetailContent(requestedDetailPage)
                 }
