@@ -38,7 +38,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.MusicNote
@@ -286,13 +286,13 @@ fun NeteaseRecentScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onSongClick(songs, index) }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(48.dp)
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(neriRoundedShape(8.dp))
                                     .background(
                                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
                                     ),
@@ -318,7 +318,7 @@ fun NeteaseRecentScreen(
                             Column(Modifier.weight(1f)) {
                                 Text(
                                     text = record.name,
-                                    style = MaterialTheme.typography.bodyLarge,
+                                        style = MaterialTheme.typography.titleMedium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )

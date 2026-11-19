@@ -40,7 +40,7 @@ class NeteaseFeedbackRepositoryTest {
         `when`(settings.settingFlow(AutoSettingsSchema.playback.neteaseScrobbleEnabled)).thenReturn(enabled)
         `when`(settings.settingFlow(AutoSettingsSchema.playback.neteaseAutoSyncLikeEnabled)).thenReturn(flowOf(true))
         `when`(client.notifyPlayStart(42L, null, "account-A")).thenReturn("{\"code\":200}")
-        `when`(client.scrobble(42L, 30, null, "interrupt", "account-A")).thenReturn("{\"code\":200}")
+        `when`(client.scrobble(42L, 30, null, "playend", "account-A")).thenReturn("{\"code\":200}")
         `when`(client.likeSongForAccount(42L, false, "account-A")).thenReturn("{\"code\":200}")
     }
 
@@ -52,8 +52,8 @@ class NeteaseFeedbackRepositoryTest {
         runCurrent()
         val order = inOrder(client)
         order.verify(client).notifyPlayStart(42L, null, "account-A")
-        order.verify(client).scrobble(42L, 30, null, "interrupt", "account-A")
-        verify(client, times(1)).scrobble(42L, 30, null, "interrupt", "account-A")
+        order.verify(client).scrobble(42L, 30, null, "playend", "account-A")
+        verify(client, times(1)).scrobble(42L, 30, null, "playend", "account-A")
     }
 
     @Test fun `switching accounts discards an old accounts queued events`() = runTest {
@@ -72,7 +72,7 @@ class NeteaseFeedbackRepositoryTest {
         feedback.notifyCounted(song(), "session", 1_000, "event")
         runCurrent()
         verify(client, never()).notifyPlayStart(42L, null, "account-A")
-        verify(client, never()).scrobble(42L, 30, null, "interrupt", "account-A")
+        verify(client, never()).scrobble(42L, 30, null, "playend", "account-A")
     }
 
     @Test fun `rapid like unlike keeps final local state`() = runTest {

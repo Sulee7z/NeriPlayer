@@ -503,7 +503,9 @@ class LxScriptEngine(
                 val quals = src.optJSONArray("qualitys") ?: src.optJSONArray("qualities") ?: JSONArray()
                 val list = ArrayList<String>(quals.length())
                 for (i in 0 until quals.length()) list.add(quals.optString(i))
-                out[key] = list
+                val actions = src.optJSONArray("actions")
+                if (actions != null && (0 until actions.length()).any { actions.optString(it) == "musicUrl" } &&
+                    list.isNotEmpty()) out[key] = list
             }
             out
         } catch (e: Exception) {

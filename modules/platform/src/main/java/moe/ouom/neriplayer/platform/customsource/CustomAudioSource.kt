@@ -43,7 +43,8 @@ data class CustomAudioSource(
     /** 脚本声明支持的平台(LX source key -> 支持的音质列表)。运行脚本 inited 后回填。 */
     val supportedSources: Map<String, List<String>> = emptyMap(),
     val enabled: Boolean = false,
-    val importedAt: Long = 0L
+    val importedAt: Long = 0L,
+    val homepage: String = ""
 ) {
     fun supportsNetease(): Boolean = supportedSources.containsKey(LX_SOURCE_NETEASE)
 
@@ -56,6 +57,7 @@ data class CustomAudioSource(
         put("scriptFileName", scriptFileName)
         put("enabled", enabled)
         put("importedAt", importedAt)
+        put("homepage", homepage)
         val sources = JSONObject()
         supportedSources.forEach { (key, qualities) ->
             sources.put(key, JSONArray(qualities))
@@ -91,7 +93,8 @@ data class CustomAudioSource(
                 scriptFileName = obj.optString("scriptFileName"),
                 supportedSources = sources,
                 enabled = obj.optBoolean("enabled", false),
-                importedAt = obj.optLong("importedAt", 0L)
+                importedAt = obj.optLong("importedAt", 0L),
+                homepage = obj.optString("homepage")
             )
         }
     }
@@ -99,25 +102,46 @@ data class CustomAudioSource(
 
 /** 解析脚本头部注释里的元数据(LX 脚本头部形如 /** @name ... @version ... */)。 */
 object CustomSourceMetadataParser {
-    fun parse(script: String): ParsedMeta {
-        val name = extract(script, "name") ?: "自定义音源"
-        val version = extract(script, "version") ?: "1.0.0"
-        val author = extract(script, "author") ?: ""
-        val description = extract(script, "description") ?: ""
-        return ParsedMeta(name, version, author, description)
+    // LX Mobile's online importer allows up to 9,000,000 characters. Bound bytes
+    // here as well so file, URL and paste imports have one Android memory budget.
+    const val MAX_SCRIPT_BYTES = 9_000_000
+    private val header = Regex("\\A\\s*/\\*[\\s\\S]*?\\*/")
+    private val limits = mapOf("name" to 24, "description" to 36, "author" to 56,
+        "homepage" to 1024, "version" to 36)
+
+    /** LX imports the leading comment, not the presence of unobfuscated API names. */
+    fun normalizeForImport(script: String): String {
+        val content = script.removePrefix("\uFEFF")
+        require(content.isNotBlank()) { "脚本内容为空" }
+        require(content.toByteArray(Charsets.UTF_8).size <= MAX_SCRIPT_BYTES) { "脚本超过 9 MB" }
+        require(header.containsMatchIn(content)) { "不是有效的 LX 音源脚本：缺少开头的脚本说明注释" }
+        return content
     }
 
-    private fun extract(script: String, key: String): String? {
-        // 匹配 "@key value" 直到行尾
-        val regex = Regex("@$key[ \\t]+([^\\r\\n*]+)", RegexOption.IGNORE_CASE)
-        val head = script.take(4000)
-        return regex.find(head)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
+    fun isImportable(script: String): Boolean = runCatching { normalizeForImport(script) }.isSuccess
+
+    fun parse(script: String): ParsedMeta {
+        val head = header.find(script.removePrefix("\uFEFF"))?.value.orEmpty()
+            .removePrefix("/*").removeSuffix("*/")
+        val values = mutableMapOf<String, String>()
+        val tag = Regex("^\\s*\\*?\\s*@(\\w+)[ \\t]+(.+)$")
+        head.lineSequence().forEach { line ->
+            val match = tag.find(line) ?: return@forEach
+            val key = match.groupValues[1]
+            val limit = limits[key] ?: return@forEach
+            val value = match.groupValues[2].trim()
+            values[key] = if (value.length > limit) value.take(limit) + "..." else value
+        }
+        return ParsedMeta(values["name"].orEmpty().ifBlank { "自定义音源" },
+            values["version"].orEmpty(), values["author"].orEmpty(),
+            values["description"].orEmpty(), values["homepage"].orEmpty())
     }
 
     data class ParsedMeta(
         val name: String,
         val version: String,
         val author: String,
-        val description: String
+        val description: String,
+        val homepage: String = ""
     )
 }

@@ -45,15 +45,15 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VideoFile
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsDialog as AlertDialog
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsButton as Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsOutlinedButton as OutlinedButton
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextField as OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable

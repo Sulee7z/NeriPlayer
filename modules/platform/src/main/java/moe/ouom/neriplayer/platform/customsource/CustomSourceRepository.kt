@@ -36,6 +36,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import moe.ouom.neriplayer.common.logging.NPLogger
+import moe.ouom.neriplayer.common.io.writeTextAtomically
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -108,17 +109,23 @@ class CustomSourceRepository(private val appContext: Context) {
         supportedSources: Map<String, List<String>> = emptyMap()
     ): CustomAudioSource = withContext(Dispatchers.IO) {
         mutex.withLock {
-            require(scriptContent.isNotBlank()) { "脚本内容为空" }
-            require(scriptContent.toByteArray(Charsets.UTF_8).size <= 2 * 1024 * 1024) { "脚本超过 2 MiB" }
-            val meta = CustomSourceMetadataParser.parse(scriptContent)
-            val id = "cs_" + MessageDigest.getInstance("SHA-256")
-                .digest(scriptContent.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+            val content = CustomSourceMetadataParser.normalizeForImport(scriptContent)
+            val meta = CustomSourceMetadataParser.parse(content)
+            fun contentId(text: String) = "cs_" + MessageDigest.getInstance("SHA-256")
+                .digest(text.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+            val id = contentId(content)
+            val legacyBomId = contentId("\uFEFF$content")
             val fileName = "$id.js"
-            writeAtomic(scriptFile(fileName), scriptContent)
-
             val existing = readIndex().toMutableList()
-            // 已存在同 id 则覆盖
-            existing.removeAll { it.id == id }
+            // An identical import must not rename, enable or reorder an existing source.
+            existing.firstOrNull { it.id == id || it.id == legacyBomId }?.let { source ->
+                if (!scriptFile(source.scriptFileName).exists()) {
+                    writeAtomic(scriptFile(source.scriptFileName), content)
+                }
+                _sources.value = existing
+                return@withLock source
+            }
+            writeAtomic(scriptFile(fileName), content)
             val source = CustomAudioSource(
                 id = id,
                 name = meta.name,
@@ -127,8 +134,9 @@ class CustomSourceRepository(private val appContext: Context) {
                 description = meta.description,
                 scriptFileName = fileName,
                 supportedSources = supportedSources,
-                enabled = true, // 多源共存:新导入默认启用,可在列表里单独关闭
-                importedAt = System.currentTimeMillis()
+                enabled = false, // LX separates saving a script from selecting/executing it.
+                importedAt = System.currentTimeMillis(),
+                homepage = meta.homepage
             )
             existing.add(source)
             writeIndex(existing)
@@ -229,14 +237,9 @@ class CustomSourceRepository(private val appContext: Context) {
     }
 
     private fun writeAtomic(file: File, text: String) {
-        val atomic = AtomicFile(file)
-        val output = atomic.startWrite()
-        try {
-            output.write(text.toByteArray(Charsets.UTF_8))
-            atomic.finishWrite(output)
-        } catch (error: Throwable) {
-            atomic.failWrite(output)
-            throw error
-        }
+        // Recover any legacy .bak before switching to the shared checked atomic writer.
+        val backup = File(file.path + ".bak")
+        if (backup.exists()) AtomicFile(file).openRead().close()
+        file.writeTextAtomically(text)
     }
 }

@@ -4,7 +4,7 @@
 <string name="continue_playing_pin">Pin to top</string>
 <string name="continue_playing_unpin">Unpin</string>
 <string name="custom_source_cancel">Cancel</string>
-<string name="custom_source_desc">Import an LX Music-compatible custom source script (.js) to resolve NetEase playback URLs. Only use scripts you trust.</string>
+<string name="custom_source_desc">Import an LX Music-compatible script (.js). Import only saves it; enable it to run it. Sources are tried in list order. Only use scripts you trust.</string>
 <string name="custom_source_empty">No sources imported yet</string>
 <string name="custom_source_entry_desc">Import LX Music source scripts to enhance NetEase playback</string>
 <string name="custom_source_entry_title">Custom Source</string>
@@ -26,7 +26,7 @@
 <string name="custom_source_test_source">Test this source</string>
 <string name="custom_source_title">Custom Source</string>
 <string name="custom_source_validate_ok">Looks like a valid LX script, ready to import</string>
-<string name="custom_source_validate_warn">No lx.on / musicUrl markers detected. Please check the content</string>
+<string name="custom_source_validate_warn">Missing the LX script header comment, or the file exceeds 9 MB</string>
 <string name="custom_source_view_all">View all</string>
 <string name="explore_link_qq_playlist_fallback">QQ Music playlist %1$d</string>
 <string name="ftp_base_path">Root path</string>

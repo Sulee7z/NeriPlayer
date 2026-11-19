@@ -1,14 +1,18 @@
 package moe.ouom.neriplayer.platform.customsource
 
 import org.json.JSONObject
+import java.security.MessageDigest
 
 internal fun buildBootstrapHtml(userScript: String): String {
     val meta = CustomSourceMetadataParser.parse(userScript)
     val infoJson = JSONObject().apply {
+        put("id", "cs_" + MessageDigest.getInstance("SHA-256")
+            .digest(userScript.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) })
         put("name", meta.name)
         put("version", meta.version)
         put("author", meta.author)
         put("description", meta.description)
+        put("homepage", meta.homepage)
     }
     val infoJsonLiteral = JSONObject.quote(infoJson.toString()).replace("<", "\\u003c")
     return buildBootstrapHtml(userScript, infoJsonLiteral)
@@ -98,9 +102,11 @@ private val LX_RUNTIME_JS = """
   var timeoutCallbacks = {};
   globalThis.setTimeout = function (callback, timeout) {
     if (typeof callback !== 'function') throw new Error('callback required a function');
+    if (timeout === undefined) timeout = 0;
     if (typeof timeout !== 'number' || timeout < 0) throw new Error('timeout required a number');
     var id = ++timeoutSeq;
-    timeoutCallbacks[id] = callback;
+    var args = Array.prototype.slice.call(arguments, 2);
+    timeoutCallbacks[id] = function () { callback.apply(null, args); };
     try { NeriBridge.setTimeout(id, Math.min(Math.floor(timeout), 60000)); } catch (e) {}
     return id;
   };
@@ -376,11 +382,13 @@ private val LX_RUNTIME_JS = """
       var info = (typeof window !== 'undefined' && window.__NERI_SCRIPT_INFO) ? window.__NERI_SCRIPT_INFO : {};
       var raw = (typeof window !== 'undefined' && window.__NERI_RAW_SCRIPT) ? window.__NERI_RAW_SCRIPT : '';
       return {
+        id: info.id || '',
         rawScript: raw,
         name: info.name || 'NeriPlayer Custom Source',
         description: info.description || '',
         version: (info.version != null ? String(info.version) : '1.0.0'),
-        author: info.author || ''
+        author: info.author || '',
+        homepage: info.homepage || ''
       };
     })(),
     on: function (name, handler) {

@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.update
 import moe.ouom.neriplayer.platform.customsource.CustomAudioSource
+import moe.ouom.neriplayer.platform.customsource.CustomSourceMetadataParser
 import moe.ouom.neriplayer.core.di.AppContainer
 
 data class CustomSourceUiState(
@@ -71,77 +72,50 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
         _uiState.value = _uiState.value.copy(message = null)
     }
 
-    /** 导入脚本文本:先探测运行,回填支持平台,再入库。 */
+    /** Like LX Mobile, import stores metadata; explicit enable/test executes the script. */
     fun importScript(scriptContent: String) {
-        if (scriptContent.isBlank()) return
-        if (!manager.validateScriptContent(scriptContent)) {
-            _uiState.value = _uiState.value.copy(
-                message = "内容看起来不像 LX 音源脚本(缺少 lx.on / musicUrl 等标记), 已取消导入"
-            )
-            return
-        }
-        viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val result = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation {
-                val probe = manager.probeScript(scriptContent)
-                repo.importScript(
-                    scriptContent = scriptContent,
-                    supportedSources = if (probe.ok) probe.sources else emptyMap()
-                )
-                if (!probe.ok) {
-                    "已导入,但脚本自检未通过: ${probe.error ?: "未知"}"
-                } else if (!probe.sources.containsKey(CustomAudioSource.LX_SOURCE_NETEASE)) {
-                    "已导入,但该脚本似乎不支持网易云(wy)"
-                } else {
-                    "导入成功"
-                }
-            }
-            manager.onActiveSourceChanged()
-            _uiState.value = _uiState.value.copy(
-                busy = false,
-                message = result.getOrElse { "导入失败: ${it.message}" }
-            )
-        }
+        importFrom { scriptContent }
     }
 
     /** 从 URL 下载脚本后导入。 */
     fun importScriptFromUrl(url: String) {
-        val trimmed = url.trim()
-        if (trimmed.isBlank()) return
+        importFrom {
+            manager.fetchScriptFromUrl(url.trim()) ?: error("下载失败，请使用可访问的 HTTP/HTTPS 脚本直链")
+        }
+    }
+
+    private fun importFrom(read: suspend () -> String) {
+        if (_uiState.value.busy) return
+        _uiState.update { it.copy(busy = true, message = null) }
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val result = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation {
-                val content = manager.fetchScriptFromUrl(trimmed)
-                    ?: return@runCatchingNonCancellation "下载失败,请确认链接可访问(需以 http/https 开头)"
-                if (!manager.validateScriptContent(content)) {
-                    return@runCatchingNonCancellation "下载的内容看起来不像 LX 音源脚本, 已取消导入"
-                }
-                val probe = manager.probeScript(content)
-                repo.importScript(
-                    scriptContent = content,
-                    supportedSources = if (probe.ok) probe.sources else emptyMap()
-                )
-                if (!probe.ok) {
-                    "已导入,但脚本自检未通过: ${probe.error ?: "未知"}"
-                } else if (!probe.sources.containsKey(CustomAudioSource.LX_SOURCE_NETEASE)) {
-                    "已导入,但该脚本似乎不支持网易云(wy)"
-                } else {
-                    "导入成功"
-                }
+            try {
+                repo.load()
+                val source = repo.importScript(read())
+                _uiState.update { it.copy(message = "已保存 ${source.name}。启用或测试时才运行脚本；重复导入保留原设置。") }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _uiState.update { it.copy(message = "导入失败：${error.message}") }
+            } finally {
+                _uiState.update { it.copy(busy = false) }
             }
-            manager.onActiveSourceChanged()
-            _uiState.value = _uiState.value.copy(
-                busy = false,
-                message = result.getOrElse { "导入失败: ${it.message}" }
-            )
         }
     }
 
     fun setEnabled(id: String, enabled: Boolean) {
+        if (_uiState.value.busy) return
+        _uiState.update { it.copy(busy = true) }
         mutate {
-            repo.setEnabled(id, enabled)
-            manager.onActiveSourceChanged()
-            if (enabled) manager.warmActive()
+            try {
+                if (enabled) {
+                    manager.enableSource(id)
+                } else {
+                    repo.setEnabled(id, false)
+                    manager.onActiveSourceChanged()
+                }
+            } finally {
+                _uiState.update { it.copy(busy = false) }
+            }
         }
     }
 
@@ -171,32 +145,35 @@ class CustomSourceViewModel(application: Application) : AndroidViewModel(applica
 
     /** 端到端测试:对指定音源真实解析一首示例歌曲,显示详细结果。 */
     fun testSource(id: String) {
+        if (_uiState.value.busy) return
+        val source = _uiState.value.sources.firstOrNull { it.id == id } ?: return
+        _uiState.update { it.copy(busy = true, message = null) }
         viewModelScope.launch {
-            val source = _uiState.value.sources.firstOrNull { it.id == id }
-                ?: return@launch
-            _uiState.value = _uiState.value.copy(busy = true, message = null)
-            val msg = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation { manager.diagnoseNetease(source) }
-                .getOrElse { "测试异常: ${it.message}" }
-            _uiState.value = _uiState.value.copy(busy = false, message = msg)
+            try {
+                val msg = moe.ouom.neriplayer.common.coroutines.runCatchingNonCancellation { manager.diagnoseNetease(source) }
+                    .getOrElse { "测试异常: ${it.message}" }
+                _uiState.update { it.copy(message = msg) }
+            } finally {
+                _uiState.update { it.copy(busy = false) }
+            }
         }
     }
 
     fun importScriptFromUri(uri: android.net.Uri) {
-        mutate {
-            val content = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        importFrom {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
                     val output = java.io.ByteArrayOutputStream()
                     val buffer = ByteArray(8192)
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
-                        require(read <= 2 * 1024 * 1024 - output.size()) { "脚本超过 2 MiB" }
+                        require(read <= CustomSourceMetadataParser.MAX_SCRIPT_BYTES - output.size()) { "脚本超过 9 MB" }
                         output.write(buffer, 0, read)
                     }
                     output.toString(Charsets.UTF_8)
                 } ?: error("无法读取音源文件")
             }
-            importScript(content)
         }
     }
 

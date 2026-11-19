@@ -28,7 +28,7 @@ package moe.ouom.neriplayer.platform.customsource
 
 import android.content.Context
 import android.os.SystemClock
-import moe.ouom.neriplayer.network.http.readUtf8Bounded
+import moe.ouom.neriplayer.network.http.readTextBounded
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -323,23 +323,9 @@ class CustomSourceManager(
         return null
     }
 
-    /**
-     * 导入前快速校验脚本内容是否像 LX 脚本:
-     * 必须存在 lx 对象注册 (lx.on / globalThis.lx / EVENT_NAMES) 或 musicUrl 处理器关键词,
-     * 避免把明显不是脚本的文件丢进 WebView 白等 20 秒超时。
-     */
+    /** Validate the LX header without executing the script or rejecting obfuscated code. */
     fun validateScriptContent(scriptContent: String): Boolean {
-        if (scriptContent.isBlank() || scriptContent.length < 64) return false
-        val sample = scriptContent.take(30_000).lowercase()
-        val hasLxRegistration = sample.contains("lx.on") ||
-            sample.contains("globalthis.lx") ||
-            sample.contains("window.lx") ||
-            sample.contains("lx =") ||
-            sample.contains("lx=")
-        val hasMusicUrlHandler = sample.contains("musicurl") ||
-            sample.contains("EVENT_NAMES".lowercase()) ||
-            sample.contains("request")
-        return hasLxRegistration || hasMusicUrlHandler
+        return CustomSourceMetadataParser.isImportable(scriptContent)
     }
 
     /**
@@ -361,7 +347,7 @@ class CustomSourceManager(
                 .build()
             client.newCall(request).awaitResponse { response ->
                 if (!response.isSuccessful) return@awaitResponse null
-                val body = response.body.readUtf8Bounded(2 * 1024 * 1024)
+                val body = response.body.readTextBounded(CustomSourceMetadataParser.MAX_SCRIPT_BYTES)
                 body
             }
         } catch (e: Exception) {
@@ -502,6 +488,22 @@ class CustomSourceManager(
     suspend fun warmActive() {
         repository.activeSources.forEach { active ->
             runCatching { ensureEngine(active) }
+        }
+    }
+
+    /** Enabling executes initialization once and keeps that same engine for playback. */
+    suspend fun enableSource(id: String) {
+        repository.load()
+        val source = repository.sources.value.firstOrNull { it.id == id }
+            ?: error("音源不存在，请重新导入")
+        val engine = ensureEngine(source) ?: error("脚本初始化失败，请使用测试查看详情")
+        try {
+            val info = engine.initInfo() ?: error("脚本未完成初始化")
+            check(info.sources.values.any { it.isNotEmpty() }) { "脚本未声明可用的音乐平台和音质" }
+            repository.updateSupportedSources(id, info.sources)
+            repository.setEnabled(id, true)
+        } finally {
+            onActiveSourceChanged()
         }
     }
 

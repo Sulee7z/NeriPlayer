@@ -38,7 +38,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
@@ -75,6 +75,7 @@ import moe.ouom.neriplayer.data.identity.stableKey
 import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
+import moe.ouom.neriplayer.ui.screen.playlist.detail.PlaylistModernSongRow
 
 enum class KugouKuwoPlatform {
     KUGOU,
@@ -269,44 +270,13 @@ fun KugouKuwoPlaylistDetailScreen(
                             songs,
                             key = { index, song -> "$index|${song.stableKey()}" }
                         ) { index, song ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onSongClick(songs, index) }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "${index + 1}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.width(32.dp)
-                                )
-                                Icon(
-                                    Icons.Outlined.MusicNote,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        text = song.name,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    if (song.artist.isNotBlank()) {
-                                        Text(
-                                            text = song.artist,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
+                            PlaylistModernSongRow(
+                                song = song, index = index, coverUrl = song.coverUrl,
+                                offlineMode = offlineMode, selectionMode = false, selected = false,
+                                current = false, playing = false, downloaded = false,
+                                downloadPresenceVersion = 0, onClick = { onSongClick(songs, index) },
+                                onLongClick = {}, onToggleSelection = {}, trailing = {}
+                            )
                         }
                     }
                 }
@@ -331,7 +301,7 @@ private fun KKPlaylistHeader(
         Box(
             modifier = Modifier
                 .size(96.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(neriRoundedShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
             contentAlignment = Alignment.Center
         ) {

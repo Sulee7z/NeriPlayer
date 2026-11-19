@@ -1,5 +1,8 @@
 ﻿# Upstream sync and fork audit
 
+Follow-up UI/source-import/listening-feedback changes and their verification limits
+are recorded in [fork UI/source/feedback fixes](docs/fork-ui-source-feedback-fixes.md).
+
 ## Revisions
 
 - Fork base: `fe680a3bb2503e5c727bfb0e767265056c6ca5d5`

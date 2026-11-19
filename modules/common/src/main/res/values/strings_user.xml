@@ -4,7 +4,7 @@
 <string name="continue_playing_pin">置顶</string>
 <string name="continue_playing_unpin">取消置顶</string>
 <string name="custom_source_cancel">取消</string>
-<string name="custom_source_desc">导入兼容洛雪音乐(LX Music)的自定义音源脚本(.js),用于解析网易云歌曲的播放地址。请只使用你信任的脚本。</string>
+<string name="custom_source_desc">导入兼容洛雪音乐(LX Music)的自定义音源脚本(.js)。导入仅保存，手动启用后才运行；多音源按列表顺序解析。请只使用你信任的脚本。</string>
 <string name="custom_source_empty">还没有导入任何音源</string>
 <string name="custom_source_entry_desc">导入洛雪音乐(LX)音源脚本,增强网易云播放解析</string>
 <string name="custom_source_entry_title">自定义音源</string>
@@ -26,7 +26,7 @@
 <string name="custom_source_test_source">测试此音源</string>
 <string name="custom_source_title">自定义音源</string>
 <string name="custom_source_validate_ok">看起来是有效的 LX 脚本,可以导入</string>
-<string name="custom_source_validate_warn">未检测到 lx.on / musicUrl 等脚本标记,请确认内容正确</string>
+<string name="custom_source_validate_warn">缺少 LX 脚本头部说明注释，或文件超过 9 MB</string>
 <string name="custom_source_view_all">查看全部</string>
 <string name="explore_link_qq_playlist_fallback">QQ 音乐歌单 %1$d</string>
 <string name="ftp_base_path">根目录路径</string>

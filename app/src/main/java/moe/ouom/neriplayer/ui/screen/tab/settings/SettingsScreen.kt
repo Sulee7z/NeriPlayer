@@ -320,7 +320,6 @@ internal fun SettingsScreen(
     }
     val settingsHomeContent: LazyListScope.() -> Unit = {
         settingsHomePageItems(navigation)
-        miuixSettingsSectionCardItem("fork:extensions") { ForkSettingsEntry() }
     }
 
     val settingsPageNavigator: (SettingsPage) -> Unit = { page -> navigation.activePage = page }
@@ -340,7 +339,8 @@ internal fun SettingsScreen(
                 val customSourceContent: @Composable () -> Unit = {
                     moe.ouom.neriplayer.ui.screen.customsource.CustomSourceScreen(
                         onBack = ::navigateBackFromActiveSettingsPage,
-                        listState = detailListStates.getValue(SettingsPage.CustomSource)
+                        listState = detailListStates.getValue(SettingsPage.CustomSource),
+                        showBackButton = !isSettingsSplitLayout || showSplitDetailBackButton
                     )
                 }
                 val cleanStyle = NeriDesign.isClean
@@ -560,6 +560,9 @@ internal fun SettingsScreen(
                                     highlightPulse = settingsHighlightPulse,
                                     onHighlightFinished = onSettingsHighlightFinished
                                 )
+                            }
+                            item(key = "accounts:additional-platforms") {
+                                ForkSettingsEntry()
                             }
                         },
 

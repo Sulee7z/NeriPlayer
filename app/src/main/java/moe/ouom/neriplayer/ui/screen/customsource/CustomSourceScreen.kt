@@ -30,40 +30,40 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
+import androidx.compose.material3.rememberTopAppBarState
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import moe.ouom.neriplayer.core.di.AppContainer
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsOutlinedButton as OutlinedButton
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsTextField as OutlinedTextField
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsSwitch as Switch
+import moe.ouom.neriplayer.ui.screen.tab.settings.miuix.MiuixSettingsDialog as AlertDialog
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsDetailScaffold
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsSectionCard
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.MiuixSettingsHeader
+import moe.ouom.neriplayer.ui.screen.tab.settings.page.SettingsPage
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,7 +81,6 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import moe.ouom.neriplayer.common.R
 import moe.ouom.neriplayer.platform.customsource.CustomAudioSource
 import moe.ouom.neriplayer.platform.customsource.CustomSourceMetadataParser
-import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.viewmodel.customsource.CustomSourceViewModel
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -92,7 +91,8 @@ import androidx.compose.ui.platform.testTag
 fun CustomSourceScreen(
     onBack: () -> Unit,
     listState: LazyListState = rememberLazyListState(),
-    sourceViewModel: CustomSourceViewModel? = null
+    sourceViewModel: CustomSourceViewModel? = null,
+    showBackButton: Boolean = true
 ) {
     val context = LocalContext.current
     val appContext = remember(context) { context.applicationContext }
@@ -104,13 +104,18 @@ fun CustomSourceScreen(
         }
     )
     val ui by vm.uiState.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
+    val settings = if (sourceViewModel == null) AppContainer.settingsRepo else null
+    val bypass by (settings?.customSourceBypassProxyFlow ?: kotlinx.coroutines.flow.flowOf(true))
+        .collectAsStateWithLifecycle(true)
+    val alwaysProxy by (settings?.customSourceAlwaysProxyFlow ?: kotlinx.coroutines.flow.flowOf(false))
+        .collectAsStateWithLifecycle(false)
+    val scope = rememberCoroutineScope()
     var showPasteDialog by remember { mutableStateOf(false) }
     var showUrlDialog by remember { mutableStateOf(false) }
 
     // 结果/诊断信息用对话框显示(可多行,不会被截断)
     if (ui.message != null) {
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { vm.consumeMessage() },
             confirmButton = {
                 OutlinedButton(onClick = { vm.consumeMessage() }) {
@@ -129,48 +134,29 @@ fun CustomSourceScreen(
         }
     }
 
-    Scaffold(
+    MiuixSettingsDetailScaffold(
         modifier = Modifier.fillMaxSize().testTag("custom-source-manager"),
-        topBar = {
-            TopAppBar(
-                modifier = Modifier.statusBarsPadding(),
-                title = { Text(stringResource(R.string.custom_source_title)) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors()
-            )
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { padding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(
-                start = 16.dp,
-                end = 16.dp,
-                top = 16.dp,
-                bottom = 16.dp + LocalMiniPlayerHeight.current
-            ),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+        title = stringResource(R.string.custom_source_title),
+        onBack = onBack,
+        listState = listState,
+        topAppBarState = rememberTopAppBarState(),
+        showBackButton = showBackButton
+    ) {
             item {
-                Text(
-                    text = stringResource(R.string.custom_source_desc),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                MiuixSettingsHeader(
+                    icon = SettingsPage.CustomSource.icon,
+                    title = stringResource(R.string.custom_source_title),
+                    description = stringResource(R.string.custom_source_desc),
+                    page = SettingsPage.CustomSource
                 )
             }
 
             // 导入按钮
             item {
-                Row(
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     OutlinedButton(
                         onClick = { filePicker.launch("*/*") },
@@ -201,12 +187,7 @@ fun CustomSourceScreen(
 
             // 优先模式开关
             item {
-                Card(
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                    )
-                ) {
+                MiuixSettingsSectionCard {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -231,9 +212,29 @@ fun CustomSourceScreen(
                         }
                         Switch(
                             checked = ui.priorityMode,
-                            onCheckedChange = { vm.setPriorityMode(it) }
+                            onCheckedChange = { vm.setPriorityMode(it) },
+                            enabled = !ui.busy
                         )
                     }
+                }
+            }
+
+            item(key = "source:network") {
+                MiuixSettingsSectionCard {
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.settings_custom_source_bypass_proxy)) },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        trailingContent = { Switch(checked = bypass,
+                            onCheckedChange = { scope.launch { settings?.setCustomSourceBypassProxy(it) } },
+                            enabled = !ui.busy) }
+                    )
+                    ListItem(
+                        headlineContent = { Text(stringResource(R.string.settings_custom_source_always_proxy)) },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                        trailingContent = { Switch(checked = alwaysProxy,
+                            onCheckedChange = { scope.launch { settings?.setCustomSourceAlwaysProxy(it) } },
+                            enabled = !ui.busy) }
+                    )
                 }
             }
 
@@ -262,7 +263,6 @@ fun CustomSourceScreen(
                     )
                 }
             }
-        }
     }
 
     if (showPasteDialog) {
@@ -301,7 +301,7 @@ private fun SourceCard(
     busy: Boolean
 ) {
     var showRenameDialog by remember { mutableStateOf(false) }
-    Card(shape = RoundedCornerShape(12.dp)) {
+    MiuixSettingsSectionCard {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -320,7 +320,7 @@ private fun SourceCard(
                         overflow = TextOverflow.Ellipsis
                     )
                     val meta = buildString {
-                        append("v${source.version}")
+                        if (source.version.isNotBlank()) append("v${source.version}")
                         if (source.author.isNotBlank()) append(" · ${source.author}")
                         val platforms = source.supportedSources.keys.joinToString(", ")
                         if (platforms.isNotBlank()) append(" · $platforms")
@@ -344,7 +344,8 @@ private fun SourceCard(
                 }
                 Switch(
                     checked = source.enabled,
-                    onCheckedChange = { onEnabledChange(it) }
+                    onCheckedChange = { onEnabledChange(it) },
+                    enabled = !busy
                 )
                 IconButton(onClick = onDelete, enabled = !busy) {
                     Icon(Icons.Outlined.Delete, contentDescription = null)
@@ -379,7 +380,7 @@ private fun SourceCard(
 
     if (showRenameDialog) {
         var name by remember { mutableStateOf(source.name) }
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { showRenameDialog = false },
             title = { Text(stringResource(R.string.custom_source_rename)) },
             text = {
@@ -418,14 +419,8 @@ private fun PasteScriptDialog(
     val meta = remember(text) {
         CustomSourceMetadataParser.parse(text)
     }
-    val looksLikeScript = remember(text) {
-        text.isNotBlank() && (
-            text.contains("lx.on", ignoreCase = true) ||
-                text.contains("musicUrl", ignoreCase = true) ||
-                text.contains("EVENT_NAMES", ignoreCase = true)
-            )
-    }
-    androidx.compose.material3.AlertDialog(
+    val looksLikeScript = remember(text) { CustomSourceMetadataParser.isImportable(text) }
+    AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.custom_source_import_paste)) },
         text = {
@@ -434,8 +429,9 @@ private fun PasteScriptDialog(
                     value = text,
                     onValueChange = { text = it },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 6,
-                    maxLines = 12,
+                    minLines = 3,
+                    maxLines = 6,
+                    singleLine = false,
                     placeholder = { Text("// LX Music source script...") }
                 )
                 if (text.isNotBlank()) {
@@ -488,7 +484,7 @@ private fun UrlImportDialog(
 ) {
     var url by remember { mutableStateOf("") }
     val urlValid = url.trim().startsWith("http://") || url.trim().startsWith("https://")
-    androidx.compose.material3.AlertDialog(
+    AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text(stringResource(R.string.custom_source_import_url)) },
         text = {

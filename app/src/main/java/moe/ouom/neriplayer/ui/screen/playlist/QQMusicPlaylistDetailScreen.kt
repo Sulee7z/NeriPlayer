@@ -42,7 +42,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
+import moe.ouom.neriplayer.ui.theme.neriRoundedShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.PlaylistPlay
@@ -82,6 +82,7 @@ import moe.ouom.neriplayer.data.identity.stableKey
 import moe.ouom.neriplayer.ui.navigation.LocalMiniPlayerHeight
 import moe.ouom.neriplayer.ui.haptic.HapticIconButton
 import moe.ouom.neriplayer.ui.viewmodel.tab.PlaylistSummary
+import moe.ouom.neriplayer.ui.screen.playlist.detail.PlaylistModernSongRow
 
 private sealed interface QQPlaylistUiState {
     data object Loading : QQPlaylistUiState
@@ -219,6 +220,7 @@ fun QQMusicPlaylistDetailScreen(
                             QQPlaylistSongRow(
                                 song = song,
                                 rank = index + 1,
+                                offlineMode = offlineMode,
                                 onClick = { onSongClick(songs, index) }
                             )
                         }
@@ -246,7 +248,7 @@ private fun QQPlaylistHeader(
         Box(
             modifier = Modifier
                 .size(96.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(neriRoundedShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
             contentAlignment = Alignment.Center
         ) {
@@ -303,75 +305,13 @@ private fun QQPlaylistHeader(
 private fun QQPlaylistSongRow(
     song: SongItem,
     rank: Int,
+    offlineMode: Boolean,
     onClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = rank.toString(),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(28.dp)
-        )
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-            contentAlignment = Alignment.Center
-        ) {
-            val cover = song.coverUrl
-            if (cover != null) {
-                AsyncImage(
-                    model = cover,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Outlined.MusicNote,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = song.name,
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = song.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = formatDuration(song.durationMs),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-private fun formatDuration(durationMs: Long): String {
-    if (durationMs <= 0L) return "--:--"
-    val totalSec = durationMs / 1000L
-    val min = totalSec / 60L
-    val sec = totalSec % 60L
-    return String.format("%d:%02d", min, sec)
+    PlaylistModernSongRow(
+        song = song, index = rank - 1, coverUrl = song.coverUrl, offlineMode = offlineMode,
+        selectionMode = false, selected = false, current = false, playing = false,
+        downloaded = false, downloadPresenceVersion = 0, onClick = onClick,
+        onLongClick = {}, onToggleSelection = {}, trailing = {}
+    )
 }

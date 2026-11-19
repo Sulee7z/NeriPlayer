@@ -5,6 +5,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LibraryMusic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -19,6 +21,7 @@ internal fun CustomSourceSettingsLink(onClick: () -> Unit) {
         headlineContent = { Text(stringResource(R.string.custom_source_entry_title)) },
         supportingContent = { Text(stringResource(R.string.custom_source_entry_desc)) },
         leadingContent = { Icon(Icons.Outlined.LibraryMusic, contentDescription = null) },
+        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
         modifier = Modifier.testTag("settings-custom-source-entry").clickable(onClick = onClick)
     )
 }
